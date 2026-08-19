@@ -355,3 +355,31 @@ def test_failed_run_consumes_no_pick_indices(factory) -> None:
     assert outcome.state == FAILED
     assert history.latest_pick_index() == 0  # nothing consumed
     assert history.excluded_album_identities() == frozenset()
+
+
+# --- G2-004: year-constraint observability is durable in the journal ----------
+
+
+def test_year_fallback_status_is_persisted_in_journal() -> None:
+    history = InMemoryHistory()
+    # All-old album pools force the fallback_no_modern path for every genre.
+    old_only = FakeAlbumSource(
+        {
+            g.genre_id: [
+                AlbumCandidate(f"{g.genre_id}-1", f"{g.genre_id} Album 1", "Artist", 1980),
+                AlbumCandidate(f"{g.genre_id}-2", f"{g.genre_id} Album 2", "Artist", 1985),
+                AlbumCandidate(f"{g.genre_id}-3", f"{g.genre_id} Album 3", "Artist", 1990),
+            ]
+            for g in _genres()
+        }
+    )
+    engine = _engine(history, album_source=old_only)
+    outcome = engine.run("run-1")
+    assert outcome.state == COMPLETE
+    # The SELECTED journal entry persists per-genre constraint/fallback evidence.
+    entries = history.journal_after("run-1", 0)
+    selected = next(e for e in entries if e.transition == "SELECTED")
+    assert selected.detail is not None
+    statuses = [s["status"] for s in selected.detail["album_selection"]]
+    assert statuses and all(s == "fallback_no_modern" for s in statuses)
+    assert all(s["reason"] for s in selected.detail["album_selection"])

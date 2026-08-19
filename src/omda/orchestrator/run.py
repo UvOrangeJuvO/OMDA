@@ -27,7 +27,7 @@ from omda.config import Config, config_to_dict
 from omda.core.album import dedupe_candidates, filter_candidates
 from omda.core.genre import select_daily_genres
 from omda.core.rating import rank_candidates
-from omda.core.year import select_albums_for_genre
+from omda.core.year import AlbumSelectionResult, select_albums_for_genre
 from omda.ports.album import AlbumSource
 from omda.ports.critic import CriticRatingRow
 from omda.ports.delivery import Delivery
@@ -103,12 +103,16 @@ class Plan:
     ``pick_records`` carries the EXACT ordered official GenrePickRecord values
     (global indices starting at ``latest_pick_index + 1``); recovery never
     regenerates local 1..N indices (G2-001).
+
+    ``selection_results`` exposes the observable year-constraint outcome per
+    Genre (G2-004), persisted in the journal digest.
     """
 
     run_id: str
     genres: tuple[GenreRef, ...]
     albums: tuple[SelectedAlbum, ...]
     pick_records: tuple[GenrePickRecord, ...] = ()
+    selection_results: tuple[AlbumSelectionResult, ...] = ()
 
     def genre_picks(self) -> list[GenrePickRecord]:
         if self.pick_records:
@@ -151,6 +155,20 @@ class Plan:
                 }
                 for a in self.albums
             ],
+            "album_selection": [
+                {
+                    "genre_id": g.genre_id,
+                    "status": r.status,
+                    "reason": r.reason,
+                    "modern_count": r.modern_count,
+                    "older_count": r.older_count,
+                    "unknown_year_count": r.unknown_year_count,
+                    "candidates_considered": r.candidates_considered,
+                }
+                for g, r in zip(self.genres, self.selection_results, strict=True)
+            ]
+            if self.selection_results
+            else [],
         }
 
     @classmethod
@@ -175,11 +193,24 @@ class Plan:
             )
             for a in digest["albums"]
         )
+        selection_results = tuple(
+            AlbumSelectionResult(
+                albums=(),
+                status=entry.get("status", "normal"),
+                reason=entry.get("reason", ""),
+                modern_count=entry.get("modern_count", 0),
+                older_count=entry.get("older_count", 0),
+                unknown_year_count=entry.get("unknown_year_count", 0),
+                candidates_considered=entry.get("candidates_considered", 0),
+            )
+            for entry in digest.get("album_selection", [])
+        )
         return cls(
             run_id=run_id,
             genres=genres,
             albums=albums,
             pick_records=pick_records,
+            selection_results=selection_results,
         )
 
 
@@ -352,6 +383,7 @@ class RunEngine:
             for i, genre in enumerate(chosen)
         )
         selected_albums: list[SelectedAlbum] = []
+        selection_results: list[AlbumSelectionResult] = []
         already_selected: list[AlbumCandidate] = []
         for genre in chosen:
             pool = filter_candidates(candidates_by_genre.get(genre.genre_id, []), exclusions)
@@ -359,13 +391,14 @@ class RunEngine:
             ranked = rank_candidates(
                 pool, self._critic_rows, self._rating_weights, self._missing_policy
             )
-            picked = select_albums_for_genre(
+            result = select_albums_for_genre(
                 ranked,
                 count=self._config.albums_per_genre,
                 modern_year=self._config.modern_album_year,
             )
-            already_selected.extend(picked)
-            for album in picked:
+            selection_results.append(result)
+            already_selected.extend(result.albums)
+            for album in result.albums:
                 identity = album.identity
                 selected_albums.append(
                     SelectedAlbum(
@@ -384,6 +417,7 @@ class RunEngine:
             genres=tuple(chosen),
             albums=tuple(selected_albums),
             pick_records=pick_records,
+            selection_results=tuple(selection_results),
         )
 
     def _generate(self, plan: Plan) -> str:

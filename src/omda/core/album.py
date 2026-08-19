@@ -1,4 +1,5 @@
-"""Album identity filtering, permanent exclusion and run-level deduplication (T2.4).
+"""Album identity filtering, permanent exclusion and run-level deduplication
+(T2.4; repaired G2-003).
 
 Rules (SPEC §2.4, Master Plan §3.2):
 - every selected Album is distinct within a run;
@@ -9,23 +10,69 @@ Rules (SPEC §2.4, Master Plan §3.2):
 - string fallback is deterministic, reviewable and confidence-aware; ambiguous
   identities are NEVER the basis for a destructive permanent exclusion.
 
+G2-003 repairs:
+- exact ``album_id`` matching is independent of a nested identity object;
+- canonical identity is namespaced by ``(canonical_source, canonical_id)`` and
+  never matched when the source namespace is missing on either side;
+- destructive canonical matching requires trustworthy (non-ambiguous)
+  confidence on BOTH sides;
+- normalization is Unicode-aware (NFD + combining-mark removal + casefold) and
+  preserves non-Latin scripts instead of ASCII-collapsing them.
+
 Core purity: this module never reads SQLite, HistoryPort or files — the
 Orchestrator passes an immutable ``frozenset[AlbumIdentity]`` exclusion input.
 """
 
 from __future__ import annotations
 
-import re
+import unicodedata
 from collections.abc import Sequence
 
 from omda.ports.domain import AlbumCandidate, AlbumIdentity
 
-_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+# Punctuation/separators removed during normalization (kept minimal; script
+# characters — including CJK and non-Latin letters — are always preserved).
+_SEPARATORS = frozenset(" \t\n\r.,;:!?()[]{}<>'\"`~@#$%^&*_-+=|/\\，。！？、；：（）《》【】")
 
 
 def normalized_text(text: str) -> str:
-    """Deterministic normalization for string-fallback identity matching."""
-    return _NON_ALNUM.sub("", text.lower())
+    """Deterministic Unicode-aware normalization.
+
+    - NFD decompose, then drop combining marks ONLY on Latin base characters
+      (café -> cafe); combining marks on non-Latin bases (e.g. Japanese
+      dakuten/handakuten, スピッツ) are preserved so scripts never corrupt;
+    - strip whitespace and punctuation;
+    - casefold (locale-independent).
+    Distinct scripts never collapse onto each other.
+    """
+    decomposed = unicodedata.normalize("NFD", text)
+    kept: list[str] = []
+    for ch in decomposed:
+        if ch in _SEPARATORS:
+            continue
+        if unicodedata.combining(ch):
+            if kept and "LATIN" in unicodedata.name(kept[-1], ""):
+                continue  # strip accent only from Latin base letters
+            kept.append(ch)  # preserve combining marks of other scripts
+            continue
+        kept.append(ch)
+    return "".join(kept).casefold()
+
+
+def _canonical_matches(candidate_id: AlbumIdentity, exclusion: AlbumIdentity) -> bool:
+    """Namespaced canonical equality (G2-003).
+
+    Both sides must carry a canonical_id AND the same canonical_source; a missing
+    source on either side makes the namespace unprovable -> no destructive match.
+    """
+    if not candidate_id.canonical_id or not exclusion.canonical_id:
+        return False
+    if not candidate_id.canonical_source or not exclusion.canonical_source:
+        return False
+    return (candidate_id.canonical_source, candidate_id.canonical_id) == (
+        exclusion.canonical_source,
+        exclusion.canonical_id,
+    )
 
 
 def is_permanently_excluded(
@@ -34,23 +81,22 @@ def is_permanently_excluded(
 ) -> bool:
     """Whether a candidate is permanently excluded.
 
-    Only reviewable, exact identities drive permanent exclusion:
-    - matching canonical_id (when both sides carry one);
-    - matching album_id.
-    Ambiguous exclusions are ignored for permanent exclusion (SPEC §2.4).
+    - exact ``album_id`` match is always authoritative (independent of a nested
+      identity object);
+    - canonical match requires the namespaced identity AND non-ambiguous
+      confidence on both sides.
     """
     identity = candidate.identity
     for exclusion in exclusions:
         if exclusion.identity_confidence == "ambiguous":
             continue
+        if candidate.album_id == exclusion.album_id:
+            return True
         if (
             identity is not None
-            and exclusion.canonical_id
-            and identity.canonical_id
-            and identity.canonical_id == exclusion.canonical_id
+            and identity.identity_confidence != "ambiguous"
+            and _canonical_matches(identity, exclusion)
         ):
-            return True
-        if identity is not None and exclusion.album_id == identity.album_id:
             return True
     return False
 
@@ -66,13 +112,15 @@ def filter_candidates(
 def dedup_key(candidate: AlbumCandidate) -> tuple[str, ...]:
     """Stable within-run identity key.
 
-    Canonical release-group ID wins when present; otherwise a normalized
-    artist/title/year composite is used as the string fallback (confidence is
-    recorded on the identity when one exists).
+    Namespaced canonical release-group ID wins when present; otherwise a
+    normalized artist/title/year composite (Unicode-aware) is the string
+    fallback.
     """
     identity = candidate.identity
+    if identity is not None and identity.canonical_id and identity.canonical_source:
+        return ("canonical", identity.canonical_source, identity.canonical_id)
     if identity is not None and identity.canonical_id:
-        return ("canonical", identity.canonical_id)
+        return ("canonical-unproven", identity.canonical_id)
     return (
         "norm",
         normalized_text(candidate.artist),
