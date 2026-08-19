@@ -1,0 +1,9 @@
+{
+  "source_id": "sample-critic",
+  "display_name": "Sample Critic",
+  "license": "CC0-1.0",
+  "origin_url": "https://example.org/critic",
+  "scrape_date": "2026-08-01",
+  "rating_scale_min": 0.0,
+  "rating_scale_max": 10.0
+}

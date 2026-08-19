@@ -1,0 +1,13 @@
+{
+  "schema_name": "critic_source",
+  "schema_version": 1,
+  "fields": {
+    "source_id": {"type": "string", "required": true, "pattern": "^[a-z0-9-]+$"},
+    "display_name": {"type": "string", "required": true, "min_length": 1},
+    "license": {"type": "string", "required": true, "min_length": 1},
+    "origin_url": {"type": "string", "required": true, "pattern": "^https?://"},
+    "scrape_date": {"type": "string", "required": true, "format": "iso8601-date"},
+    "rating_scale_min": {"type": "number", "required": true},
+    "rating_scale_max": {"type": "number", "required": true}
+  }
+}

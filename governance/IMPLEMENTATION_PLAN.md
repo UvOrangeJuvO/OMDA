@@ -190,6 +190,7 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 - Inputs：SPEC §3.1/§3.2/§8；MP §4。
 - 允许范围：`omda/ports/`（接口与领域错误类型，**无实现**）。
 - Deliverables：`GenreSource`、`AlbumSource/Enricher`、`CriticRatingSource`、`HistoryPort`、`LLM`、`Delivery` 六个最小 Port protocol；SPEC §8 领域错误分类（invalid input / unavailable / insufficient candidates / invariant / generation / validation / delivery / state commit）。
+- **Run-journal 归属决策（G0-007 follow-up）**：run-journal 操作（追加/读取 journal 条目、读取最新成功 pick 序号）**明确纳入 `HistoryPort`**，不设独立 `RunJournalPort`。理由：journal 与官方 history 持久化在同一 SQLite runtime 存储与事务边界内（T1.5），crash-recovery contract test 需要在同一抽象内原子地核对 journal 状态与 history 写入（delivered-but-not-committed 窗口）；独立 Port 会新增接口面但现阶段无独立消费者，违背最小接口原则。该选择不改变已接受契约中的 Port 集合，仅明确其内部边界；理由与证据记录于 G1 Executor Report。
 - Tests：契约测试骨架（接口形状、错误分类映射）；**fake/in-memory 测试实现**（供 G2 使用：fake LLM、fake Delivery、in-memory journal/history）。
 - Acceptance：G2 无任何任务依赖 G3 才首次出现的契约；错误分类不泄漏供应商细节；T1.5（SQLite）依赖本任务而非反之。
 - Dependencies：T1.2。
@@ -282,7 +283,7 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 - Inputs：SPEC §4、§8；MP §3.7。
 - 允许范围：`omda/orchestrator/`（状态机）、journal 写入协议。
 - Deliverables：状态机推进；每步失败落 FAILED 且历史不变（SPEC §7-9）；delivered-but-not-committed 恢复（§7-10）；崩溃重跑（§7-11）。
-- Tests：**本任务全程针对 T1.6 定义的 Port 契约运行，使用 fake/in-memory 测试实现**——fake LLM（返回预置文本）、fake Delivery（记录投递收据）、in-memory journal/history；覆盖 GENERATE、DELIVER、journal 与 history 各状态迁移；失败注入（fetch/generate/validate/deliver 各失败）；交付成功但 commit 失败的恢复；每个持久转变点崩溃重放。具体 LLM/PushPlus/RYM 等外部 Adapter 在 G3/G4 实现，不阻塞本任务。
+- Tests：**本任务全程针对 T1.4 定义的 Port 契约运行，使用 fake/in-memory 测试实现**——fake LLM（返回预置文本）、fake Delivery（记录投递收据）、in-memory journal/history；覆盖 GENERATE、DELIVER、journal 与 history 各状态迁移；失败注入（fetch/generate/validate/deliver 各失败）；交付成功但 commit 失败的恢复；每个持久转变点崩溃重放。具体 LLM/PushPlus/RYM 等外部 Adapter 在 G3/G4 实现，不阻塞本任务。
 - Acceptance：官方 history 仅在 DELIVERED 后写；幂等键稳定；恢复查询持久证据而非记忆。
 - Dependencies：T2.1–T2.5、T1.5（SQLite runtime Adapter）、T1.4（Port 契约）。
 - Rollback（G0-002 修复）：状态机逻辑 revert；**真实运行时数据（官方 history、delivery/recovery 证据）受保护，回滚仅限备份、迁移、恢复或非破坏性补偿，不得删除/重置**；只有 disposable test database 可重建。

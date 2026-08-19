@@ -1,0 +1,28 @@
+{
+  "schema_name": "run_journal",
+  "schema_version": 1,
+  "fields": {
+    "journal_id": {"type": "integer", "required": true, "min": 1},
+    "run_id": {"type": "string", "required": true, "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "transition": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "PLANNED",
+        "FETCHED",
+        "SELECTED",
+        "GENERATED",
+        "VALIDATED",
+        "DELIVERING",
+        "DELIVERED",
+        "HISTORY_COMMITTED",
+        "COMPLETE",
+        "FAILED",
+        "ABANDONED",
+        "RECOVERING"
+      ]
+    },
+    "at": {"type": "string", "required": true, "format": "iso8601-datetime"},
+    "detail": {"type": "object", "required": false}
+  }
+}

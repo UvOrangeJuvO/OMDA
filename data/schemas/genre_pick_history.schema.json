@@ -1,0 +1,10 @@
+{
+  "schema_name": "genre_pick_history",
+  "schema_version": 1,
+  "fields": {
+    "pick_index": {"type": "integer", "required": true, "min": 1},
+    "run_id": {"type": "string", "required": true, "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "genre_id": {"type": "string", "required": true, "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "committed_at": {"type": "string", "required": true, "format": "iso8601-datetime"}
+  }
+}

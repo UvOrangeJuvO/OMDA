@@ -1,0 +1,15 @@
+{
+  "schema_name": "album",
+  "schema_version": 1,
+  "fields": {
+    "album_id": {"type": "string", "required": true, "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "title": {"type": "string", "required": true, "min_length": 1},
+    "artist": {"type": "string", "required": true, "min_length": 1},
+    "year": {"type": "integer", "required": false, "min": 1900, "max": 2100},
+    "url": {"type": "string", "required": false, "pattern": "^https?://"},
+    "canonical_id": {"type": "string", "required": false, "min_length": 1},
+    "canonical_source": {"type": "string", "required": false, "enum": ["musicbrainz", "none"]},
+    "identity_confidence": {"type": "string", "required": false, "enum": ["exact", "normalized", "ambiguous"]},
+    "genres": {"type": "array", "required": true, "items": {"type": "string"}}
+  }
+}

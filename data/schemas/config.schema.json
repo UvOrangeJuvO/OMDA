@@ -1,0 +1,19 @@
+{
+  "schema_name": "config",
+  "schema_version": 1,
+  "fields": {
+    "daily_genre_count": {"type": "integer", "required": false, "min": 1, "max": 10},
+    "albums_per_genre": {"type": "integer", "required": false, "min": 1, "max": 10},
+    "genre_cooldown_picks": {"type": "integer", "required": false, "min": 1, "max": 365},
+    "modern_album_year": {"type": "integer", "required": false, "min": 1900, "max": 2100},
+    "seed": {"type": "string", "required": false, "min_length": 1},
+    "delivery": {
+      "type": "object",
+      "required": false,
+      "fields": {
+        "channel": {"type": "string", "required": false, "enum": ["markdown", "pushplus"]},
+        "pushplus_token_env": {"type": "string", "required": false, "pattern": "^[A-Z_][A-Z0-9_]*$"}
+      }
+    }
+  }
+}

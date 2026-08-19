@@ -1,0 +1,331 @@
+# Gate G1 Independent Review Verdict
+
+## Reviewed object
+
+- Reviewer: GPT-5.6 Sol in Codex
+- Review date: 2026-08-19
+- Gate: G1 — Foundation
+- Base SHA: `5361b64d544c3134be9ba2b25a041ff146da613a`
+- Candidate SHA: `4830c53ba163631220a83d985cd1a385362ee17d`
+- Candidate branch observed: `exec/g1-foundation`
+- Executor report: `reviews/stage-01/EXECUTOR_REPORT.md`
+- Test evidence: `reviews/stage-01/TEST_RESULTS.txt`
+
+The candidate has a clean worktree, is a descendant of the accepted G0 merge, contains T1.1–T1.6 as separate commits plus a handoff commit, and does not enter G2. `git diff --check` passed. The Reviewer independently reran the suite and lint with the WorkBuddy Python environment: 56 tests passed and Ruff passed.
+
+## Execution-shape observation
+
+The WorkBuddy UI required approximately three manual continuations, but Git records eight coherent checkpoints: G1 start, six atomic-task commits and one handoff commit. This is a healthy resumable execution pattern, not a monolithic or state-losing run. Future prompts should require a pause marker and continuation data, but this behavior is not a Gate defect.
+
+## Findings
+
+### [P0] G1-001 — Official 3×3 history cannot be committed atomically
+
+- Location: `src/omda/ports/history.py:44–56`; `src/omda/storage/sqlite_history.py:156–190`
+- Evidence: `HistoryPort` exposes only per-row `record_genre_pick()` and `record_album()` operations. Each SQLite implementation opens and commits its own transaction. There is no Port operation that commits all three Genre picks, all nine Album identities and the `HISTORY_COMMITTED` journal transition in one local transaction.
+- Reproduction/analysis: if an Orchestrator writes three Genre rows and then encounters a duplicate/constraint/storage error while writing Album 5, the earlier Genre and Album rows are already committed. The existing transaction test proves only that one failed SQL statement rolls itself back; it does not test a recommendation-run commit.
+- Impact: a failed run can consume cooldown indices and permanently exclude only a subset of Albums. This is direct official-history corruption and violates the project's central transaction invariant.
+- Violated contract: `OMDA_AGENT_HANDOFF_SPEC.md` §4 and §7.9–§7.11; Master Plan §3.7/§6; G1 T1.5 acceptance; Executor report §8 claim of transaction safety.
+- Required correction:
+  - add a single Port-level batch/unit-of-work operation for the complete official history commit;
+  - its SQLite implementation must insert all Genre picks, all Album histories and the `HISTORY_COMMITTED` journal entry within one `with connection` transaction;
+  - a failure anywhere must leave all three official-history/journal areas unchanged;
+  - the in-memory fake must implement the same all-or-nothing behavior;
+  - individual write methods must not remain the normal Orchestrator commit path (make them private/internal or document and test that only the atomic operation is used).
+- Acceptance test: inject a failure after some Genre/Album inserts inside the batch and prove the latest pick index, all Album exclusions and the journal are exactly unchanged.
+
+### [P0] G1-002 — A later write can overwrite immutable successful delivery evidence
+
+- Location: `src/omda/storage/sqlite_history.py:210–224`; analogous fake behavior in `tests/fakes/__init__.py`
+- Evidence: `save_delivery_receipt()` uses `INSERT OR REPLACE`. SQLite `REPLACE` deletes/replaces the existing row for the same idempotency key. The in-memory fake similarly assigns directly into a dictionary.
+- Independent reproduction: after saving an `ok` receipt for key `k`, saving a different `failed` receipt with the same key changes `find_delivery_receipt("k")` to the later failed record.
+- Impact: the durable proof that an external push already succeeded can be destroyed. Recovery may then conclude that delivery did not succeed and push the same recommendation again. This contradicts the append-only claim in source and report.
+- Violated contract: `OMDA_AGENT_HANDOFF_SPEC.md` §4; Master Plan §6; G1 data-protection requirement; risk R-001/R-009.
+- Required correction:
+  - receipt evidence must be immutable by idempotency key;
+  - an exact replay may be an idempotent no-op/return of the original record;
+  - a conflicting record for an existing key must fail closed with a typed state/invariant error and must not alter the original;
+  - failed delivery attempts should be journal events unless the design specifies a separate append-only attempt record; they must never overwrite an `ok` receipt;
+  - SQLite and `InMemoryHistory` semantics must match.
+- Acceptance test: save an `ok` receipt, attempt both an exact replay and a conflicting failed/different-run write, then prove the original success evidence remains byte-for-byte/domain-value identical and only one external delivery is represented.
+
+### [P1] G1-003 — Schema validation silently accepts misspelled fields
+
+- Location: `src/omda/schemas/validator.py:131–168`; `tests/unit/test_schemas.py` forward-compatibility expectation
+- Evidence: `_validate_fields()` checks only declared fields and never reports unknown keys. `validate_record()` explicitly accepts all unknown extra fields. Independent checks showed that config `{ "genre_cooldown_pick": 999 }` and an Album with misspelled `canoncial_id` both pass validation.
+- Impact: a user may believe a safety-critical configuration took effect when it was ignored; a community contribution may silently lose optional canonical identity/provenance because of a typo. This conflicts with precise machine validation and makes malformed contributions difficult to review.
+- Violated contract: `OMDA_AGENT_HANDOFF_SPEC.md` §3.3, §5 and §7.1; Master Plan §3.5; G1 T1.2/T1.3 acceptance.
+- Required correction:
+  - schemas must explicitly declare unknown-field policy;
+  - config and canonical community/runtime records should be strict by default and reject unknown keys with field/location evidence;
+  - if future extensions are needed, provide an explicitly named/versioned extension field or an opt-in schema policy rather than accepting every typo;
+  - nested objects must enforce the same policy;
+  - replace the current “unknown fields always pass” test with strict and explicitly extensible cases.
+- Acceptance test: misspelled top-level and nested config/Album/Genre fields are rejected with the exact location, while a deliberately declared extension mechanism passes.
+
+### [P2] G1-004 — Immutability claims are stronger than the actual domain types
+
+- Location: `src/omda/ports/domain.py:40–63`; `src/omda/ports/history.py:59–60`
+- Evidence: frozen dataclasses contain mutable `dict` detail values, and `excluded_album_identities()` returns a mutable `set` while its docstring calls the result immutable.
+- Impact: callers can mutate journal detail or the exclusion collection after retrieval, weakening deterministic snapshots. It is not the current cause of state corruption because SQLite returns new objects.
+- Required correction: use immutable/read-only mappings or defensive copies for journal detail and return `frozenset[AlbumIdentity]` (or explicitly document copy semantics). Keep fake and SQLite signatures aligned.
+- Blocking status: P2; may be fixed with the blocking repair and should not be deferred beyond G2 Core inputs.
+
+## Acceptance matrix
+
+| G1 criterion | Status | Evidence |
+|---|---|---|
+| T1.1 repository/tooling and clean install | PASS | package installs; smoke test and lint pass |
+| T1.2 versioned schemas and precise malformed-record rejection | FAIL | G1-003: unknown/misspelled fields pass silently |
+| T1.3 layered configuration and invalid-value rejection | PARTIAL | precedence/ranges pass; misspelled config keys are silently ignored |
+| T1.4 minimal Ports and domain errors | PARTIAL | shape exists; official commit unit-of-work is missing |
+| T1.5 auditable, transactional, protected SQLite runtime state | FAIL | G1-001 and G1-002 |
+| T1.6 deterministic fixtures/test foundation | PASS WITH GAP | tooling works; critical transaction/idempotency semantics were not tested |
+| G0-007 follow-up | PASS | stale reference fixed; journal ownership decision recorded |
+| No G2/external-adapter scope creep | PASS | no selection or live adapter implementation found |
+
+## Checks performed
+
+- Verified exact SHAs, merge-base, branch, clean worktree, commit sequence and full diff.
+- Read all changed implementation, schema, test and governance files relevant to G1.
+- Independently ran 56 tests with cache disabled: all passed.
+- Independently ran Ruff: passed.
+- Reproduced mutable receipt overwrite for a repeated idempotency key.
+- Demonstrated that unknown/misspelled config and Album fields pass validation.
+- Examined Port/SQLite transaction boundaries and compared them with the required full-run commit semantics.
+- No live network or external service was used.
+
+## Required repair scope
+
+The Executor should remain on `exec/g1-foundation`, read this verdict, and create focused repair commits. Allowed scope:
+
+- History/domain Port contracts and fakes;
+- SQLite history adapter and migration only as necessary;
+- schema policy/validator and affected schemas;
+- focused unit/contract/failure-injection tests;
+- G1 repair report, test evidence, risk/state updates;
+- no Recommendation Core, RYM, MusicBrainz, LLM provider or PushPlus implementation.
+
+The repair must rerun the full suite and add explicit tests for batch rollback, immutable receipt conflicts, fake/SQLite semantic parity and unknown-field rejection.
+
+## Verdict
+
+**CHANGES_REQUESTED**
+
+Open blocking findings: G1-001 (P0), G1-002 (P0), G1-003 (P1). G1 must not be merged and G2 must not begin.
+
+---
+
+## Re-review 1 — candidate `c45831ea3587e06f9c390786bfabca050314f03d`
+
+### Re-review identity and checks
+
+- Original G1 base: `5361b64d544c3134be9ba2b25a041ff146da613a`
+- Original G1 candidate: `4830c53ba163631220a83d985cd1a385362ee17d`
+- Original Reviewer commit: `4bce3d3d1a4ddaaba1bab5e783ee239cefdf870a`
+- Repair candidate: `c45831ea3587e06f9c390786bfabca050314f03d`
+- Repair commits: `79d2be5`, `6f6f0b5`, `c45831e`
+- Worktree at review start: clean
+- Independent test run: 68 passed, Ruff passed, diff check passed
+
+The Reviewer inspected the complete repair delta, reran the suite, and independently probed batch conflicts, receipt immutability, nested schema-policy validation and nested journal-detail mutation.
+
+### Original finding status
+
+| Finding | Re-review status | Evidence |
+|---|---|---|
+| G1-001 (P0) atomic official-history commit | **CLOSED for SQLite batch atomicity** | `commit_history()` writes picks, Albums and `HISTORY_COMMITTED` in one SQLite transaction; injected database conflicts roll back all areas |
+| G1-002 (P0) immutable receipt evidence | **CLOSED** | exact replay is a no-op; conflicting receipt raises and leaves original evidence intact in SQLite and fake |
+| G1-003 (P1) strict unknown-field validation | **PARTIAL / OPEN** | ordinary unknown fields are rejected, but invalid nested `additional_fields` policy silently disables rejection |
+| G1-004 (P2) immutable domain snapshots | **PARTIAL / OPEN** | top-level mapping is read-only, but nested mutable values remain externally mutable |
+
+### [P1] G1-005 — Fake and SQLite history semantics diverge, and SQLite errors leak past the Port
+
+- Location: `tests/fakes/__init__.py`, `InMemoryHistory.commit_history`; `src/omda/storage/sqlite_history.py`, `commit_history`; tests expecting raw `sqlite3.IntegrityError`
+- Independent reproduction: calling the fake with two `GenrePickRecord` values sharing the same `pick_index` and two Album identities sharing the same `album_id` succeeds, writes a `HISTORY_COMMITTED` journal entry and reports counts of two. SQLite rejects the same duplicate keys and rolls back.
+- Additional evidence: SQLite uniqueness conflicts escape as `sqlite3.IntegrityError`, even though the accepted Port contract requires adapters to translate provider-specific failures into the domain taxonomy. The current tests explicitly expect the SQLite exception, locking in the leak.
+- Impact: G2 will primarily exercise the Orchestrator with `InMemoryHistory`; a duplicate-batch bug can pass all fake tests and fail in production. Orchestrator code would also need SQLite-specific exception handling, breaking the Port boundary.
+- Violated contract: `OMDA_AGENT_HANDOFF_SPEC.md` §3.2, §4, §7.9–§7.11 and §8; G1 T1.4/T1.5 acceptance; repair requirement for fake/SQLite semantic parity.
+- Required correction:
+  - validate duplicate pick indices and duplicate Album identities **within the incoming batch**, as well as against stored state, before fake mutation;
+  - make SQLite and fake raise the same domain exception class for invariant conflicts;
+  - translate unexpected SQLite persistence failures to `StateCommitFailureError` while preserving the original exception as the cause;
+  - do not expose `sqlite3.IntegrityError` through `HistoryPort` tests or callers;
+  - add parameterized parity tests that execute identical success, exact-conflict and intra-batch-conflict scenarios against both implementations and compare result/exception/state.
+- Acceptance test: for both fake and SQLite, duplicate pick/Album values within one batch fail with the same domain error and leave pick history, exclusions and journal unchanged.
+
+### [P1] G1-003 remains open — Invalid nested unknown-field policy silently becomes permissive
+
+- Location: `src/omda/schemas/validator.py`, `_validate_value()` object branch and `_validate_fields()`
+- Independent reproduction: a nested object schema with `"additional_fields": "typo"` accepts an undeclared nested key and returns success. Only the top-level policy is checked against `reject|allow`; nested policies are passed through without validation, and every value other than the exact string `reject` behaves like `allow`.
+- Impact: a schema-author typo can silently disable strict validation for an entire nested object, recreating the original G1-003 failure mode.
+- Required correction: centralize policy validation and apply it at every object scope before validating unknown fields. Invalid nested policies must raise `SchemaError` with the full schema path. Add nested-invalid-policy tests in addition to the existing top-level test.
+- Acceptance test: nested `additional_fields` values other than `reject` or `allow` always raise `SchemaError`; undeclared nested fields never pass because of an invalid policy.
+
+### [P2] G1-004 remains open — Journal detail is only shallowly immutable
+
+- Location: `src/omda/ports/domain.py`, `JournalEntry.__post_init__`
+- Independent reproduction: with `detail={"x": {"y": 1}}`, constructing a `JournalEntry` and then mutating the caller's nested dictionary changes the supposedly immutable entry to `{"x": {"y": 2}}`.
+- Impact: nested facts in a durable journal snapshot can change after construction. This is a lower-severity contract-quality issue but contradicts the repair report's closure claim.
+- Required correction: recursively snapshot/freeze supported JSON-like values, or deep-copy on input and return defensive/read-only snapshots. Define behavior for nested dict/list values and test both caller-side mutation and attempted mutation through the exposed value.
+- Blocking status: P2; fix alongside the blocking repair and close before G2 uses journal details for recovery.
+
+### Re-review verdict
+
+**CHANGES_REQUESTED**
+
+G1-001 and G1-002 are materially repaired. G1-003 remains partially open, G1-004 remains partially open, and G1-005 is a new P1 Port-parity/error-boundary finding. G1 must not be merged and G2 must not begin. The next repair is narrow: domain error translation, fake/SQLite parity, recursive journal snapshots and nested schema-policy validation.
+
+---
+
+## Re-review 2 — candidate `446252d53145be0c71c834bb1b65ecb96bce6e99`
+
+### Re-review identity and checks
+
+- Original G1 base: `5361b64d544c3134be9ba2b25a041ff146da613a`
+- Previous repair candidate: `c45831ea3587e06f9c390786bfabca050314f03d`
+- Previous Reviewer commit: `88591e37256f25ee672e322c8b54e469349ec436`
+- New repair candidate: `446252d53145be0c71c834bb1b65ecb96bce6e99`
+- Repair commits: `8c62c40`, `8b4af3c`, `1114524`; review-package commit: `446252d`
+- Worktree at review start: clean
+- Independent verification: 87 tests passed, Ruff passed, `git diff --check` passed
+
+The three repair concerns were split into coherent commits and no G2 implementation was added. The Reviewer inspected the repair delta and ran independent negative probes in addition to the committed suite.
+
+### Finding status
+
+| Finding | Re-review status | Evidence |
+|---|---|---|
+| G1-001 (P0) atomic official-history commit | **CLOSED** | the single SQLite transaction and rollback behavior remain intact |
+| G1-002 (P0) immutable delivery receipt | **CLOSED** | exact replay/no-overwrite semantics remain intact |
+| G1-003 (P1) strict nested schema policy | **PARTIAL / OPEN** | an invalid nested policy is detected only when record traversal happens to visit that field |
+| G1-004 (P2) recursive journal immutability | **CLOSED** | nested mappings/lists are recursively snapshotted and frozen; SQLite round-trip is covered |
+| G1-005 (P1) HistoryPort parity/error boundary | **PARTIAL / OPEN** | batch-conflict parity is fixed, but non-`commit_history` SQLite methods still leak provider exceptions |
+
+### [P1] G1-003 remains open — Schema correctness depends on the particular record shape
+
+- Location: `src/omda/schemas/validator.py:132-180`, especially the record-driven calls to `_validate_value()`
+- Independent reproduction: a schema containing an optional nested object with `"additional_fields": "typo"` is accepted by `validate_record(schema, {})`. The same malformed policy under an array item is accepted when the record contains an empty array. It raises `SchemaError` only if a record happens to contain a value that makes validation traverse that schema branch.
+- Impact: the same malformed schema can be accepted or rejected depending on input contents. A latent typo can remain undetected in checked-in schema until a future record exercises the branch; therefore the promised schema-author protection is not deterministic.
+- Root cause: `_validate_policy()` is now correct, but it is invoked during value validation rather than during an unconditional recursive validation of the schema document.
+- Required correction:
+  - validate the schema tree once, independently of the record values;
+  - recursively visit every field spec, object field set and array `items` spec, including optional/absent fields and empty arrays;
+  - validate every `additional_fields` policy and report the full schema path;
+  - then validate the record against the already-validated schema;
+  - add negative tests for an absent optional object, an empty array whose item schema is malformed, and a multi-level malformed branch.
+- Acceptance test: every malformed nested policy raises `SchemaError` for every record shape, including `{}` and empty collections.
+
+### [P1] G1-005 remains open — Provider-error translation covers only `commit_history()`
+
+- Location: `src/omda/storage/sqlite_history.py:118-194` and `:280-337`
+- Independent reproduction: after removing the relevant disposable-test tables, `append_journal()`, `journal_after()`, `save_delivery_receipt()` and `find_delivery_receipt()` each expose raw `sqlite3.OperationalError`. The official-history read methods have the same unguarded pattern. Only `commit_history()` translates `sqlite3.Error` into the domain taxonomy.
+- Impact: the G2 Orchestrator would still need SQLite-specific exception handling for journal recovery, history reads and receipt evidence, defeating `HistoryPort` and the accepted T1.4 rule that provider-specific failures do not cross the application boundary. Journal/receipt failures are central to the upcoming recovery state machine.
+- Required correction:
+  - define and document a complete SQLite-to-domain mapping for every `HistoryPort` operation;
+  - state-changing operations should surface `StateCommitFailureError` for unexpected persistence failures; read/source availability failures should use the applicable domain error such as `SourceUnavailableError`;
+  - preserve the original SQLite error as `__cause__` and do not catch/replace intentional `InvariantFailureError` conflicts;
+  - cover journal append/read, history reads, receipt save/read and official history commit; adapter initialization/migration behavior should also have a documented typed boundary;
+  - add failure-injection tests proving no `sqlite3.Error` escapes any public `HistoryPort` operation.
+- Acceptance test: identical table-loss/closed-connection probes across all public adapter operations yield documented domain errors with SQLite causes, never raw provider exceptions.
+
+### Re-review 2 verdict
+
+**CHANGES_REQUESTED**
+
+The substantive transaction, receipt, batch-parity and recursive-immutability repairs are sound. Two boundary defects remain: schema-document validation is still data-dependent, and SQLite provider-error translation is incomplete across `HistoryPort`. G1 must not be merged and G2 must not begin. The remaining repair should be limited to unconditional schema-tree validation, complete HistoryPort error translation, focused tests and updated G1 evidence.
+
+---
+
+## Re-review 3 — candidate `6b30b55d4c27af1979aaf42b53ade80deb838578`
+
+### Re-review identity and checks
+
+- Original G1 base: `5361b64d544c3134be9ba2b25a041ff146da613a`
+- Previous repair candidate: `446252d53145be0c71c834bb1b65ecb96bce6e99`
+- Previous Reviewer commit: `496bb9d35caa8181c6cb1cd855095abfd932b8ac`
+- New repair candidate: `6b30b55d4c27af1979aaf42b53ade80deb838578`
+- Repair commits: `66e5d1a`, `c87ced7`; review-package commit: `6b30b55`
+- Worktree at review start: clean
+- Independent verification: 101 tests passed, Ruff passed, `git diff --check` passed
+
+The repair remains within G1. The Reviewer reran the complete suite, replayed the absent-object/empty-array schema probes, inspected all public `HistoryPort` operations and executed both dropped-table and closed-connection failure probes.
+
+### Finding status
+
+| Finding | Re-review status | Evidence |
+|---|---|---|
+| G1-001 (P0) atomic official-history commit | **CLOSED** | successful and failed batches retain one-transaction semantics |
+| G1-002 (P0) immutable delivery receipt | **CLOSED** | no regression |
+| G1-003 (P1) unconditional nested schema validation | **CLOSED** | `_validate_schema_tree()` recursively visits absent optional objects and empty-array item schemas before record validation |
+| G1-004 (P2) recursive journal immutability | **CLOSED** | no regression |
+| G1-005 (P1) complete HistoryPort provider-error boundary | **PARTIAL / OPEN** | seven public operations translate closed-connection failures, but `commit_history()` still leaks `sqlite3.ProgrammingError` |
+
+### [P1] G1-005 remains open — `commit_history()` does not guard context entry/exit failures
+
+- Location: `src/omda/storage/sqlite_history.py`, `commit_history()` transaction structure
+- Independent reproduction: create `SqliteHistory(":memory:")`, close it, then call `commit_history(...)`. The result is a raw `sqlite3.ProgrammingError: Cannot operate on a closed database`. The same closed-connection probe against `append_journal`, journal/history reads and receipt operations correctly returns the documented domain error with `ProgrammingError` as `__cause__`.
+- Root cause: `commit_history()` places `try/except sqlite3.Error` **inside** `with self._conn as conn`. Failures raised by context-manager entry occur before the `try`; failures during transaction commit/rollback on context exit also occur outside it. Other repaired methods correctly put `try` around the entire `with` statement.
+- Impact: the most safety-critical state operation is the only `HistoryPort` operation that still violates the no-provider-exception contract for an unavailable connection or transaction-boundary failure. G2 recovery would require a SQLite-specific branch precisely around official-history commit.
+- Required correction:
+  - wrap the complete transaction context (`with self._conn as conn`) in `try/except sqlite3.Error`, not only the SQL body;
+  - preserve intentional `InvariantFailureError` unchanged;
+  - preserve unexpected SQLite failures as the cause of `StateCommitFailureError`;
+  - extend the parameterized boundary test with a closed-connection case for every public Port operation, explicitly including `commit_history()`;
+  - add or inject a context-exit/commit failure test so the boundary covers transaction finalization, not only SQL execution;
+  - as a non-blocking hygiene improvement in the same small repair, close a successfully-created connection if initialization later fails during migration.
+- Acceptance test: the closed-connection and transaction-finalization probes for `commit_history()` raise `StateCommitFailureError`, retain `sqlite3.Error` as `__cause__`, expose no provider exception and preserve all-or-nothing behavior.
+
+### Re-review 3 verdict
+
+**CHANGES_REQUESTED**
+
+G1-003 is now fully closed and the broad error-boundary repair is correct for seven of eight public Port operations. One narrow P1 remains in `commit_history()` because its transaction context sits outside the exception boundary. G1 must not be merged and G2 must not begin. The next repair should change only that transaction boundary, add the missing failure probes, update G1 evidence and return to `READY_FOR_REVIEW`.
+
+---
+
+## Re-review 4 — candidate `d280e7879fad7a4714a83c1add1e3ae60a06484c`
+
+### Final verification
+
+- Original G1 base: `5361b64d544c3134be9ba2b25a041ff146da613a`
+- Previous repair candidate: `6b30b55d4c27af1979aaf42b53ade80deb838578`
+- Previous Reviewer commit: `44d512d0d00f425eda5c05c96ef55c6308b8ba89`
+- Final candidate: `d280e7879fad7a4714a83c1add1e3ae60a06484c`
+- Repair commit: `ed72986`; review-package commit: `d280e78`
+- Candidate branch observed: `exec/g1-foundation`
+- Worktree at review start and after read-only checks: clean
+- `git merge-base` equals the exact accepted G0/main base
+- `git diff --check`: passed
+- Independent full suite: **110 passed**
+- Independent Ruff run: passed
+- Independent closed-connection reproduction: `commit_history()` now raises `StateCommitFailureError` with `sqlite3.ProgrammingError` preserved as `__cause__`
+- Scope check: no G2 Recommendation Core or external-adapter implementation was added
+
+### Final finding closure
+
+| Finding | Final status | Evidence |
+|---|---|---|
+| G1-001 (P0) atomic official-history commit | **CLOSED** | one transaction covers all picks, Albums and `HISTORY_COMMITTED`; failures roll back all three areas |
+| G1-002 (P0) immutable delivery evidence | **CLOSED** | exact replay is a no-op; conflicting receipts cannot replace stored evidence |
+| G1-003 (P1) strict and unconditional schema validation | **CLOSED** | unknown fields are strict by default and the schema tree is checked independently of record shape |
+| G1-004 (P2) immutable domain snapshots | **CLOSED** | exclusion inputs are immutable and journal detail is recursively snapshotted/frozen |
+| G1-005 (P1) fake/SQLite parity and provider-error boundary | **CLOSED** | batch conflicts match across implementations; every public HistoryPort operation translates SQLite failures; transaction entry/body/finalization are guarded |
+| G0-007 G1 follow-up | **CLOSED** | stale task reference and journal ownership decision were resolved and documented |
+
+### Final acceptance assessment
+
+- T1.1 repository skeleton/tooling: PASS
+- T1.2 versioned schemas and precise validation: PASS
+- T1.3 layered configuration: PASS
+- T1.4 Port contracts, fakes and domain taxonomy: PASS
+- T1.5 protected transactional SQLite runtime adapter: PASS
+- T1.6 deterministic fixtures/test infrastructure: PASS
+- Architecture boundaries and G1 scope: PASS
+- Open P0/P1 findings: **none**
+
+### Final G1 verdict
+
+**ACCEPTED**
+
+Acceptance applies only to candidate `d280e7879fad7a4714a83c1add1e3ae60a06484c` against base `5361b64d544c3134be9ba2b25a041ff146da613a`. All known G1 findings are closed and no blocking finding remains. G1 may now be merged into `main`; G2 may begin only after that merge is complete and a new G2 branch is created from the resulting accepted main baseline. The Reviewer does not perform that merge, tag or G2 transition as part of this verdict.

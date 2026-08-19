@@ -1,0 +1,10 @@
+{"album_id": "alb-0001", "title": "Selected Ambient Works", "artist": "Aphex Twin", "year": 1994, "genres": ["ambient"], "url": "https://example.org/a/0001"}
+{"album_id": "alb-0002", "title": "Tired Sounds of a Dream", "artist": "Stars of the Lid", "year": 2001, "genres": ["ambient"], "url": "https://example.org/a/0002"}
+{"album_id": "alb-0003", "title": "An Empty Bliss Beyond This World", "artist": "The Caretaker", "year": 2011, "genres": ["ambient"], "url": "https://example.org/a/0003"}
+{"album_id": "alb-0004", "title": "Giant Steps", "artist": "John Coltrane", "year": 1960, "genres": ["bebop"], "url": "https://example.org/a/0004"}
+{"album_id": "alb-0005", "title": "Blue Train", "artist": "John Coltrane", "year": 1958, "genres": ["bebop"], "url": "https://example.org/a/0005"}
+{"album_id": "alb-0006", "title": "Nefertiti", "artist": "Miles Davis", "year": 1968, "genres": ["bebop"], "url": "https://example.org/a/0006"}
+{"album_id": "alb-0007", "title": "Tago Mago", "artist": "Can", "year": 1971, "genres": ["krautrock"], "url": "https://example.org/a/0007"}
+{"album_id": "alb-0008", "title": "Neu!", "artist": "Neu!", "year": 1972, "genres": ["krautrock"], "url": "https://example.org/a/0008"}
+{"album_id": "alb-0009", "title": "Trans-Europe Express", "artist": "Kraftwerk", "year": 1977, "genres": ["krautrock"], "url": "https://example.org/a/0009"}
+{"album_id": "alb-0010", "title": "Imidiwan: Companions", "artist": "Tinariwen", "year": 2009, "genres": ["tuareg"], "url": "https://example.org/a/0010"}
