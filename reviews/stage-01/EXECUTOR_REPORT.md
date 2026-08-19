@@ -176,3 +176,47 @@ G1 六任务全部完成并各自提交；56 项测试全绿、lint 全绿、dif
 ## Executor Conclusion（Re-review 1 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G1 Re-review 2 Repair（2026-08-19）
+
+对应 Reviewer commit：`496bb9d35caa8181c6cb1cd855095abfd932b8ac`（`review(g1): request complete boundary validation`）
+上一 candidate：`446252d53145be0c71c834bb1b65ecb96bce6e99`
+本轮修复 commits：`66e5d1a`（G1-003）、`c87ced7`（G1-005）
+本轮 Candidate：提交后由 Executor 在最终聊天报告给出精确 SHA（`PROJECT_STATE.json` 的 `candidate_commit` 保持 `null`，避免自引用）
+
+## Re-review 2 finding 修复
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G1-003 Schema 正确性依赖记录形状 | P1（重开） | `66e5d1a` | CLOSED |
+| G1-005 provider 错误翻译仅覆盖 commit_history | P1（重开） | `c87ced7` | CLOSED |
+
+## G1-003 — Schema-document validation is data-dependent（P1，CLOSED）
+
+- 修改（`66e5d1a`）：
+  1. 新增 `_validate_schema_tree(schema)`：**无条件**递归校验完整 schema 文档——遍历每个 field spec、嵌套 object `fields`、array `items`，包括可选/缺失字段与空数组场景；每个 `additional_fields` 策略经 `_validate_policy` 校验，`SchemaError` 携带完整 schema path。
+  2. `validate_record` 先调用 `_validate_schema_tree`（任何记录形状都执行），随后才做记录值校验。同一畸形 schema 对 `{}`、空集合、完整记录一律拒绝。
+- 测试（新增 4 项）：`test_absent_optional_object_with_invalid_policy_is_schema_error`、`test_empty_array_with_invalid_item_policy_is_schema_error`、`test_deep_branch_unvisited_by_record_is_schema_error`、`test_schema_tree_validation_is_record_independent`。
+
+## G1-005 — Provider-error translation incomplete across HistoryPort（P1，CLOSED）
+
+- 修改（`c87ced7`）：
+  1. 为 `SqliteHistory` **全部公开 HistoryPort 操作**建立统一异常边界：写操作（`append_journal`、`commit_history`、`save_delivery_receipt`）意外 `sqlite3.Error` → `StateCommitFailureError`；读/可用性操作（`journal_after`、`latest_pick_index`、`cooldown_pick_indices`、`excluded_album_identities`、`find_delivery_receipt`）→ `SourceUnavailableError`；初始化/迁移失败 → `SourceUnavailableError`。原始 `sqlite3.Error` 均保留为 `__cause__`。
+  2. 主动抛出的 `InvariantFailureError`（批次冲突、收据冲突）不属于 `sqlite3.Error`，不被误捕获或替换。
+- 测试（新增文件 `tests/unit/test_sqlite_error_boundary.py`）：参数化故障注入（DROP TABLE）覆盖 8 个公开操作 + 初始化/迁移 + `test_invariant_conflicts_are_not_translated`；断言每个操作抛领域异常且 `__cause__` 为 `sqlite3.Error`。
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -v`（TEST_RESULTS.txt） | **101 passed, 0 failed, 0 skipped, 0 error** |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| `git status --short` | 干净（提交后核验） |
+| 未修改 `REVIEW_VERDICT.md` / 未 merge / 未 tag / 未进入 G2 | 确认 |
+
+## Executor Conclusion（Re-review 2 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
