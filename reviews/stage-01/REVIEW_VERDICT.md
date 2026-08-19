@@ -234,3 +234,50 @@ The three repair concerns were split into coherent commits and no G2 implementat
 **CHANGES_REQUESTED**
 
 The substantive transaction, receipt, batch-parity and recursive-immutability repairs are sound. Two boundary defects remain: schema-document validation is still data-dependent, and SQLite provider-error translation is incomplete across `HistoryPort`. G1 must not be merged and G2 must not begin. The remaining repair should be limited to unconditional schema-tree validation, complete HistoryPort error translation, focused tests and updated G1 evidence.
+
+---
+
+## Re-review 3 — candidate `6b30b55d4c27af1979aaf42b53ade80deb838578`
+
+### Re-review identity and checks
+
+- Original G1 base: `5361b64d544c3134be9ba2b25a041ff146da613a`
+- Previous repair candidate: `446252d53145be0c71c834bb1b65ecb96bce6e99`
+- Previous Reviewer commit: `496bb9d35caa8181c6cb1cd855095abfd932b8ac`
+- New repair candidate: `6b30b55d4c27af1979aaf42b53ade80deb838578`
+- Repair commits: `66e5d1a`, `c87ced7`; review-package commit: `6b30b55`
+- Worktree at review start: clean
+- Independent verification: 101 tests passed, Ruff passed, `git diff --check` passed
+
+The repair remains within G1. The Reviewer reran the complete suite, replayed the absent-object/empty-array schema probes, inspected all public `HistoryPort` operations and executed both dropped-table and closed-connection failure probes.
+
+### Finding status
+
+| Finding | Re-review status | Evidence |
+|---|---|---|
+| G1-001 (P0) atomic official-history commit | **CLOSED** | successful and failed batches retain one-transaction semantics |
+| G1-002 (P0) immutable delivery receipt | **CLOSED** | no regression |
+| G1-003 (P1) unconditional nested schema validation | **CLOSED** | `_validate_schema_tree()` recursively visits absent optional objects and empty-array item schemas before record validation |
+| G1-004 (P2) recursive journal immutability | **CLOSED** | no regression |
+| G1-005 (P1) complete HistoryPort provider-error boundary | **PARTIAL / OPEN** | seven public operations translate closed-connection failures, but `commit_history()` still leaks `sqlite3.ProgrammingError` |
+
+### [P1] G1-005 remains open — `commit_history()` does not guard context entry/exit failures
+
+- Location: `src/omda/storage/sqlite_history.py`, `commit_history()` transaction structure
+- Independent reproduction: create `SqliteHistory(":memory:")`, close it, then call `commit_history(...)`. The result is a raw `sqlite3.ProgrammingError: Cannot operate on a closed database`. The same closed-connection probe against `append_journal`, journal/history reads and receipt operations correctly returns the documented domain error with `ProgrammingError` as `__cause__`.
+- Root cause: `commit_history()` places `try/except sqlite3.Error` **inside** `with self._conn as conn`. Failures raised by context-manager entry occur before the `try`; failures during transaction commit/rollback on context exit also occur outside it. Other repaired methods correctly put `try` around the entire `with` statement.
+- Impact: the most safety-critical state operation is the only `HistoryPort` operation that still violates the no-provider-exception contract for an unavailable connection or transaction-boundary failure. G2 recovery would require a SQLite-specific branch precisely around official-history commit.
+- Required correction:
+  - wrap the complete transaction context (`with self._conn as conn`) in `try/except sqlite3.Error`, not only the SQL body;
+  - preserve intentional `InvariantFailureError` unchanged;
+  - preserve unexpected SQLite failures as the cause of `StateCommitFailureError`;
+  - extend the parameterized boundary test with a closed-connection case for every public Port operation, explicitly including `commit_history()`;
+  - add or inject a context-exit/commit failure test so the boundary covers transaction finalization, not only SQL execution;
+  - as a non-blocking hygiene improvement in the same small repair, close a successfully-created connection if initialization later fails during migration.
+- Acceptance test: the closed-connection and transaction-finalization probes for `commit_history()` raise `StateCommitFailureError`, retain `sqlite3.Error` as `__cause__`, expose no provider exception and preserve all-or-nothing behavior.
+
+### Re-review 3 verdict
+
+**CHANGES_REQUESTED**
+
+G1-003 is now fully closed and the broad error-boundary repair is correct for seven of eight public Port operations. One narrow P1 remains in `commit_history()` because its transaction context sits outside the exception boundary. G1 must not be merged and G2 must not begin. The next repair should change only that transaction boundary, add the missing failure probes, update G1 evidence and return to `READY_FOR_REVIEW`.
