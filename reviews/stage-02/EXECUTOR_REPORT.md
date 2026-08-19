@@ -99,3 +99,56 @@
 ## 10. Executor Conclusion
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对 G2 candidate 出具唯一 verdict；接受前不合并、不进入 G3）
+
+---
+
+# G2 Re-review 1 Repair（2026-08-19）
+
+对应 Reviewer commit：`d07237ee243d556ed7f82c2c54277b9d0c454acb`（`review(g2): request core invariant repairs`）
+上一 candidate：`5ae45fe436cffa000cc0684f6768f0afb504edb6`
+本轮修复 commits：`a85a3a4`（Batch A）、`67717e3`（Batch B）、`f13bda9`（Batch C）
+本轮 Candidate：提交后由 Executor 在最终聊天报告给出精确 SHA（`candidate_commit` 保持 null）
+
+## Re-review 1 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G2-001 Plan 每次从 1 重启全局 pick index | P0 | `a85a3a4` | CLOSED |
+| G2-002 cooldown 首位置过滤 + 200 次碰运气 | P1 | `a85a3a4` | CLOSED |
+| G2-003 Album identity 匹配可重复推荐/误封 | P0 | `67717e3` | CLOSED |
+| G2-004 年份 fallback 不可观测 + max_older 绕过 | P1 | `67717e3` | CLOSED |
+| G2-005 crash harness 无效 + 幂等缺失 | P1 | `f13bda9` | CLOSED |
+| G2-006 journal 记录的不是 seed | P1 | `a85a3a4` + `f13bda9` | CLOSED |
+
+## Batch A — G2-001 + G2-002（commit `a85a3a4`）
+
+- **G2-001**：`Plan` 现携带精确有序 `pick_records`（全局 index 由 `HistoryPort.latest_pick_index()+1` 给出，传入 `select_daily_genres(global_start_index=...)`）；`digest()/from_digest()` 原样持久化/恢复精确 index，恢复不再重新生成 1–3；`_run_once` 在 SELECT 后、DELIVER 前校验计划 index 不与已提交历史冲突（冲突绝不首现于外部投递后）；全局序号不再从当前可见 GenreSource 推断。
+- **G2-002**：cooldown 在每个精确全局位置评估（`is_available(history, global_start+i)`）；以**有界完备求解**（回溯枚举有效有序序列，上限 `MAX_ENUMERATED_SOLUTIONS`，参数化 lru 缓存）替代 200 次随机重试——可满足池永不被误报不足；family/parent 集合约束（`parent_ok` + `parents_by_genre`）；等权 = 从有效解空间均匀采样。
+- 测试：连续三次运行提交 1-3/4-6/7-9（fake+SQLite）、历史最新 pick 属于不可见 Genre 仍推进全局序号、失败 run 不消耗 index、位置内 30/31 边界、100 Regional 倾斜池多 seed 全成功、真不可满足显式终止、parent 重叠约束、确定性重放保留有序 picks。性能修复：解空间索引采样（property 20k 采样 <0.1s，无 flaky 阈值）。
+
+## Batch B — G2-003 + G2-004（commit `67717e3`）
+
+- **G2-003**：`album_id` 精确匹配独立于嵌套 identity（`identity=None` 也排除）；canonical 按 `(canonical_source, canonical_id)` 命名空间匹配，source 缺失任一侧即不匹配（防误封）；破坏性 canonical 匹配要求**双端**非 ambiguous；`normalized_text` Unicode-aware（NFD + 仅拉丁基底剥离组合标记 + casefold），保留日文浊点/非拉丁脚本，杜绝 ASCII 删除导致的跨脚本碰撞。
+- **G2-004**：`select_albums_for_genre` 返回结构化 `AlbumSelectionResult`（albums + status/reason/modern/older/unknown/candidates）；`status` 三态（normal / fallback_no_modern / fallback_insufficient_era）；final fill 绝不静默突破 `max_older`（cap 不满 → 显式 `fallback_insufficient_era`）；`Plan.selection_results` + journal `album_selection` 持久化每 Genre 约束状态（端到端测试断言 SELECTED detail 含 fallback 证据）。
+- 测试：无 identity 精确排除、跨 source 同 id 不判等、ambiguous 双端保护、非拉丁/重音 distinct、跨 run 永久排除；年份 normal/no-modern/unknown/insufficient-era/cap 不绕过。
+
+## Batch C — G2-005 + G2-006（commit `f13bda9`）
+
+- **G2-005**：`run(run_id)` 先查持久 journal——已有 run 只返回终态或 `recover()`，绝不重新规划（同一 run id 幂等重放，`COMPLETE` 恰一次）；recover 遇 `HISTORY_COMMITTED` 尾部**持久追加** `COMPLETE`（`_complete_durably`，重复调用不重复追加）；真实 crash harness `CrashPointHistory`——**先持久化转换再模拟进程死亡**（`SimulatedCrash`），表驱动覆盖 10 个持久窗口（PLANNED→COMPLETE + receipt-saved + history-committed）；missing/failed/conflicting receipt 针对同一已投递 run fail closed（不重投、证据不变、历史不写）；`FakeDelivery.calls`（deliver 调用数）与 `delivered`（外部副作用数）分离，恢复零额外调用；注入 receipt-save/journal-write/history-commit 失败。
+- **G2-006**：RNG 绑定显式 `seed`（构造参数替代裸 rng）；PLANNED journal 记录真实 seed + `input_version` + `config_version`（配置 sha1 指纹）——**不消耗 RNG**；恢复/新进程仅凭 journal 证据重建完全相同的有序 Genre/Album plan（端到端重现测试）。
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -v`（TEST_RESULTS.txt） | **206 passed, 0 failed, 0 skipped, 0 error** |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| `git status --short`（每次提交后） | 干净 |
+| 敏感文件跟踪检查 | 无 |
+| 未删除/skip/弱化既有测试 | 确认（test_count 56→206 单调增长；旧 crash/missing-receipt 测试以等价更强的表驱动测试替换） |
+| 未 merge / 未 tag / 未进入 G3 / 未改 verdict | 确认 |
+
+## Executor Conclusion（G2 Re-review 1 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
