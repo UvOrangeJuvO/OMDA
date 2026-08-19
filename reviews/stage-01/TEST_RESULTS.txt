@@ -1,0 +1,72 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.12, pytest-9.1.1, pluggy-1.6.0 -- <WORKBUDDY_PYTHON>
+cachedir: .pytest_cache
+rootdir: <REPO_ROOT>
+configfile: pyproject.toml
+testpaths: tests
+collecting ... collected 56 items
+
+tests/contract/test_ports.py::test_error_taxonomy_has_eight_distinct_domain_errors PASSED [  1%]
+tests/contract/test_ports.py::test_domain_error_carries_message_and_detail PASSED [  3%]
+tests/contract/test_ports.py::test_all_ports_define_minimal_method_sets PASSED [  5%]
+tests/contract/test_ports.py::test_ports_are_protocols_not_classes PASSED [  7%]
+tests/contract/test_ports.py::test_inmemory_history_satisfies_history_port_shape PASSED [  8%]
+tests/contract/test_ports.py::test_inmemory_history_journal_and_idempotent_receipts PASSED [ 10%]
+tests/contract/test_ports.py::test_fake_delivery_is_idempotent PASSED    [ 12%]
+tests/contract/test_ports.py::test_fake_genre_source_respects_eligibility PASSED [ 14%]
+tests/contract/test_ports.py::test_fake_album_source_filters_by_genre_and_limit PASSED [ 16%]
+tests/contract/test_ports.py::test_fake_llm_returns_fixed_text PASSED    [ 17%]
+tests/property/test_seed_determinism.py::test_same_seed_reproduces_exact_sequence PASSED [ 19%]
+tests/property/test_seed_determinism.py::test_different_seeds_give_different_sequences PASSED [ 21%]
+tests/property/test_seed_determinism.py::test_reseed_produces_independent_reproducible_stream PASSED [ 23%]
+tests/property/test_seed_determinism.py::test_new_seed_is_unpredictable_and_usable PASSED [ 25%]
+tests/property/test_seed_determinism.py::test_rough_uniformity_sanity_within_loose_bounds PASSED [ 26%]
+tests/test_smoke.py::test_package_importable PASSED                      [ 28%]
+tests/unit/test_config.py::test_defaults_match_spec_constants PASSED     [ 30%]
+tests/unit/test_config.py::test_file_then_overrides_precedence PASSED    [ 32%]
+tests/unit/test_config.py::test_missing_config_file_is_not_an_error PASSED [ 33%]
+tests/unit/test_config.py::test_invalid_json_reports_path PASSED         [ 35%]
+tests/unit/test_config.py::test_schema_rejects_invalid_values PASSED     [ 37%]
+tests/unit/test_config.py::test_semantic_overrides_flag_product_changes PASSED [ 39%]
+tests/unit/test_config.py::test_config_round_trip_through_mapping PASSED [ 41%]
+tests/unit/test_fixtures.py::test_genre_fixture_records_pass_schema PASSED [ 42%]
+tests/unit/test_fixtures.py::test_album_fixture_records_pass_schema PASSED [ 44%]
+tests/unit/test_fixtures.py::test_critic_source_fixture_passes_schema PASSED [ 46%]
+tests/unit/test_fixtures.py::test_critic_rating_fixture_rows_pass_schema PASSED [ 48%]
+tests/unit/test_fixtures.py::test_conftest_sample_fixtures_are_available PASSED [ 50%]
+tests/unit/test_schemas.py::test_all_required_schemas_are_loaded_and_versioned PASSED [ 51%]
+tests/unit/test_schemas.py::test_product_semantic_fields_flagged PASSED  [ 53%]
+tests/unit/test_schemas.py::test_unknown_extra_fields_are_forward_compatible PASSED [ 55%]
+tests/unit/test_schemas.py::test_schema_error_on_missing_schema_name PASSED [ 57%]
+tests/unit/test_schemas.py::test_genre_valid PASSED                      [ 58%]
+tests/unit/test_schemas.py::test_genre_missing_required_field PASSED     [ 60%]
+tests/unit/test_schemas.py::test_genre_bad_type_and_pattern PASSED       [ 62%]
+tests/unit/test_schemas.py::test_album_valid_and_year_bounds PASSED      [ 64%]
+tests/unit/test_schemas.py::test_album_identity_enum PASSED              [ 66%]
+tests/unit/test_schemas.py::test_critic_source_valid_and_date_format PASSED [ 67%]
+tests/unit/test_schemas.py::test_critic_rating_valid_and_number_type PASSED [ 69%]
+tests/unit/test_schemas.py::test_plan_valid_and_nested_required_field PASSED [ 71%]
+tests/unit/test_schemas.py::test_run_journal_transition_enum PASSED      [ 73%]
+tests/unit/test_schemas.py::test_pick_history_index_bounds PASSED        [ 75%]
+tests/unit/test_schemas.py::test_album_history_datetime_format PASSED    [ 76%]
+tests/unit/test_schemas.py::test_delivery_receipt_enum_and_required PASSED [ 78%]
+tests/unit/test_schemas.py::test_config_valid_and_nested_enum PASSED     [ 80%]
+tests/unit/test_schemas.py::test_get_schema_unknown_raises_key_error PASSED [ 82%]
+tests/unit/test_sqlite_history.py::test_fresh_database_migrates_to_v1 PASSED [ 83%]
+tests/unit/test_sqlite_history.py::test_migration_is_idempotent_on_reopen PASSED [ 85%]
+tests/unit/test_sqlite_history.py::test_memory_database_works PASSED     [ 87%]
+tests/unit/test_sqlite_history.py::test_journal_append_and_read_back PASSED [ 89%]
+tests/unit/test_sqlite_history.py::test_pick_history_and_cooldown_indices PASSED [ 91%]
+tests/unit/test_sqlite_history.py::test_album_history_exclusion_set PASSED [ 92%]
+tests/unit/test_sqlite_history.py::test_delivery_receipt_round_trip PASSED [ 94%]
+tests/unit/test_sqlite_history.py::test_transaction_rolls_back_on_constraint_violation PASSED [ 96%]
+tests/unit/test_sqlite_history.py::test_file_persistence_across_reopen PASSED [ 98%]
+tests/unit/test_sqlite_history.py::test_adapter_is_append_only_no_delete_methods PASSED [100%]
+
+============================== 56 passed in 0.18s ==============================
+
+=== ruff check ===
+All checks passed!
+
+=== git diff --check ===
+clean
