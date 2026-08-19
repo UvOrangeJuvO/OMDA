@@ -98,3 +98,55 @@ It must not write production code or enter G1. It should create a new repair com
 **CHANGES_REQUESTED**
 
 Open blocking findings: G0-001 (P1), G0-002 (P1). G0 is not accepted, must not be merged into `main`, and G1 must not begin.
+
+---
+
+## Re-review 1 — candidate `7bec77f3055c9afdad0f61593e985bb1eda8acfc`
+
+### Re-review identity and method
+
+- Original base: `8a2e82072afca8fe7217c9fc79288d99a94e01ce`
+- Original candidate: `488860b497f3a179a12ce38082d337b48dda6e2f`
+- Reviewer verdict commit: `13c57f433a3fdff626c3497d9ce5784f8490f358`
+- Repair candidate: `7bec77f3055c9afdad0f61593e985bb1eda8acfc`
+- Repair report: `reviews/stage-00/REPAIR_REPORT.md`
+
+The Reviewer inspected the full `13c57f4..7bec77f` repair delta and regressed the original `8a2e820..7bec77f` range. The repair commit contains only `.gitignore` and governance artifacts, has no whitespace errors, resolves from the original base through the prior candidate and verdict, and leaves `git status --short` empty. `git check-ignore -v .workbuddy/memory/2026-08-19.md` resolves to `.gitignore:4:.workbuddy/`.
+
+### Original finding status
+
+| Finding | Re-review status | Evidence |
+|---|---|---|
+| G0-001 (P1) Port contracts after Orchestrator | **CLOSED for the original defect** | T1.6 now defines minimum Ports/fakes before G2; T2.6 explicitly tests against fakes |
+| G0-002 (P1) Core/storage coupling and unsafe rollback | **OPEN** | Core input boundary is corrected, but T1.4 still says ``Rollback: `var/` 可删可重建`` at approximately line 199 |
+| G0-003 (P2) WorkBuddy memory policy | **CLOSED** | `.workbuddy/` ignored; worktree clean; directory not deleted to hide it |
+| G0-004 (P2) Risk inconsistency | **CLOSED** | R-010 is consistently P1; OD-4 now points to R-006/R-005 |
+| G0-005 (P2) Owner/ADR overload | **CLOSED** | Open decisions now distinguish Owner, contract/ADR and reversible implementation choices |
+
+### [P1] G0-002 remains open — T1.4 still authorizes deletion of real runtime history
+
+- Location: `governance/IMPLEMENTATION_PLAN.md`, T1.4 rollback (approximately line 199)
+- Evidence: the revised B.5 and T2.6 correctly protect official history and recovery evidence, but T1.4 still states ``Rollback：`var/` 可删可重建（非真源）``. `var/` is explicitly planned to contain official pick history, Album history, delivery receipts and the run journal, so “not community source of truth” does not make it disposable.
+- Repair-report discrepancy: `REPAIR_REPORT.md` says the plan no longer contains any real-history deletion/reset language, which is factually incorrect for the reviewed SHA.
+- Required correction: replace the T1.4 rollback with the same protected-state rule already used in B.5/T2.6. Only a path explicitly created as a disposable test database may be rebuilt. Update the repair report to acknowledge the missed line rather than claiming the first repair fully closed it.
+- Acceptance test: a repository search for reset/delete/rebuild language finds no instruction treating real `var/` history or recovery evidence as disposable.
+
+### [P1] G0-006 — Port dependency direction and Adapter ownership remain internally inconsistent
+
+- Location: `governance/IMPLEMENTATION_PLAN.md`, B.9, T1.4/T1.6, T3.1 and T4.1–T4.3
+- Evidence:
+  1. B.9 still draws `Core → Ports ← Adapters`, while the corrected T2.4 says the Orchestrator reads through `HistoryPort` and passes immutable values into Core. For this design, the dependency is `Orchestrator → Core` and `Orchestrator → Ports ← Adapters`; pure Core should not depend on LLM, Delivery, History or data-source Ports.
+  2. T1.4 implements the concrete SQLite runtime layer before T1.6 defines `HistoryPort`; T1.4 has no dependency on T1.6. This reverses the stated “contract before implementation” direction.
+  3. T3.1 claims concrete implementations for LLM Provider, Markdown and PushPlus, while G4/T4.1–T4.3 separately assigns those same implementations. This creates duplicate Gate ownership and ambiguous acceptance responsibility.
+- Impact: G1 may design SQLite around its own abstraction and retrofit `HistoryPort`; G3 and G4 may both implement the same adapters; architecture tests will not know whether Core is allowed to call Ports.
+- Required correction:
+  - Change the dependency diagram/text so Orchestrator depends on both pure Core and Port contracts; Adapters implement Ports; Core consumes/returns domain values and does not call external Ports.
+  - Reorder or renumber G1 so minimal Port contracts exist before concrete SQLite implementation, and make the SQLite task explicitly implement the relevant Port contract.
+  - Restrict G3 concrete implementation scope to data/enrichment/browser/critic adapters. Keep LLM generation, Markdown output and PushPlus Delivery implementations solely in G4. Shared adapter conventions may be established earlier, but implementation ownership must be unique.
+- Acceptance test: the task dependency graph places each concrete implementation after its Port; every Adapter has exactly one implementation Gate; Core has no dependency arrow to external Ports.
+
+### Re-review verdict
+
+**CHANGES_REQUESTED**
+
+The repair substantially improves the plan and correctly closes G0-001, G0-003, G0-004 and G0-005. G0-002 remains open and G0-006 is a new blocking consistency finding. The next repair should be a narrow governance-only commit; it must not enter G1 or modify production code.
