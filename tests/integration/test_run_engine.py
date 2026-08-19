@@ -37,7 +37,6 @@ from omda.ports.errors import (
     SourceUnavailableError,
     StateCommitFailureError,
 )
-from omda.seed import make_rng
 from omda.storage import SqliteHistory
 
 AT = "2026-08-19T09:00:00+00:00"
@@ -66,7 +65,9 @@ def _album_source() -> FakeAlbumSource:
     return FakeAlbumSource({g.genre_id: _albums(g.genre_id) for g in _genres()})
 
 
-def _engine(history, delivery=None, album_source=None, llm=None) -> RunEngine:
+def _engine(
+    history, delivery=None, album_source=None, llm=None, seed: str = "run-test-seed"
+) -> RunEngine:
     return RunEngine(
         config=load_config(),
         history=history,
@@ -74,7 +75,7 @@ def _engine(history, delivery=None, album_source=None, llm=None) -> RunEngine:
         album_source=album_source or _album_source(),
         llm=llm or FakeLLM("Explanatory text."),
         delivery=delivery or FakeDelivery(),
-        rng=make_rng("run-test-seed"),
+        seed=seed,
     )
 
 
@@ -298,3 +299,59 @@ def test_exact_replay_of_completed_run_does_not_rewrite_history() -> None:
     assert second.state == FAILED  # genres now in cooldown; no double-commit
     assert history.latest_pick_index() == 3  # unchanged from the first commit
     assert len(history.excluded_album_identities()) == 9
+
+
+# --- G2-001: global ordered pick indices --------------------------------------
+
+
+@pytest.mark.parametrize("factory", HISTORY_FACTORIES)
+def test_three_consecutive_runs_commit_global_indices(factory) -> None:
+    history = factory()
+    # A pool large enough to satisfy cooldown 30 for 9 successive picks.
+    many_genres = [GenreRef(f"g{i:02d}", f"Genre {i}", f"F{i % 3}") for i in range(12)]
+    album_source = FakeAlbumSource({g.genre_id: _albums(g.genre_id) for g in many_genres})
+    genre_source = FakeGenreSource(many_genres)
+    picks_seen: list[int] = []
+    for run_index in range(1, 4):
+        engine = RunEngine(
+            config=load_config(),
+            history=history,
+            genre_source=genre_source,
+            album_source=album_source,
+            llm=FakeLLM("Explanatory text."),
+            delivery=FakeDelivery(),
+            seed=f"run-seed-{run_index}",
+        )
+        outcome = engine.run(f"run-{run_index}")
+        assert outcome.state == COMPLETE, f"run {run_index} failed"
+        assert outcome.plan is not None
+        picks_seen.extend(p.pick_index for p in outcome.plan.genre_picks())
+    # Runs commit indices 1-3, 4-6, 7-9 respectively (global, never restarting).
+    assert picks_seen == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert history.latest_pick_index() == 9
+    assert len(history.excluded_album_identities()) == 27
+
+
+def test_historical_latest_pick_from_absent_genre_advances_global_index() -> None:
+    # A historical pick for a Genre no longer visible in the current source must
+    # still advance the next global index (G2-001: never infer from visible set).
+    history = InMemoryHistory()
+    engine = _engine(history)
+    # Simulate a historical committed pick 30 for a Genre absent from the source.
+    history.record_pick_directly(30, "ghost-genre")
+
+    outcome = engine.run("run-1")
+    assert outcome.state == COMPLETE
+    assert outcome.plan is not None
+    assert [p.pick_index for p in outcome.plan.genre_picks()] == [31, 32, 33]
+    assert history.latest_pick_index() == 33
+
+
+@pytest.mark.parametrize("factory", HISTORY_FACTORIES)
+def test_failed_run_consumes_no_pick_indices(factory) -> None:
+    history = factory()
+    engine = _engine(history, llm=FailingLLM())
+    outcome = engine.run("run-1")
+    assert outcome.state == FAILED
+    assert history.latest_pick_index() == 0  # nothing consumed
+    assert history.excluded_album_identities() == frozenset()

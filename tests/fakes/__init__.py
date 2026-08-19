@@ -121,6 +121,12 @@ class InMemoryHistory:
     def find_delivery_receipt(self, idempotency_key: str) -> DeliveryReceipt | None:
         return self._receipts.get(idempotency_key)
 
+    # -- test-only helpers (not part of HistoryPort) ---------------------------
+
+    def record_pick_directly(self, pick_index: int, genre_id: str) -> None:
+        """Seed a historical committed pick (test fixture convenience)."""
+        self._picks.append(GenrePickRecord(pick_index, genre_id))
+
 
 class FakeGenreSource:
     def __init__(self, genres: list[GenreRef] | None = None) -> None:

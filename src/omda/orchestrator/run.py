@@ -17,12 +17,13 @@ blind re-delivery. All retry paths are bounded.
 
 from __future__ import annotations
 
-import random
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from omda.config import Config
+from omda.config import Config, config_to_dict
 from omda.core.album import dedupe_candidates, filter_candidates
 from omda.core.genre import select_daily_genres
 from omda.core.rating import rank_candidates
@@ -50,6 +51,7 @@ from omda.ports.errors import (
 from omda.ports.genre import GenreSource
 from omda.ports.history import HistoryPort
 from omda.ports.llm import LLM
+from omda.seed import make_rng
 
 MAX_PAYLOAD_LENGTH = 4000
 MAX_RUN_ATTEMPTS = 2
@@ -76,6 +78,12 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+def _config_fingerprint(config: Config) -> str:
+    """Deterministic fingerprint of the effective configuration (G2-006)."""
+    raw = json.dumps(config_to_dict(config), sort_keys=True, default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
 @dataclass(frozen=True)
 class SelectedAlbum:
     album_id: str
@@ -90,13 +98,23 @@ class SelectedAlbum:
 
 @dataclass(frozen=True)
 class Plan:
-    """The selected 3x3 recommendation plan (deterministic Core output)."""
+    """The selected 3x3 recommendation plan (deterministic Core output).
+
+    ``pick_records`` carries the EXACT ordered official GenrePickRecord values
+    (global indices starting at ``latest_pick_index + 1``); recovery never
+    regenerates local 1..N indices (G2-001).
+    """
 
     run_id: str
     genres: tuple[GenreRef, ...]
     albums: tuple[SelectedAlbum, ...]
+    pick_records: tuple[GenrePickRecord, ...] = ()
 
     def genre_picks(self) -> list[GenrePickRecord]:
+        if self.pick_records:
+            return list(self.pick_records)
+        # Fallback for plans constructed without explicit records (never used by
+        # the Orchestrator): preserve deterministic 1..N order only as a last resort.
         return [GenrePickRecord(i + 1, g.genre_id) for i, g in enumerate(self.genres)]
 
     def album_identities(self) -> list[AlbumIdentity]:
@@ -113,8 +131,12 @@ class Plan:
     def digest(self) -> dict[str, Any]:
         return {
             "genres": [
-                {"genre_id": g.genre_id, "pick_index": i + 1, "family": g.family}
-                for i, g in enumerate(self.genres)
+                {
+                    "genre_id": g.genre_id,
+                    "pick_index": pick.pick_index,
+                    "family": g.family,
+                }
+                for g, pick in zip(self.genres, self.genre_picks(), strict=True)
             ],
             "albums": [
                 {
@@ -137,6 +159,9 @@ class Plan:
             GenreRef(g["genre_id"], g["genre_id"], g.get("family", ""))
             for g in digest["genres"]
         )
+        pick_records = tuple(
+            GenrePickRecord(g["pick_index"], g["genre_id"]) for g in digest["genres"]
+        )
         albums = tuple(
             SelectedAlbum(
                 album_id=a["album_id"],
@@ -150,7 +175,12 @@ class Plan:
             )
             for a in digest["albums"]
         )
-        return cls(run_id=run_id, genres=genres, albums=albums)
+        return cls(
+            run_id=run_id,
+            genres=genres,
+            albums=albums,
+            pick_records=pick_records,
+        )
 
 
 @dataclass(frozen=True)
@@ -184,7 +214,8 @@ class RunEngine:
         album_source: AlbumSource,
         llm: LLM,
         delivery: Delivery,
-        rng: random.Random,
+        seed: str = "default",
+        input_version: str = "unknown",
         critic_rows: dict[str, list[CriticRatingRow]] | None = None,
         rating_weights: dict[str, float] | None = None,
         missing_policy: str = "skip",
@@ -195,7 +226,12 @@ class RunEngine:
         self._album_source = album_source
         self._llm = llm
         self._delivery = delivery
-        self._rng = rng
+        # G2-006: the RNG is bound to the recorded seed; journaling the seed must
+        # not consume a draw, so the generator starts from the same provenance.
+        self._seed = seed
+        self._input_version = input_version
+        self._config_version = _config_fingerprint(config)
+        self._rng = make_rng(seed)
         self._critic_rows = critic_rows or {}
         self._rating_weights = rating_weights or {}
         self._missing_policy = missing_policy
@@ -233,18 +269,31 @@ class RunEngine:
         self._history.append_journal(run_id, transition, utc_now(), detail)
 
     def _run_once(self, run_id: str) -> RunOutcome:
-        self._append(run_id, PLANNED, {"seed": str(self._rng.random())})
+        # G2-006: record provenance (seed/input/config versions) WITHOUT consuming
+        # the RNG — the recorded seed is the one the generator was built from.
+        self._append(
+            run_id,
+            PLANNED,
+            {
+                "seed": self._seed,
+                "input_version": self._input_version,
+                "config_version": self._config_version,
+            },
+        )
         try:
-            # PLAN: read immutable history snapshot, then let the Core choose.
+            # PLAN: authoritative global next index comes from committed history
+            # (G2-001), never inferred from the currently visible Genre source.
             genres = self._genre_source.list_eligible_genres()
             pick_history = {
                 g.genre_id: self._history.cooldown_pick_indices(g.genre_id) for g in genres
             }
+            global_start = self._history.latest_pick_index() + 1
             chosen = select_daily_genres(
                 genres,
                 self._config.daily_genre_count,
                 self._rng,
                 pick_history=pick_history,
+                global_start_index=global_start,
                 cooldown_picks=self._config.genre_cooldown_picks,
             )
 
@@ -259,7 +308,13 @@ class RunEngine:
             # SELECT: deterministic Core selection (3x3), permanent exclusion +
             # within-run dedup + rating + year constraints.
             exclusions = self._history.excluded_album_identities()
-            plan = self._select(run_id, chosen, candidates_by_genre, exclusions)
+            plan = self._select(run_id, chosen, global_start, candidates_by_genre, exclusions)
+            # Validate the planned sequence BEFORE delivery: an index conflict
+            # must never first appear after external delivery (G2-001).
+            for pick in plan.genre_picks():
+                if pick.pick_index in pick_history.get(pick.genre_id, ()):
+                    self._append(run_id, FAILED, {"reason": "planned pick collides with history"})
+                    return RunOutcome(run_id=run_id, state=FAILED)
             self._append(run_id, SELECTED, plan.digest())
 
             # GENERATE + VALIDATE.
@@ -286,9 +341,16 @@ class RunEngine:
         self,
         run_id: str,
         chosen: list[GenreRef],
+        global_start_index: int,
         candidates_by_genre: dict[str, list[AlbumCandidate]],
         exclusions: frozenset[AlbumIdentity],
     ) -> Plan:
+        # Exact ordered official pick records (G2-001): position i receives global
+        # index global_start_index + i; never regenerated locally afterwards.
+        pick_records = tuple(
+            GenrePickRecord(global_start_index + i, genre.genre_id)
+            for i, genre in enumerate(chosen)
+        )
         selected_albums: list[SelectedAlbum] = []
         already_selected: list[AlbumCandidate] = []
         for genre in chosen:
@@ -317,7 +379,12 @@ class RunEngine:
                         identity_confidence=identity.identity_confidence if identity else "exact",
                     )
                 )
-        return Plan(run_id=run_id, genres=tuple(chosen), albums=tuple(selected_albums))
+        return Plan(
+            run_id=run_id,
+            genres=tuple(chosen),
+            albums=tuple(selected_albums),
+            pick_records=pick_records,
+        )
 
     def _generate(self, plan: Plan) -> str:
         packet = FactPacket(run_id=plan.run_id, plan=plan)
