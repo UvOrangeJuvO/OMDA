@@ -7,7 +7,10 @@ this module with richer domain logic, but the Port-facing shapes stay minimal.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -43,19 +46,39 @@ class AlbumCandidate:
 
 
 @dataclass(frozen=True)
+class GenrePickRecord:
+    """One official genre pick inside an atomic history commit."""
+
+    pick_index: int
+    genre_id: str
+
+
+@dataclass(frozen=True)
 class JournalEntry:
-    """One run-journal transition (SPEC §4)."""
+    """One run-journal transition (SPEC §4).
+
+    ``detail`` is exposed as an immutable read-only mapping so callers cannot
+    mutate a durable journal snapshot (G1-004).
+    """
 
     journal_id: int
     run_id: str
     transition: str
     at: str
-    detail: dict | None = None
+    detail: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.detail is not None and not isinstance(self.detail, MappingProxyType):
+            object.__setattr__(self, "detail", MappingProxyType(dict(self.detail)))
 
 
 @dataclass(frozen=True)
 class DeliveryReceipt:
-    """Idempotent delivery evidence (SPEC §4)."""
+    """Immutable delivery evidence (SPEC §4, G1-002).
+
+    Receipts are authoritative per idempotency key: an exact replay is a no-op and
+    a conflicting write fails closed; a success receipt can never be overwritten.
+    """
 
     run_id: str
     idempotency_key: str
@@ -69,6 +92,7 @@ __all__ = [
     "AlbumCandidate",
     "AlbumIdentity",
     "DeliveryReceipt",
+    "GenrePickRecord",
     "GenreRef",
     "JournalEntry",
 ]

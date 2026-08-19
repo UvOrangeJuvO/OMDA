@@ -9,6 +9,7 @@ from __future__ import annotations
 import inspect
 from typing import Protocol
 
+import pytest
 from tests.fakes import (
     FakeAlbumSource,
     FakeDelivery,
@@ -35,7 +36,13 @@ from omda.ports import (
     StateCommitFailureError,
     ValidationFailureError,
 )
-from omda.ports.domain import AlbumCandidate, AlbumIdentity, DeliveryReceipt, GenreRef
+from omda.ports.domain import (
+    AlbumCandidate,
+    AlbumIdentity,
+    DeliveryReceipt,
+    GenrePickRecord,
+    GenreRef,
+)
 
 EXPECTED_PORTS = {
     "GenreSource": GenreSource,
@@ -94,14 +101,14 @@ def test_all_ports_define_minimal_method_sets() -> None:
     assert _protocol_methods(LLM) == {"generate_narrative"}
     assert _protocol_methods(Delivery) == {"deliver"}
     # HistoryPort intentionally hosts journal + history + receipts (G0-007 decision).
+    # Official history has a single atomic commit path only (G1-001).
     assert _protocol_methods(HistoryPort) == {
         "append_journal",
         "journal_after",
         "latest_pick_index",
-        "record_genre_pick",
         "cooldown_pick_indices",
-        "record_album",
         "excluded_album_identities",
+        "commit_history",
         "save_delivery_receipt",
         "find_delivery_receipt",
     }
@@ -122,21 +129,24 @@ def test_inmemory_history_satisfies_history_port_shape() -> None:
     assert missing == set()
 
 
-def test_inmemory_history_journal_and_idempotent_receipts() -> None:
+def test_inmemory_history_journal_and_atomic_commit() -> None:
     history = InMemoryHistory()
     e1 = history.append_journal("run-1", "PLANNED", "2026-08-19T09:00:00+00:00")
     e2 = history.append_journal("run-1", "DELIVERED", "2026-08-19T09:05:00+00:00")
     assert e1.journal_id == 1 and e2.journal_id == 2
     assert [e.transition for e in history.journal_after("run-1", 1)] == ["DELIVERED"]
 
-    history.record_genre_pick("run-1", "ambient", 1, "2026-08-19T09:06:00+00:00")
-    history.record_genre_pick("run-1", "jazz", 2, "2026-08-19T09:06:00+00:00")
-    assert history.latest_pick_index() == 2
+    picks = [
+        GenrePickRecord(1, "ambient"),
+        GenrePickRecord(2, "jazz"),
+        GenrePickRecord(3, "krautrock"),
+    ]
+    identities = [AlbumIdentity(f"alb-{i}") for i in range(1, 4)]
+    history.commit_history("run-1", picks, identities, "2026-08-19T09:06:00+00:00")
+    assert history.latest_pick_index() == 3
     assert history.cooldown_pick_indices("ambient") == [1]
-
-    identity = AlbumIdentity("alb-1", canonical_id="mb-1", canonical_source="musicbrainz")
-    history.record_album("run-1", identity, "2026-08-19T09:06:00+00:00")
-    assert history.excluded_album_identities() == {identity}
+    assert history.excluded_album_identities() == frozenset(identities)
+    assert [e.transition for e in history.journal_after("run-1", 2)] == ["HISTORY_COMMITTED"]
 
     receipt = DeliveryReceipt(
         run_id="run-1",
@@ -150,12 +160,60 @@ def test_inmemory_history_journal_and_idempotent_receipts() -> None:
     assert history.find_delivery_receipt("missing") is None
 
 
+def test_inmemory_history_commit_is_all_or_nothing() -> None:
+    history = InMemoryHistory()
+    existing = AlbumIdentity("alb-9")
+    history.commit_history("run-0", [], [existing], "2026-08-19T09:00:00+00:00")
+
+    from omda.ports.errors import InvariantFailureError
+
+    picks = [GenrePickRecord(1, "ambient"), GenrePickRecord(2, "jazz")]
+    conflicting = [AlbumIdentity("alb-9"), AlbumIdentity("alb-10")]  # alb-9 duplicates
+    try:
+        history.commit_history("run-1", picks, conflicting, "2026-08-19T09:06:00+00:00")
+        raise AssertionError("expected InvariantFailureError")
+    except InvariantFailureError:
+        pass
+    # Nothing changed: picks not written, journal has no HISTORY_COMMITTED for run-1.
+    assert history.latest_pick_index() == 0
+    assert history.cooldown_pick_indices("ambient") == []
+    assert history.journal_after("run-1", 0) == []
+    assert history.excluded_album_identities() == frozenset({existing})
+
+
 def test_fake_delivery_is_idempotent() -> None:
     delivery = FakeDelivery()
     first = delivery.deliver("payload", "run-1/key")
     second = delivery.deliver("payload", "run-1/key")
     assert first.status == "ok" and second.status == "ok"
     assert len(delivery.delivered) == 1  # same key never delivers a second external push
+
+
+def test_inmemory_receipts_immutable_exact_replay_and_conflict() -> None:
+    history = InMemoryHistory()
+    ok_receipt = DeliveryReceipt(
+        run_id="run-1",
+        idempotency_key="k",
+        delivered_at="2026-08-19T09:05:00+00:00",
+        channel="markdown",
+        status="ok",
+    )
+    assert history.save_delivery_receipt(ok_receipt) == ok_receipt
+    # Exact replay: no-op, original preserved.
+    assert history.save_delivery_receipt(ok_receipt) == ok_receipt
+    # Success -> failed overwrite attempt must fail closed.
+    failed_receipt = DeliveryReceipt(
+        run_id="run-1",
+        idempotency_key="k",
+        delivered_at="2026-08-19T09:06:00+00:00",
+        channel="markdown",
+        status="failed",
+    )
+    from omda.ports.errors import InvariantFailureError
+
+    with pytest.raises(InvariantFailureError):
+        history.save_delivery_receipt(failed_receipt)
+    assert history.find_delivery_receipt("k") == ok_receipt  # original unchanged
 
 
 def test_fake_genre_source_respects_eligibility() -> None:

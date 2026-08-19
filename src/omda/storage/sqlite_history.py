@@ -1,12 +1,15 @@
-"""SQLite implementation of HistoryPort (T1.5).
+"""SQLite implementation of HistoryPort (T1.5; repaired G1-001/G1-002/G1-004).
 
 Runtime state only — official history, run journal, delivery receipts and caches
 live here. This is NEVER the community source of truth (SPEC §3.3): community
 data stays in Git-reviewable text under ``data/``.
 
-Data protection: this adapter is append/read only — there are no delete, update,
-drop or reset operations. Real history/journal/receipt/recovery records are
-protected user state; rollback is backup/migration/recovery, never deletion.
+Data protection:
+- append/read only for official history — the ONLY write path is
+  ``commit_history``, an all-or-nothing unit of work (G1-001);
+- delivery receipts are immutable per idempotency key (G1-002) — no
+  INSERT OR REPLACE; conflicts fail closed with ``InvariantFailureError``;
+- there are no delete, update, drop or reset operations.
 
 Transactions: every mutating method runs inside a single SQLite transaction
 (autocommit via context manager) so partial writes cannot be observed.
@@ -20,7 +23,13 @@ import json
 import sqlite3
 from pathlib import Path
 
-from omda.ports.domain import AlbumIdentity, DeliveryReceipt, JournalEntry
+from omda.ports.domain import (
+    AlbumIdentity,
+    DeliveryReceipt,
+    GenrePickRecord,
+    JournalEntry,
+)
+from omda.ports.errors import InvariantFailureError
 
 _SCHEMA_VERSION = 1
 
@@ -115,7 +124,7 @@ class SqliteHistory:
         with self._conn as conn:
             cursor = conn.execute(
                 "INSERT INTO run_journal (run_id, transition, at, detail) VALUES (?, ?, ?, ?)",
-                (run_id, transition, at, json.dumps(detail) if detail is not None else None),
+                (run_id, transition, at, json.dumps(dict(detail)) if detail is not None else None),
             )
             journal_id = int(cursor.lastrowid)
         return JournalEntry(
@@ -144,7 +153,7 @@ class SqliteHistory:
             for row in rows
         ]
 
-    # -- official genre pick history (cooldown source) -------------------------
+    # -- official history reads -------------------------------------------------
 
     def latest_pick_index(self) -> int:
         with self._conn as conn:
@@ -152,16 +161,6 @@ class SqliteHistory:
                 "SELECT COALESCE(MAX(pick_index), 0) AS m FROM genre_pick_history"
             ).fetchone()
         return int(row["m"])
-
-    def record_genre_pick(
-        self, run_id: str, genre_id: str, pick_index: int, committed_at: str
-    ) -> None:
-        with self._conn as conn:
-            conn.execute(
-                "INSERT INTO genre_pick_history (pick_index, run_id, genre_id, committed_at) "
-                "VALUES (?, ?, ?, ?)",
-                (pick_index, run_id, genre_id, committed_at),
-            )
 
     def cooldown_pick_indices(self, genre_id: str) -> list[int]:
         with self._conn as conn:
@@ -172,30 +171,13 @@ class SqliteHistory:
             ).fetchall()
         return [int(row["pick_index"]) for row in rows]
 
-    # -- official album history (permanent exclusion) --------------------------
-
-    def record_album(self, run_id: str, identity: AlbumIdentity, recommended_at: str) -> None:
-        with self._conn as conn:
-            conn.execute(
-                "INSERT INTO album_history (album_id, canonical_id, canonical_source, "
-                "identity_confidence, run_id, recommended_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    identity.album_id,
-                    identity.canonical_id,
-                    identity.canonical_source,
-                    identity.identity_confidence,
-                    run_id,
-                    recommended_at,
-                ),
-            )
-
-    def excluded_album_identities(self) -> set[AlbumIdentity]:
+    def excluded_album_identities(self) -> frozenset[AlbumIdentity]:
         with self._conn as conn:
             rows = conn.execute(
                 "SELECT album_id, canonical_id, canonical_source, identity_confidence "
                 "FROM album_history"
             ).fetchall()
-        return {
+        return frozenset(
             AlbumIdentity(
                 album_id=row["album_id"],
                 canonical_id=row["canonical_id"],
@@ -203,24 +185,85 @@ class SqliteHistory:
                 identity_confidence=row["identity_confidence"],
             )
             for row in rows
-        }
+        )
 
-    # -- delivery receipts (idempotency) ---------------------------------------
+    # -- ATOMIC official history commit (G1-001: the ONLY write path) ----------
 
-    def save_delivery_receipt(self, receipt: DeliveryReceipt) -> None:
+    def commit_history(
+        self,
+        run_id: str,
+        genre_picks: list[GenrePickRecord],
+        album_identities: list[AlbumIdentity],
+        committed_at: str,
+    ) -> None:
         with self._conn as conn:
+            for pick in genre_picks:
+                conn.execute(
+                    "INSERT INTO genre_pick_history (pick_index, run_id, genre_id, committed_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (pick.pick_index, run_id, pick.genre_id, committed_at),
+                )
+            for identity in album_identities:
+                conn.execute(
+                    "INSERT INTO album_history (album_id, canonical_id, canonical_source, "
+                    "identity_confidence, run_id, recommended_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        identity.album_id,
+                        identity.canonical_id,
+                        identity.canonical_source,
+                        identity.identity_confidence,
+                        run_id,
+                        committed_at,
+                    ),
+                )
             conn.execute(
-                "INSERT OR REPLACE INTO delivery_receipt "
-                "(idempotency_key, run_id, delivered_at, channel, status, target) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO run_journal (run_id, transition, at, detail) VALUES (?, ?, ?, ?)",
                 (
-                    receipt.idempotency_key,
-                    receipt.run_id,
-                    receipt.delivered_at,
-                    receipt.channel,
-                    receipt.status,
-                    receipt.target,
+                    run_id,
+                    "HISTORY_COMMITTED",
+                    committed_at,
+                    json.dumps({"picks": len(genre_picks), "albums": len(album_identities)}),
                 ),
+            )
+        # Any exception above rolls back all three areas inside the `with` block.
+
+    # -- delivery receipts (immutable idempotency evidence, G1-002) -------------
+
+    def save_delivery_receipt(self, receipt: DeliveryReceipt) -> DeliveryReceipt:
+        with self._conn as conn:
+            row = conn.execute(
+                "SELECT run_id, delivered_at, channel, status, target "
+                "FROM delivery_receipt WHERE idempotency_key = ?",
+                (receipt.idempotency_key,),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO delivery_receipt "
+                    "(idempotency_key, run_id, delivered_at, channel, status, target) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        receipt.idempotency_key,
+                        receipt.run_id,
+                        receipt.delivered_at,
+                        receipt.channel,
+                        receipt.status,
+                        receipt.target,
+                    ),
+                )
+                return receipt
+            existing = DeliveryReceipt(
+                run_id=row["run_id"],
+                idempotency_key=receipt.idempotency_key,
+                delivered_at=row["delivered_at"],
+                channel=row["channel"],
+                status=row["status"],
+                target=row["target"],
+            )
+            if existing == receipt:
+                return existing  # exact replay: no-op
+            raise InvariantFailureError(
+                f"delivery receipt conflict for key {receipt.idempotency_key!r}; "
+                "evidence is immutable (G1-002)"
             )
 
     def find_delivery_receipt(self, idempotency_key: str) -> DeliveryReceipt | None:

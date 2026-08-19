@@ -11,6 +11,7 @@ from omda.ports.domain import (
     AlbumCandidate,
     AlbumIdentity,
     DeliveryReceipt,
+    GenrePickRecord,
     GenreRef,
     JournalEntry,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "DeliveryReceipt",
     "DomainError",
     "GenerationFailureError",
+    "GenrePickRecord",
     "GenreRef",
     "GenreSource",
     "HistoryPort",

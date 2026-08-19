@@ -3,6 +3,9 @@
 These fakes are contract fixtures, not production code: they satisfy the Port
 shapes so Orchestrator and contract tests run without live RYM/MusicBrainz/
 LLM/PushPlus (SPEC §3.2: tests use fixtures/fakes for ordinary CI).
+
+Semantics must match the SQLite adapter exactly — especially all-or-nothing
+``commit_history`` (G1-001) and immutable delivery receipts (G1-002).
 """
 
 from __future__ import annotations
@@ -11,9 +14,11 @@ from omda.ports.domain import (
     AlbumCandidate,
     AlbumIdentity,
     DeliveryReceipt,
+    GenrePickRecord,
     GenreRef,
     JournalEntry,
 )
+from omda.ports.errors import InvariantFailureError
 
 
 class InMemoryHistory:
@@ -22,7 +27,7 @@ class InMemoryHistory:
     def __init__(self) -> None:
         self._journal: list[JournalEntry] = []
         self._next_journal_id = 1
-        self._picks: list[tuple[int, str]] = []  # (pick_index, genre_id)
+        self._picks: list[GenrePickRecord] = []
         self._albums: dict[str, AlbumIdentity] = {}
         self._receipts: dict[str, DeliveryReceipt] = {}
 
@@ -50,24 +55,54 @@ class InMemoryHistory:
         ]
 
     def latest_pick_index(self) -> int:
-        return max((idx for idx, _ in self._picks), default=0)
-
-    def record_genre_pick(
-        self, run_id: str, genre_id: str, pick_index: int, committed_at: str
-    ) -> None:
-        self._picks.append((pick_index, genre_id))
+        return max((p.pick_index for p in self._picks), default=0)
 
     def cooldown_pick_indices(self, genre_id: str) -> list[int]:
-        return [idx for idx, gid in self._picks if gid == genre_id]
+        return [p.pick_index for p in self._picks if p.genre_id == genre_id]
 
-    def record_album(self, run_id: str, identity: AlbumIdentity, recommended_at: str) -> None:
-        self._albums[identity.album_id] = identity
+    def excluded_album_identities(self) -> frozenset[AlbumIdentity]:
+        return frozenset(self._albums.values())
 
-    def excluded_album_identities(self) -> set[AlbumIdentity]:
-        return set(self._albums.values())
+    def commit_history(
+        self,
+        run_id: str,
+        genre_picks: list[GenrePickRecord],
+        album_identities: list[AlbumIdentity],
+        committed_at: str,
+    ) -> None:
+        # All-or-nothing (G1-001): validate against the current state first; only
+        # if every row can be inserted do we mutate all three areas.
+        for pick in genre_picks:
+            if any(p.pick_index == pick.pick_index for p in self._picks):
+                raise InvariantFailureError(
+                    f"duplicate pick_index {pick.pick_index} in official history"
+                )
+        for identity in album_identities:
+            if identity.album_id in self._albums:
+                raise InvariantFailureError(
+                    f"album {identity.album_id} already in official history"
+                )
+        self._picks.extend(genre_picks)
+        for identity in album_identities:
+            self._albums[identity.album_id] = identity
+        self.append_journal(
+            run_id,
+            "HISTORY_COMMITTED",
+            committed_at,
+            {"picks": len(genre_picks), "albums": len(album_identities)},
+        )
 
-    def save_delivery_receipt(self, receipt: DeliveryReceipt) -> None:
-        self._receipts[receipt.idempotency_key] = receipt
+    def save_delivery_receipt(self, receipt: DeliveryReceipt) -> DeliveryReceipt:
+        existing = self._receipts.get(receipt.idempotency_key)
+        if existing is None:
+            self._receipts[receipt.idempotency_key] = receipt
+            return receipt
+        if existing == receipt:
+            return existing  # exact replay: no-op
+        raise InvariantFailureError(
+            f"delivery receipt conflict for key {receipt.idempotency_key!r}; "
+            "evidence is immutable (G1-002)"
+        )
 
     def find_delivery_receipt(self, idempotency_key: str) -> DeliveryReceipt | None:
         return self._receipts.get(idempotency_key)
@@ -118,7 +153,6 @@ class FakeDelivery:
 
     def __init__(self) -> None:
         self.delivered: dict[str, str] = {}
-        self._clock = iter(range(1, 10**6))
 
     def deliver(
         self,
@@ -127,6 +161,7 @@ class FakeDelivery:
         target: str | None = None,
     ) -> DeliveryReceipt:
         if idempotency_key in self.delivered:
+            # Replay of the same key: no second external delivery (SPEC §4).
             return DeliveryReceipt(
                 run_id="",
                 idempotency_key=idempotency_key,
