@@ -99,12 +99,17 @@ class SqliteHistory:
 
     def __init__(self, path: str | Path) -> None:
         self._path = str(path)
+        conn: sqlite3.Connection | None = None
         try:
             conn = sqlite3.connect(self._path)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             self._migrate(conn)
         except sqlite3.Error as exc:
+            # Hygiene (G1-005): close a successfully-created connection when
+            # migration later fails, then surface the domain error.
+            if conn is not None:
+                conn.close()
             raise SourceUnavailableError(
                 f"cannot open/migrate runtime store at {self._path!r}"
             ) from exc
@@ -245,10 +250,13 @@ class SqliteHistory:
         album_identities: list[AlbumIdentity],
         committed_at: str,
     ) -> None:
-        with self._conn as conn:
-            try:
-                # Full pre-check (G1-005): intra-batch duplicates and conflicts
-                # with stored state raise the same domain exception as
+        # The try/except wraps the ENTIRE transaction context (entry, SQL body,
+        # commit and rollback) so no sqlite3.Error — including one raised on
+        # context exit — can escape the Port (G1-005).
+        try:
+            with self._conn as conn:
+                # Full pre-check: intra-batch duplicates and conflicts with
+                # stored state raise the same domain exception as
                 # InMemoryHistory (InvariantFailureError). Any unexpected SQLite
                 # failure — including in the pre-check — is translated below.
                 seen_picks: set[int] = set()
@@ -309,14 +317,16 @@ class SqliteHistory:
                         ),
                     ),
                 )
-            except sqlite3.Error as exc:
-                # Unexpected persistence failure: translate to the domain taxonomy,
-                # preserving the provider exception as the cause (SPEC §3.2/§8).
-                raise StateCommitFailureError(
-                    f"official history commit failed for run {run_id!r}",
-                    detail={"run_id": run_id},
-                ) from exc
-        # Any exception above rolls back all three areas inside the `with` block.
+        except sqlite3.Error as exc:
+            # Unexpected persistence failure — including transaction commit or
+            # rollback failure — translates to the domain taxonomy, preserving
+            # the provider exception as the cause (SPEC §3.2/§8).
+            raise StateCommitFailureError(
+                f"official history commit failed for run {run_id!r}",
+                detail={"run_id": run_id},
+            ) from exc
+        # Any exception above rolls back all three areas; a successful context
+        # exit commits them atomically inside the `with` block.
 
     # -- delivery receipts (immutable idempotency evidence, G1-002) -------------
 

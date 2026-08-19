@@ -147,3 +147,110 @@ def test_invariant_conflicts_are_not_translated(tmp_path) -> None:
     with pytest.raises(InvariantFailureError):
         db.save_delivery_receipt(conflicting)
     db.close()
+
+
+# --- closed-connection probes (G1-005): every public operation translates ---
+
+CLOSED_CASES = [
+    pytest.param(
+        lambda db: db.append_journal("run-1", "PLANNED", AT),
+        StateCommitFailureError,
+        id="append_journal",
+    ),
+    pytest.param(
+        lambda db: db.journal_after("run-1", 0),
+        SourceUnavailableError,
+        id="journal_after",
+    ),
+    pytest.param(
+        lambda db: db.latest_pick_index(),
+        SourceUnavailableError,
+        id="latest_pick_index",
+    ),
+    pytest.param(
+        lambda db: db.cooldown_pick_indices("ambient"),
+        SourceUnavailableError,
+        id="cooldown_pick_indices",
+    ),
+    pytest.param(
+        lambda db: db.excluded_album_identities(),
+        SourceUnavailableError,
+        id="excluded_album_identities",
+    ),
+    pytest.param(
+        lambda db: db.commit_history(
+            "run-1",
+            [GenrePickRecord(1, "ambient")],
+            [AlbumIdentity("alb-1")],
+            AT,
+        ),
+        StateCommitFailureError,
+        id="commit_history",
+    ),
+    pytest.param(
+        lambda db: db.save_delivery_receipt(RECEIPT),
+        StateCommitFailureError,
+        id="save_delivery_receipt",
+    ),
+    pytest.param(
+        lambda db: db.find_delivery_receipt("k"),
+        SourceUnavailableError,
+        id="find_delivery_receipt",
+    ),
+]
+
+
+@pytest.mark.parametrize("operation,expected", CLOSED_CASES)
+def test_closed_connection_never_leaks_sqlite_errors(operation, expected) -> None:
+    db = SqliteHistory(":memory:")
+    db.close()  # closed connection: context entry/exit and SQL all raise sqlite3.Error
+
+    with pytest.raises(expected) as exc:
+        operation(db)
+    assert isinstance(exc.value.__cause__, sqlite3.Error)
+    assert isinstance(exc.value, expected)
+
+
+class _FailingCommitWrapper:
+    """Delegates everything to a real sqlite3.Connection but fails on commit.
+
+    Used to inject a transaction-finalization (context-exit) failure without
+    patching the immutable C type ``sqlite3.Connection``.
+    """
+
+    def __init__(self, inner: sqlite3.Connection) -> None:
+        object.__setattr__(self, "_inner", inner)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def commit(self) -> None:
+        raise sqlite3.OperationalError("simulated commit failure")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is None:
+            self.commit()
+        else:
+            self._inner.rollback()
+        return False
+
+
+def test_commit_history_transaction_finalize_failure(tmp_path) -> None:
+    # Inject a commit failure on transaction exit; the boundary must translate it
+    # to StateCommitFailureError with the provider exception as the cause (G1-005).
+    db = SqliteHistory(tmp_path / "state.sqlite3")
+    db._conn = _FailingCommitWrapper(db._conn)  # type: ignore[attr-defined]
+
+    with pytest.raises(StateCommitFailureError) as exc:
+        db.commit_history(
+            "run-1",
+            [GenrePickRecord(1, "ambient")],
+            [AlbumIdentity("alb-1")],
+            AT,
+        )
+    assert isinstance(exc.value.__cause__, sqlite3.Error)
+    assert "commit" in str(exc.value)
+    db.close()
