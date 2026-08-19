@@ -150,3 +150,44 @@ The Reviewer inspected the full `13c57f4..7bec77f` repair delta and regressed th
 **CHANGES_REQUESTED**
 
 The repair substantially improves the plan and correctly closes G0-001, G0-003, G0-004 and G0-005. G0-002 remains open and G0-006 is a new blocking consistency finding. The next repair should be a narrow governance-only commit; it must not enter G1 or modify production code.
+
+---
+
+## Re-review 2 — candidate `4ba0d34ceb474513292edf4217d8ba58814a303c`
+
+### Verification
+
+- Original base: `8a2e82072afca8fe7217c9fc79288d99a94e01ce`
+- Repair candidate: `4ba0d34ceb474513292edf4217d8ba58814a303c`
+- Previous review commit: `63f31fb5e47b3569ee4cdeb3d1e3efea42a50087`
+- Branch observed: `exec/g0-plan`
+- Worktree at review start: clean
+- `git diff --check 63f31fb..4ba0d34`: pass
+- Full lineage: base → original candidate → review 1 → repair 1 → review 2 → repair 2
+
+The Reviewer inspected the complete second repair delta, searched the revised plan for unsafe deletion/reset language and stale dependency references, checked the new G1 ordering, and regressed the full original-base-to-new-candidate governance range.
+
+### Finding closure
+
+| Finding | Final status | Evidence |
+|---|---|---|
+| G0-001 (P1) Port contracts after Orchestrator | CLOSED | Port contracts are G1/T1.4; G2 uses fake/in-memory implementations |
+| G0-002 (P1) Core/storage coupling and unsafe rollback | CLOSED | Core consumes immutable history inputs; real runtime state is protected in B.5, T1.5 and T2.6 |
+| G0-003 (P2) WorkBuddy memory policy | CLOSED | `.workbuddy/` is intentionally ignored and worktree is clean |
+| G0-004 (P2) Risk inconsistency | CLOSED | Priorities and references align with `RISK_REGISTER.md` |
+| G0-005 (P2) Owner/ADR overload | CLOSED | Decisions are classified by actual authority and reversibility |
+| G0-006 (P1) Dependency direction and Adapter ownership | CLOSED | Orchestrator depends on Core and Ports; Adapters implement Ports; G1 is contract-before-SQLite; G3 owns data adapters and G4 owns LLM/output/delivery |
+
+### [P2] G0-007 — One stale task reference remains after G1 renumbering (non-blocking)
+
+- Location: `governance/IMPLEMENTATION_PLAN.md`, T2.6 Tests (approximately line 285)
+- Evidence: the sentence says the task runs against Port contracts defined by `T1.6`; after the accepted renumbering, Ports are T1.4 and T1.6 is test infrastructure. The T2.6 Dependencies field correctly points to T1.4, and all architectural descriptions also point to T1.4.
+- Impact: documentation typo only; it does not reopen the Port ordering or change implementation ownership.
+- Required follow-up: when G1 begins and synchronizes task documentation, change that T2.6 reference from T1.6 to T1.4. Also make explicit in the G1 Port definition whether run-journal operations are part of `HistoryPort` or a separately named `RunJournalPort`; either is acceptable if the boundary is minimal and contract-tested.
+- Blocking status: non-blocking P2; must be disclosed in the G1 plan/report and verified at G1 review.
+
+### Final G0 verdict
+
+**ACCEPTED**
+
+Acceptance applies only to candidate `4ba0d34ceb474513292edf4217d8ba58814a303c` against base `8a2e82072afca8fe7217c9fc79288d99a94e01ce`. All P0/P1 findings are closed. G0 may be merged into `main`; G1 may begin only after the merge is complete and a new G1 branch is created from the accepted merged baseline. G0-007 remains a disclosed P2 follow-up for G1.
