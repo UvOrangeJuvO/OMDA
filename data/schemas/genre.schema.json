@@ -1,0 +1,13 @@
+{
+  "schema_name": "genre",
+  "schema_version": 1,
+  "fields": {
+    "genre_id": {"type": "string", "required": true, "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "name": {"type": "string", "required": true, "min_length": 1},
+    "url": {"type": "string", "required": true, "pattern": "^https?://"},
+    "family": {"type": "string", "required": true, "min_length": 1},
+    "parents": {"type": "array", "required": true, "items": {"type": "string"}},
+    "eligible": {"type": "boolean", "required": true},
+    "source": {"type": "string", "required": true, "min_length": 1}
+  }
+}
