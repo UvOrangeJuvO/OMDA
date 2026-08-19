@@ -113,3 +113,65 @@ The repair must rerun the full suite and add explicit tests for batch rollback, 
 **CHANGES_REQUESTED**
 
 Open blocking findings: G1-001 (P0), G1-002 (P0), G1-003 (P1). G1 must not be merged and G2 must not begin.
+
+---
+
+## Re-review 1 — candidate `c45831ea3587e06f9c390786bfabca050314f03d`
+
+### Re-review identity and checks
+
+- Original G1 base: `5361b64d544c3134be9ba2b25a041ff146da613a`
+- Original G1 candidate: `4830c53ba163631220a83d985cd1a385362ee17d`
+- Original Reviewer commit: `4bce3d3d1a4ddaaba1bab5e783ee239cefdf870a`
+- Repair candidate: `c45831ea3587e06f9c390786bfabca050314f03d`
+- Repair commits: `79d2be5`, `6f6f0b5`, `c45831e`
+- Worktree at review start: clean
+- Independent test run: 68 passed, Ruff passed, diff check passed
+
+The Reviewer inspected the complete repair delta, reran the suite, and independently probed batch conflicts, receipt immutability, nested schema-policy validation and nested journal-detail mutation.
+
+### Original finding status
+
+| Finding | Re-review status | Evidence |
+|---|---|---|
+| G1-001 (P0) atomic official-history commit | **CLOSED for SQLite batch atomicity** | `commit_history()` writes picks, Albums and `HISTORY_COMMITTED` in one SQLite transaction; injected database conflicts roll back all areas |
+| G1-002 (P0) immutable receipt evidence | **CLOSED** | exact replay is a no-op; conflicting receipt raises and leaves original evidence intact in SQLite and fake |
+| G1-003 (P1) strict unknown-field validation | **PARTIAL / OPEN** | ordinary unknown fields are rejected, but invalid nested `additional_fields` policy silently disables rejection |
+| G1-004 (P2) immutable domain snapshots | **PARTIAL / OPEN** | top-level mapping is read-only, but nested mutable values remain externally mutable |
+
+### [P1] G1-005 — Fake and SQLite history semantics diverge, and SQLite errors leak past the Port
+
+- Location: `tests/fakes/__init__.py`, `InMemoryHistory.commit_history`; `src/omda/storage/sqlite_history.py`, `commit_history`; tests expecting raw `sqlite3.IntegrityError`
+- Independent reproduction: calling the fake with two `GenrePickRecord` values sharing the same `pick_index` and two Album identities sharing the same `album_id` succeeds, writes a `HISTORY_COMMITTED` journal entry and reports counts of two. SQLite rejects the same duplicate keys and rolls back.
+- Additional evidence: SQLite uniqueness conflicts escape as `sqlite3.IntegrityError`, even though the accepted Port contract requires adapters to translate provider-specific failures into the domain taxonomy. The current tests explicitly expect the SQLite exception, locking in the leak.
+- Impact: G2 will primarily exercise the Orchestrator with `InMemoryHistory`; a duplicate-batch bug can pass all fake tests and fail in production. Orchestrator code would also need SQLite-specific exception handling, breaking the Port boundary.
+- Violated contract: `OMDA_AGENT_HANDOFF_SPEC.md` §3.2, §4, §7.9–§7.11 and §8; G1 T1.4/T1.5 acceptance; repair requirement for fake/SQLite semantic parity.
+- Required correction:
+  - validate duplicate pick indices and duplicate Album identities **within the incoming batch**, as well as against stored state, before fake mutation;
+  - make SQLite and fake raise the same domain exception class for invariant conflicts;
+  - translate unexpected SQLite persistence failures to `StateCommitFailureError` while preserving the original exception as the cause;
+  - do not expose `sqlite3.IntegrityError` through `HistoryPort` tests or callers;
+  - add parameterized parity tests that execute identical success, exact-conflict and intra-batch-conflict scenarios against both implementations and compare result/exception/state.
+- Acceptance test: for both fake and SQLite, duplicate pick/Album values within one batch fail with the same domain error and leave pick history, exclusions and journal unchanged.
+
+### [P1] G1-003 remains open — Invalid nested unknown-field policy silently becomes permissive
+
+- Location: `src/omda/schemas/validator.py`, `_validate_value()` object branch and `_validate_fields()`
+- Independent reproduction: a nested object schema with `"additional_fields": "typo"` accepts an undeclared nested key and returns success. Only the top-level policy is checked against `reject|allow`; nested policies are passed through without validation, and every value other than the exact string `reject` behaves like `allow`.
+- Impact: a schema-author typo can silently disable strict validation for an entire nested object, recreating the original G1-003 failure mode.
+- Required correction: centralize policy validation and apply it at every object scope before validating unknown fields. Invalid nested policies must raise `SchemaError` with the full schema path. Add nested-invalid-policy tests in addition to the existing top-level test.
+- Acceptance test: nested `additional_fields` values other than `reject` or `allow` always raise `SchemaError`; undeclared nested fields never pass because of an invalid policy.
+
+### [P2] G1-004 remains open — Journal detail is only shallowly immutable
+
+- Location: `src/omda/ports/domain.py`, `JournalEntry.__post_init__`
+- Independent reproduction: with `detail={"x": {"y": 1}}`, constructing a `JournalEntry` and then mutating the caller's nested dictionary changes the supposedly immutable entry to `{"x": {"y": 2}}`.
+- Impact: nested facts in a durable journal snapshot can change after construction. This is a lower-severity contract-quality issue but contradicts the repair report's closure claim.
+- Required correction: recursively snapshot/freeze supported JSON-like values, or deep-copy on input and return defensive/read-only snapshots. Define behavior for nested dict/list values and test both caller-side mutation and attempted mutation through the exposed value.
+- Blocking status: P2; fix alongside the blocking repair and close before G2 uses journal details for recovery.
+
+### Re-review verdict
+
+**CHANGES_REQUESTED**
+
+G1-001 and G1-002 are materially repaired. G1-003 remains partially open, G1-004 remains partially open, and G1-005 is a new P1 Port-parity/error-boundary finding. G1 must not be merged and G2 must not begin. The next repair is narrow: domain error translation, fake/SQLite parity, recursive journal snapshots and nested schema-policy validation.
