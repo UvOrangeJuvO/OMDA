@@ -28,6 +28,7 @@ from omda.ports.domain import (
     DeliveryReceipt,
     GenrePickRecord,
     JournalEntry,
+    thaw_json,
 )
 from omda.ports.errors import InvariantFailureError, StateCommitFailureError
 
@@ -124,7 +125,12 @@ class SqliteHistory:
         with self._conn as conn:
             cursor = conn.execute(
                 "INSERT INTO run_journal (run_id, transition, at, detail) VALUES (?, ?, ?, ?)",
-                (run_id, transition, at, json.dumps(dict(detail)) if detail is not None else None),
+                (
+                    run_id,
+                    transition,
+                    at,
+                    json.dumps(thaw_json(detail)) if detail is not None else None,
+                ),
             )
             journal_id = int(cursor.lastrowid)
         return JournalEntry(

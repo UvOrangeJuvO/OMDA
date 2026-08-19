@@ -75,6 +75,43 @@ def test_journal_detail_is_immutable_mapping(tmp_path) -> None:
         entry.detail["seed"] = "tampered"  # type: ignore[index]
 
 
+def test_journal_detail_recursive_freeze_nested_dict_and_list(tmp_path) -> None:
+    db = SqliteHistory(tmp_path / "state.sqlite3")
+    original = {"meta": {"note": "x"}, "tags": ["a", "b"], "count": 3, "nothing": None}
+    entry = db.append_journal("run-1", "PLANNED", AT, original)
+
+    # 1. Caller mutates the original nested objects after append: snapshot unchanged.
+    original["meta"]["note"] = "tampered"
+    original["tags"].append("c")
+    original["count"] = 99
+    expected_snapshot = {"meta": {"note": "x"}, "tags": ["a", "b"], "count": 3, "nothing": None}
+    assert entry.snapshot_detail() == expected_snapshot
+
+    # 2. The exposed frozen value cannot be mutated at any nesting level.
+    with pytest.raises(TypeError):
+        entry.detail["meta"]["note"] = "tampered"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        entry.detail["tags"][0] = "z"  # type: ignore[index]
+
+    # 3. snapshot_detail returns a writable copy that never affects the snapshot.
+    writable = entry.snapshot_detail()
+    assert isinstance(writable, dict) and isinstance(writable["tags"], list)
+    writable["meta"]["note"] = "mutated-copy"
+    writable["tags"].append("d")
+    assert entry.snapshot_detail()["meta"]["note"] == "x"
+    assert entry.snapshot_detail()["tags"] == ["a", "b"]
+
+
+def test_journal_detail_round_trip_with_nested_json(tmp_path) -> None:
+    db = SqliteHistory(tmp_path / "state.sqlite3")
+    db.append_journal("run-1", "PLANNED", AT, {"nested": {"list": [1, 2, {"k": "v"}]}})
+    entries = db.journal_after("run-1", 0)
+    assert entries[0].snapshot_detail() == {"nested": {"list": [1, 2, {"k": "v"}]}}
+    # The re-read entry is itself frozen.
+    with pytest.raises(TypeError):
+        entries[0].detail["nested"]["list"][2]["k"] = "tampered"  # type: ignore[index]
+
+
 # --- official history: atomic commit (G1-001) ---
 
 

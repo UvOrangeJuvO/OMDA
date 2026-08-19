@@ -13,6 +13,30 @@ from types import MappingProxyType
 from typing import Any
 
 
+def freeze_json(value: Any) -> Any:
+    """Recursively freeze JSON-like values (G1-004).
+
+    dict/mapping -> read-only MappingProxyType (recursively); list/tuple ->
+    immutable tuple (recursively); scalars and None pass through unchanged.
+    The result cannot be mutated at any nesting level.
+    """
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: freeze_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(freeze_json(item) for item in value)
+    return value
+
+
+def thaw_json(value: Any) -> Any:
+    """Recursively convert a frozen snapshot back to plain JSON-like types
+    (dict/list), suitable for ``json.dumps`` or a writable defensive copy."""
+    if isinstance(value, Mapping):
+        return {key: thaw_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [thaw_json(item) for item in value]
+    return value
+
+
 @dataclass(frozen=True)
 class GenreRef:
     """A genre as seen by the selection layer."""
@@ -57,8 +81,11 @@ class GenrePickRecord:
 class JournalEntry:
     """One run-journal transition (SPEC §4).
 
-    ``detail`` is exposed as an immutable read-only mapping so callers cannot
-    mutate a durable journal snapshot (G1-004).
+    ``detail`` is recursively frozen at construction time (G1-004): nested
+    mappings become read-only ``MappingProxyType`` and nested lists become
+    tuples, so neither the caller's original object nor later mutation through
+    the exposed value can alter the durable snapshot. Use :meth:`snapshot_detail`
+    for a writable deep copy with plain dict/list types.
     """
 
     journal_id: int
@@ -68,8 +95,17 @@ class JournalEntry:
     detail: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
-        if self.detail is not None and not isinstance(self.detail, MappingProxyType):
-            object.__setattr__(self, "detail", MappingProxyType(dict(self.detail)))
+        if self.detail is not None:
+            object.__setattr__(self, "detail", freeze_json(self.detail))
+
+    def snapshot_detail(self) -> dict[str, Any] | None:
+        """Return a deep copy of the detail with plain dict/list types.
+
+        Mutating the returned value never affects this entry's frozen snapshot.
+        """
+        if self.detail is None:
+            return None
+        return thaw_json(self.detail)
 
 
 @dataclass(frozen=True)
@@ -95,4 +131,6 @@ __all__ = [
     "GenrePickRecord",
     "GenreRef",
     "JournalEntry",
+    "freeze_json",
+    "thaw_json",
 ]
