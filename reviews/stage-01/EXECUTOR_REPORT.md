@@ -220,3 +220,45 @@ G1 六任务全部完成并各自提交；56 项测试全绿、lint 全绿、dif
 ## Executor Conclusion（Re-review 2 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G1 Re-review 3 Repair（2026-08-19）
+
+对应 Reviewer commit：`44d512d0d00f425eda5c05c96ef55c6308b8ba89`（`review(g1): request transaction boundary fix`）
+上一 candidate：`6b30b55d4c27af1979aaf42b53ade80deb838578`
+本轮修复 commit：`ed72986`（G1-005 事务上下文边界）
+本轮 Candidate：提交后由 Executor 在最终聊天报告给出精确 SHA（`PROJECT_STATE.json` 的 `candidate_commit` 保持 `null`，避免自引用）
+
+## Re-review 3 finding 修复
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G1-005 commit_history 未防护 context entry/exit 失败 | P1（重开） | `ed72986` | CLOSED |
+
+## G1-005 — commit_history() does not guard context entry/exit failures（P1，CLOSED）
+
+- **根因**：`commit_history()` 的 `try/except sqlite3.Error` 位于 `with self._conn as conn:` **内部**；连接关闭时（`ProgrammingError`）或事务 commit/rollback 阶段（context exit）的异常发生在 try 之外，泄漏原始 `sqlite3.Error`。
+- **修改**（`ed72986`）：
+  1. `try/except sqlite3.Error` 现在**包住完整事务上下文**（`with self._conn as conn:` 的 entry、SQL body、commit 与 rollback 全部阶段）；意外 `sqlite3.Error` → `StateCommitFailureError`，原始异常保留为 `__cause__`。
+  2. 主动抛出的 `InvariantFailureError`（批次冲突）不属于 `sqlite3.Error`，原样穿过（含 with 正常回滚路径）。
+  3. 保持整体回滚语义：任何失败三类记录全部不变。
+  4. 非阻塞卫生项：`__init__` 中连接创建成功但迁移失败时，先关闭连接再抛 `SourceUnavailableError`。
+- **测试**：
+  - `test_closed_connection_never_leaks_sqlite_errors`：closed-connection 参数化覆盖**全部 8 个公开操作**（含 `commit_history` → 明确断言 `StateCommitFailureError`）。
+  - `test_commit_history_transaction_finalize_failure`：用连接包装器注入 context-exit/commit 失败 → `StateCommitFailureError` 且 `__cause__` 为 `sqlite3.Error`。
+  - 原子性与既有冲突语义由既有测试保持（批次冲突 → `InvariantFailureError`、失败注入后三区不变等全部通过）。
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -v`（TEST_RESULTS.txt） | **110 passed, 0 failed, 0 skipped, 0 error** |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| `git status --short` | 干净（提交后核验） |
+| 未修改 `REVIEW_VERDICT.md` / 未 merge / 未 tag / 未进入 G2 | 确认 |
+
+## Executor Conclusion（Re-review 3 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
