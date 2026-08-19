@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "project": "OMDA",
+  "release_target": "0.1.0",
+  "active_gate": "G0",
+  "status": "READY",
+  "executor": "deepseek-v4-flash",
+  "reviewer": "gpt-5.6-sol",
+  "base_commit": null,
+  "candidate_commit": null,
+  "approved_commit": null,
+  "open_review": null,
+  "blocking_adr": null,
+  "updated_at": "2026-08-19T00:00:00+08:00"
+}
+
