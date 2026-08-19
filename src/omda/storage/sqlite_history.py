@@ -29,7 +29,7 @@ from omda.ports.domain import (
     GenrePickRecord,
     JournalEntry,
 )
-from omda.ports.errors import InvariantFailureError
+from omda.ports.errors import InvariantFailureError, StateCommitFailureError
 
 _SCHEMA_VERSION = 1
 
@@ -197,34 +197,76 @@ class SqliteHistory:
         committed_at: str,
     ) -> None:
         with self._conn as conn:
-            for pick in genre_picks:
+            try:
+                # Full pre-check (G1-005): intra-batch duplicates and conflicts
+                # with stored state raise the same domain exception as
+                # InMemoryHistory (InvariantFailureError). Any unexpected SQLite
+                # failure — including in the pre-check — is translated below.
+                seen_picks: set[int] = set()
+                for pick in genre_picks:
+                    if pick.pick_index in seen_picks:
+                        raise InvariantFailureError(
+                            f"duplicate pick_index {pick.pick_index} within commit batch"
+                        )
+                    seen_picks.add(pick.pick_index)
+                    if conn.execute(
+                        "SELECT 1 FROM genre_pick_history WHERE pick_index = ?",
+                        (pick.pick_index,),
+                    ).fetchone():
+                        raise InvariantFailureError(
+                            f"pick_index {pick.pick_index} already in official history"
+                        )
+                seen_albums: set[str] = set()
+                for identity in album_identities:
+                    if identity.album_id in seen_albums:
+                        raise InvariantFailureError(
+                            f"duplicate album_id {identity.album_id!r} within commit batch"
+                        )
+                    seen_albums.add(identity.album_id)
+                    if conn.execute(
+                        "SELECT 1 FROM album_history WHERE album_id = ?",
+                        (identity.album_id,),
+                    ).fetchone():
+                        raise InvariantFailureError(
+                            f"album {identity.album_id!r} already in official history"
+                        )
+                for pick in genre_picks:
+                    conn.execute(
+                        "INSERT INTO genre_pick_history "
+                        "(pick_index, run_id, genre_id, committed_at) VALUES (?, ?, ?, ?)",
+                        (pick.pick_index, run_id, pick.genre_id, committed_at),
+                    )
+                for identity in album_identities:
+                    conn.execute(
+                        "INSERT INTO album_history (album_id, canonical_id, canonical_source, "
+                        "identity_confidence, run_id, recommended_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            identity.album_id,
+                            identity.canonical_id,
+                            identity.canonical_source,
+                            identity.identity_confidence,
+                            run_id,
+                            committed_at,
+                        ),
+                    )
                 conn.execute(
-                    "INSERT INTO genre_pick_history (pick_index, run_id, genre_id, committed_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (pick.pick_index, run_id, pick.genre_id, committed_at),
-                )
-            for identity in album_identities:
-                conn.execute(
-                    "INSERT INTO album_history (album_id, canonical_id, canonical_source, "
-                    "identity_confidence, run_id, recommended_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO run_journal (run_id, transition, at, detail) VALUES (?, ?, ?, ?)",
                     (
-                        identity.album_id,
-                        identity.canonical_id,
-                        identity.canonical_source,
-                        identity.identity_confidence,
                         run_id,
+                        "HISTORY_COMMITTED",
                         committed_at,
+                        json.dumps(
+                            {"picks": len(genre_picks), "albums": len(album_identities)}
+                        ),
                     ),
                 )
-            conn.execute(
-                "INSERT INTO run_journal (run_id, transition, at, detail) VALUES (?, ?, ?, ?)",
-                (
-                    run_id,
-                    "HISTORY_COMMITTED",
-                    committed_at,
-                    json.dumps({"picks": len(genre_picks), "albums": len(album_identities)}),
-                ),
-            )
+            except sqlite3.Error as exc:
+                # Unexpected persistence failure: translate to the domain taxonomy,
+                # preserving the provider exception as the cause (SPEC §3.2/§8).
+                raise StateCommitFailureError(
+                    f"official history commit failed for run {run_id!r}",
+                    detail={"run_id": run_id},
+                ) from exc
         # Any exception above rolls back all three areas inside the `with` block.
 
     # -- delivery receipts (immutable idempotency evidence, G1-002) -------------

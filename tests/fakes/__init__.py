@@ -70,17 +70,31 @@ class InMemoryHistory:
         album_identities: list[AlbumIdentity],
         committed_at: str,
     ) -> None:
-        # All-or-nothing (G1-001): validate against the current state first; only
-        # if every row can be inserted do we mutate all three areas.
+        # All-or-nothing (G1-001/G1-005): full pre-check against the incoming
+        # batch AND the current state; only if every row is valid do we mutate.
+        # Invariant conflicts raise the same domain exception as the SQLite
+        # adapter (InvariantFailureError) — never a provider-specific type.
+        seen_picks: set[int] = set()
         for pick in genre_picks:
+            if pick.pick_index in seen_picks:
+                raise InvariantFailureError(
+                    f"duplicate pick_index {pick.pick_index} within commit batch"
+                )
+            seen_picks.add(pick.pick_index)
             if any(p.pick_index == pick.pick_index for p in self._picks):
                 raise InvariantFailureError(
-                    f"duplicate pick_index {pick.pick_index} in official history"
+                    f"pick_index {pick.pick_index} already in official history"
                 )
+        seen_albums: set[str] = set()
         for identity in album_identities:
+            if identity.album_id in seen_albums:
+                raise InvariantFailureError(
+                    f"duplicate album_id {identity.album_id!r} within commit batch"
+                )
+            seen_albums.add(identity.album_id)
             if identity.album_id in self._albums:
                 raise InvariantFailureError(
-                    f"album {identity.album_id} already in official history"
+                    f"album {identity.album_id!r} already in official history"
                 )
         self._picks.extend(genre_picks)
         for identity in album_identities:

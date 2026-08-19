@@ -8,7 +8,7 @@ import sqlite3
 import pytest
 
 from omda.ports.domain import AlbumIdentity, DeliveryReceipt, GenrePickRecord
-from omda.ports.errors import InvariantFailureError
+from omda.ports.errors import InvariantFailureError, StateCommitFailureError
 from omda.storage import SqliteHistory
 
 EXPECTED_TABLES = {
@@ -95,7 +95,7 @@ def test_commit_history_writes_all_three_areas_atomically(tmp_path) -> None:
 
 def test_commit_history_failure_leaves_all_areas_unchanged(tmp_path) -> None:
     db = SqliteHistory(tmp_path / "state.sqlite3")
-    # Seed a pre-existing album row to force a mid-batch duplicate-key failure.
+    # Seed a pre-existing album row to force a conflict with stored state.
     conn = sqlite3.connect(tmp_path / "state.sqlite3")
     conn.execute(
         "INSERT INTO album_history (album_id, identity_confidence, run_id, recommended_at) "
@@ -105,11 +105,11 @@ def test_commit_history_failure_leaves_all_areas_unchanged(tmp_path) -> None:
     conn.commit()
     conn.close()
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(InvariantFailureError):
         db.commit_history(
             "run-1",
             _picks((1, "ambient"), (2, "jazz"), (3, "krautrock")),
-            _albums("alb-1", "alb-2", "alb-99"),  # duplicates pre-seeded alb-99
+            _albums("alb-1", "alb-2", "alb-99"),  # conflicts with pre-seeded alb-99
             "2026-08-19T09:06:00+00:00",
         )
     # All three areas unchanged: no picks, no new albums, no HISTORY_COMMITTED.
@@ -119,7 +119,7 @@ def test_commit_history_failure_leaves_all_areas_unchanged(tmp_path) -> None:
     assert db.journal_after("run-1", 0) == []
 
 
-def test_commit_history_mid_batch_duplicate_pick_rolls_back(tmp_path) -> None:
+def test_commit_history_mid_batch_duplicate_pick_is_invariant_error(tmp_path) -> None:
     db = SqliteHistory(tmp_path / "state.sqlite3")
     conn = sqlite3.connect(tmp_path / "state.sqlite3")
     conn.execute(
@@ -130,16 +130,36 @@ def test_commit_history_mid_batch_duplicate_pick_rolls_back(tmp_path) -> None:
     conn.commit()
     conn.close()
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(InvariantFailureError):
         db.commit_history(
             "run-1",
-            _picks((1, "ambient"), (5, "jazz"), (6, "krautrock")),  # pick 5 duplicates
+            _picks((1, "ambient"), (5, "jazz"), (6, "krautrock")),  # pick 5 conflicts
             _albums("alb-1", "alb-2", "alb-3"),
             "2026-08-19T09:06:00+00:00",
         )
     assert db.latest_pick_index() == 5
     assert db.excluded_album_identities() == frozenset()
     assert db.journal_after("run-1", 0) == []
+
+
+def test_commit_history_sqlite_error_translated_to_state_commit_failure(tmp_path) -> None:
+    # Force an unexpected persistence failure (drop a table out from under the
+    # adapter) and prove the provider exception never crosses the Port (G1-005).
+    path = tmp_path / "state.sqlite3"
+    db = SqliteHistory(path)
+    conn = sqlite3.connect(path)
+    conn.execute("DROP TABLE genre_pick_history")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(StateCommitFailureError) as exc:
+        db.commit_history("run-1", _picks((1, "ambient")), _albums("alb-1"), AT)
+    assert isinstance(exc.value.__cause__, sqlite3.Error)
+    assert "commit" in str(exc.value)
+    # Nothing was partially written (genre_pick_history table was dropped, so
+    # verify the surviving areas only).
+    assert db.journal_after("run-1", 0) == []
+    assert db.excluded_album_identities() == frozenset()
 
 
 def test_no_public_per_row_history_write_methods(tmp_path) -> None:
