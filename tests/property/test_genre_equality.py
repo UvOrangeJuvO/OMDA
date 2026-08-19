@@ -141,3 +141,54 @@ def test_large_pool_constrained_still_bounded_and_deterministic() -> None:
     second = select_daily_genres(pool, 3, make_rng("constrained"))
     assert first == second
     assert len(first) == 3
+
+
+# --- G2-013: solver resources stay bounded ------------------------------------
+
+
+def test_unconstrained_large_pool_uses_fast_path_without_dp() -> None:
+    # 200 unrestricted Genres must never build combinatorial DP state.
+    from omda.core import genre as g
+
+    g._counts_cached.cache_clear()
+    before = g._counts_cached.cache_info().currsize
+    pool = _big_pool(size=200)
+    sampler, total = build_unbiased_sampler(pool, 3, family_limits={})
+    assert total == 200 * 199 * 198
+    assert g._counts_cached.cache_info().currsize == before  # fast path: no DP
+    chosen = sampler(make_rng("fast-path"))
+    assert len(chosen) == 3
+
+
+def test_solver_cache_stays_bounded_across_many_run_histories() -> None:
+    # Every successful run changes the global start -> new cache key; the LRU
+    # must evict old combinatorial memos instead of accumulating them (G2-013).
+    from omda.core import genre as g
+
+    g._counts_cached.cache_clear()
+    pool = _big_pool(size=30)
+    for start in range(1, 9):  # eight distinct run histories / global starts
+        build_unbiased_sampler(pool, 3, global_start_index=start)  # constrained path
+    assert g._counts_cached.cache_info().currsize <= 4
+
+
+def test_constrained_memo_never_stores_terminal_states() -> None:
+    # Terminal 3-Genre combinations are never memoized, so the retained state
+    # space is far below the full C(n,3) enumeration (G2-013).
+    from omda.core import genre as g
+    from omda.core.diversity import DEFAULT_FAMILY_LIMITS
+
+    pool = _big_pool(size=30)
+    key = (
+        tuple(sorted((x.genre_id, x.family) for x in pool)),
+        3,
+        frozenset(),
+        1,
+        30,
+        frozenset(DEFAULT_FAMILY_LIMITS.items()),
+        frozenset(),
+        frozenset(),
+    )
+    _, memo = g._counts_cached(*key)
+    full_combinations = 30 * 29 * 28
+    assert len(memo) < full_combinations

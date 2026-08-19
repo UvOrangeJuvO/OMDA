@@ -84,7 +84,7 @@ def enumerate_valid_selections(
     return [tuple(by_id[genre_id] for genre_id in sequence) for sequence in cached]
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=4)
 def _enumerate_cached(
     eligible_frozen: tuple[tuple[str, str], ...],
     count: int,
@@ -148,7 +148,7 @@ def _enumerate_cached(
     return tuple(solutions)
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=4)
 def _counts_cached(
     eligible_frozen: tuple[tuple[str, str], ...],
     pick_count: int,
@@ -159,12 +159,14 @@ def _counts_cached(
     parent_limits_frozen: frozenset,
     parents_frozen: frozenset,
 ) -> tuple[tuple[str, ...], dict[tuple, int]]:
-    """Count completions for every reachable state (G2-007 unbiased solver).
+    """Count completions for reachable non-terminal states (G2-007 unbiased
+    solver; G2-013 bounded resources).
 
-    Returns ``(candidate_ids, memo)`` where ``memo`` maps
-    ``(chosen_frozen, family_counts_frozen, parent_counts_frozen)`` to the number
-    of valid completions. The memo is input-deterministic and shared across
-    samples, so repeated sampling is O(count x candidates) per draw.
+    Returns ``(candidate_ids, memo)`` where ``memo`` maps non-terminal
+    ``(chosen_frozen, family_counts_frozen, parent_counts_frozen)`` states to the
+    number of valid completions. Terminal states are NEVER memoized, and the LRU
+    retains at most a handful of input variants, so memory stays bounded even for
+    large pools or many distinct run histories.
     """
     pick_history: dict[str, tuple[int, ...]] = dict(pick_history_frozen)
     family_limits: dict[str, int] = dict(family_limits_frozen)
@@ -179,13 +181,13 @@ def _counts_cached(
         fam: tuple,
         par: tuple,
     ) -> int:
+        position = len(chosen)
+        if position == pick_count:
+            # Terminal state: exactly one completion (itself); never memoized.
+            return 1
         key = (chosen, fam, par)
         if key in memo:
             return memo[key]
-        position = len(chosen)
-        if position == pick_count:
-            memo[key] = 1
-            return 1
         fam_map = dict(fam)
         par_map = dict(par)
         position_index = global_start_index + position
@@ -242,8 +244,11 @@ def build_unbiased_sampler(
 
     Returns ``(sampler, total)`` where ``sampler(rng) -> list[GenreRef]`` draws a
     uniformly random valid ordered selection and ``total`` is the number of valid
-    solutions (0 -> unsatisfiable). The expensive DP count is built once and
-    shared across every draw, so repeated sampling is O(count x candidates).
+    solutions (0 -> unsatisfiable).
+
+    G2-013: the unconstrained fast path runs BEFORE any DP construction, so large
+    unrestricted pools never build combinatorial state; constrained cases build a
+    compact non-terminal memo once and reuse it across draws.
     """
     pick_history = {} if pick_history is None else pick_history
     family_limits = DEFAULT_FAMILY_LIMITS if family_limits is None else family_limits
@@ -256,6 +261,20 @@ def build_unbiased_sampler(
     )
 
     by_id = {g.genre_id: g for g in eligible}
+    candidate_ids = tuple(sorted(by_id))
+
+    if not pick_history and not family_limits and not parent_limits:
+        # G2-013 fast path: uniform sampling over all ordered selections is
+        # exactly rng.sample — no DP, no combinatorial memory (G2-007 unbiased).
+        from math import perm
+
+        total = perm(len(candidate_ids), count) if len(candidate_ids) >= count else 0
+
+        def fast_sampler(rng: random.Random) -> list[GenreRef]:
+            return [by_id[gid] for gid in rng.sample(candidate_ids, count)]
+
+        return fast_sampler, total
+
     key = (
         tuple(sorted((g.genre_id, g.family) for g in eligible)),
         count,
@@ -270,11 +289,6 @@ def build_unbiased_sampler(
     families = {g.genre_id: g.family for g in eligible}
 
     def sampler(rng: random.Random) -> list[GenreRef]:
-        # Fast path: no cooldown and no family/parent limits — uniform sampling
-        # over all ordered selections is exactly rng.sample (identical
-        # distribution to the unranking walk, G2-007).
-        if not pick_history and not family_limits and not parent_limits:
-            return [by_id[gid] for gid in rng.sample(candidate_ids, count)]
         fam_map: dict[str, int] = {}
         par_map: dict[str, int] = {}
         chosen: set[str] = set()
@@ -315,13 +329,17 @@ def build_unbiased_sampler(
                 next_par = dict(par_map)
                 for parent in genre_parents:
                     next_par[parent] = next_par.get(parent, 0) + 1
-                branch_count = memo[
-                    (
-                        frozenset(chosen | {genre_id}),
-                        tuple(sorted(next_fam.items())),
-                        tuple(sorted(next_par.items())),
-                    )
-                ]
+                if len(chosen) + 1 == count:
+                    # Terminal child: exactly one completion (never memoized).
+                    branch_count = 1
+                else:
+                    branch_count = memo[
+                        (
+                            frozenset(chosen | {genre_id}),
+                            tuple(sorted(next_fam.items())),
+                            tuple(sorted(next_par.items())),
+                        )
+                    ]
                 if r < branch_count:
                     picked_id = genre_id
                     chosen.add(genre_id)
