@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+.workbuddy/
 *.key
 *.pem
 cookies*.json
