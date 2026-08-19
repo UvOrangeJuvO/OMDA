@@ -201,6 +201,108 @@ def test_nested_allow_accepts_unknown_fields() -> None:
     validate_record(schema, {"delivery": {"channel": "markdown", "future": 1}}, "x.json:1")
 
 
+# --- G1-003: schema tree validated independently of record shape ---
+
+
+def test_absent_optional_object_with_invalid_policy_is_schema_error() -> None:
+    from omda.schemas.validator import SchemaError, validate_record
+
+    schema = {
+        "schema_name": "opt_bad",
+        "schema_version": 1,
+        "fields": {
+            "optional_obj": {  # optional: never appears in the record
+                "type": "object",
+                "additional_fields": "typo",
+                "fields": {"x": {"type": "integer"}},
+            }
+        },
+    }
+    # Empty record: no traversal of the branch would occur during value checks.
+    with pytest.raises(SchemaError) as exc:
+        validate_record(schema, {}, "r.json:1")
+    assert "opt_bad.fields.optional_obj.additional_fields" in str(exc.value)
+
+
+def test_empty_array_with_invalid_item_policy_is_schema_error() -> None:
+    from omda.schemas.validator import SchemaError, validate_record
+
+    schema = {
+        "schema_name": "arr_bad",
+        "schema_version": 1,
+        "fields": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additional_fields": "permissive",
+                    "fields": {"id": {"type": "string", "required": True}},
+                },
+            }
+        },
+    }
+    # Empty array: value-driven validation would never visit the item spec.
+    with pytest.raises(SchemaError) as exc:
+        validate_record(schema, {"items": []}, "r.json:1")
+    assert "arr_bad.fields.items.items.additional_fields" in str(exc.value)
+
+
+def test_deep_branch_unvisited_by_record_is_schema_error() -> None:
+    from omda.schemas.validator import SchemaError, validate_record
+
+    schema = {
+        "schema_name": "deep_bad",
+        "schema_version": 1,
+        "fields": {
+            "a": {
+                "type": "object",
+                "fields": {
+                    "b": {
+                        "type": "object",
+                        "fields": {
+                            "c": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additional_fields": "open",
+                                    "fields": {"z": {"type": "integer"}},
+                                },
+                            }
+                        },
+                    }
+                },
+            }
+        },
+    }
+    # Record entirely omits the deep branch; the malformed policy must still fail.
+    with pytest.raises(SchemaError) as exc:
+        validate_record(schema, {}, "r.json:1")
+    assert "deep_bad.fields.a.fields.b.fields.c.items.additional_fields" in str(exc.value)
+
+
+def test_schema_tree_validation_is_record_independent() -> None:
+    # The same malformed schema fails for every record shape ({}, full, empty collections).
+    from omda.schemas.validator import SchemaError, validate_record
+
+    schema = {
+        "schema_name": "shape_indep",
+        "schema_version": 1,
+        "fields": {
+            "arr": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additional_fields": "bad",
+                    "fields": {"x": {"type": "integer"}},
+                },
+            }
+        },
+    }
+    for record in ({}, {"arr": []}, {"arr": [{"x": 1}]}):
+        with pytest.raises(SchemaError):
+            validate_record(schema, record, "r.json:1")
+
+
 def test_schema_error_on_missing_schema_name() -> None:
     from omda.schemas.validator import validate_record
 

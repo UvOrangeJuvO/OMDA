@@ -95,6 +95,59 @@ def _validate_policy(policy: Any, schema_path: str) -> None:
         )
 
 
+def _walk_schema_spec(spec: Any, schema_path: str) -> None:
+    """Unconditionally validate one node of the schema tree (G1-003).
+
+    Recursively visits every field spec, nested object ``fields`` set and array
+    ``items`` spec regardless of record shape — optional/absent fields and empty
+    arrays included — so a malformed schema is rejected for EVERY record shape.
+    """
+    if not isinstance(spec, dict):
+        raise SchemaError(f"{schema_path}: field spec must be an object")
+    type_name = spec.get("type", "string")
+    if type_name not in _SUPPORTED_TYPES:
+        raise SchemaError(f"{schema_path}: unsupported type {type_name!r}")
+    if type_name == "object":
+        if "additional_fields" in spec or "fields" in spec:
+            _validate_policy(
+                spec.get("additional_fields", "reject"),
+                f"{schema_path}.additional_fields",
+            )
+        fields = spec.get("fields")
+        if fields is not None:
+            if not isinstance(fields, dict):
+                raise SchemaError(f"{schema_path}.fields: must be an object")
+            for field_name, field_spec in fields.items():
+                _walk_schema_spec(field_spec, f"{schema_path}.fields.{field_name}")
+    elif type_name == "array":
+        items = spec.get("items")
+        if items is not None:
+            _walk_schema_spec(items, f"{schema_path}.items")
+
+
+def _validate_schema_tree(schema: dict[str, Any]) -> None:
+    """Unconditionally validate a schema document, independent of any record.
+
+    Called before record validation; a malformed schema raises ``SchemaError``
+    with the full schema path even when the record is ``{}`` or uses empty
+    collections (G1-003).
+    """
+    schema_name = schema.get("schema_name")
+    if not isinstance(schema_name, str) or not schema_name:
+        raise SchemaError("schema document missing 'schema_name'")
+    if not isinstance(schema.get("schema_version"), int):
+        raise SchemaError(f"{schema_name}: schema_version must be an integer")
+    fields = schema.get("fields")
+    if not isinstance(fields, dict):
+        raise SchemaError(f"{schema_name}: 'fields' must be an object")
+    _validate_policy(
+        schema.get("additional_fields", "reject"),
+        f"{schema_name}.additional_fields",
+    )
+    for field_name, field_spec in fields.items():
+        _walk_schema_spec(field_spec, f"{schema_name}.fields.{field_name}")
+
+
 def _validate_value(
     path: str,
     value: Any,
@@ -188,21 +241,19 @@ def validate_record(
 ) -> None:
     """Validate ``record`` against ``schema``; raise ``RecordValidationError`` on failure.
 
-    Unknown-field policy is explicit (G1-003): by default unknown top-level and
-    nested fields are REJECTED with a full field path, so misspelled keys cannot
-    silently pass. A schema may opt in to forward compatibility per scope via
-    ``"additional_fields": "allow"`` (top level and/or nested object specs).
+    The schema document is first validated unconditionally (G1-003), so a
+    malformed schema (e.g. an invalid nested ``additional_fields`` policy) raises
+    ``SchemaError`` for every record shape — including ``{}`` and empty
+    collections — before any record value is examined.
+
+    Unknown-field policy is explicit: by default unknown top-level and nested
+    fields are REJECTED with a full field path. A schema may opt in to forward
+    compatibility per scope via ``"additional_fields": "allow"``.
     """
-    schema_name = schema.get("schema_name")
-    if not isinstance(schema_name, str) or not schema_name:
-        raise SchemaError("schema document missing 'schema_name'")
-    if not isinstance(schema.get("schema_version"), int):
-        raise SchemaError(f"{schema_name}: schema_version must be an integer")
-    fields = schema.get("fields")
-    if not isinstance(fields, dict):
-        raise SchemaError(f"{schema_name}: 'fields' must be an object")
+    _validate_schema_tree(schema)
+    schema_name = schema["schema_name"]
+    fields = schema["fields"]
     additional = schema.get("additional_fields", "reject")
-    _validate_policy(additional, f"{schema_name}.additional_fields")
 
     errors: list[str] = []
     _validate_fields(
