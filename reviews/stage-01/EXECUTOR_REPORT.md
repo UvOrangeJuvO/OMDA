@@ -120,3 +120,59 @@ G1 无交付链路；聚焦存储层恢复语义（G2/G4 消费）：
 **READY_FOR_REVIEW**
 
 G1 六任务全部完成并各自提交；56 项测试全绿、lint 全绿、diff --check 干净；G0-007 P2 follow-up 已处理并有实现证据；未写 G2 内容、未实现真实外部适配器；SQLite 未承载社区真源；真实历史数据保护已由 append-only 设计与测试固化。待 GPT-5.6 Sol 对精确 candidate SHA 出具唯一 verdict。
+
+---
+
+# G1 Re-review 1 Repair（2026-08-19）
+
+对应 Reviewer commit：`88591e37256f25ee672e322c8b54e469349ec436`（`review(g1): request contract parity fixes`）
+上一 candidate：`c45831ea3587e06f9c390786bfabca050314f03d`
+本轮修复 commits：`8c62c40`（G1-005）、`8b4af3c`（G1-003）、`1114524`（G1-004）
+本轮 Candidate：提交后由 Executor 在最终聊天报告给出精确 SHA（`PROJECT_STATE.json` 的 `candidate_commit` 保持 `null`，避免自引用）
+
+## Re-review 1 finding 修复
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G1-005 Fake/SQLite 语义分歧 + 异常泄漏 | P1 | `8c62c40` | CLOSED |
+| G1-003 嵌套 invalid unknown-field policy 静默变宽松 | P1（重开） | `8b4af3c` | CLOSED |
+| G1-004 journal detail 仅浅层不可变 | P2（重开） | `1114524` | CLOSED |
+
+## G1-005 — Fake and SQLite history semantics diverge; SQLite errors leak（P1，CLOSED）
+
+- 修改（`8c62c40`）：
+  1. `InMemoryHistory.commit_history` 与 `SqliteHistory.commit_history` 均对传入批次做**完整预检查**：批次内重复 pick_index、批次内重复 album_id、与既有状态冲突——统一抛 `InvariantFailureError`。
+  2. SQLite 意外持久化失败（如表被删除）→ `StateCommitFailureError`，原 `sqlite3.Error` 保留为 `__cause__`；`sqlite3.IntegrityError` 等 provider 异常不再穿过 Port。
+  3. 新增参数化契约测试 `tests/contract/test_history_parity.py`：同一组场景（正常提交、批次内重复 pick、批次内重复 album、与既有状态冲突、失败后状态完全不变、同领域异常类型）分别跑 `InMemoryHistory` 与 SQLite。
+- 测试：`test_*_parity`（12 个参数化用例）+ `test_commit_history_sqlite_error_translated_to_state_commit_failure` + 原 SQLite 冲突测试改断言 `InvariantFailureError`。
+- 证据：`git log 8c62c40`；失败注入后 pick index / exclusions / journal 全部不变。
+
+## G1-003 — Nested invalid unknown-field policy silently permissive（P1，CLOSED）
+
+- 修改（`8b4af3c`）：
+  1. 新增 `_validate_policy()`，作为**唯一**策略验证入口；`validate_record`（顶层）与 `_validate_value` 的 object 分支（每个嵌套 scope）都调用它。
+  2. 嵌套策略非法（非 `reject`/`allow`）→ `SchemaError`，错误信息含**完整 schema path**（如 `nested2.fields.outer.fields.inner.additional_fields`）。
+  3. 顶层与嵌套的 `additional_fields` 校验、未知字段拒绝/允许走同一策略逻辑。
+- 测试：`test_nested_one_level_invalid_policy_is_schema_error`、`test_multi_level_invalid_policy_is_schema_error`、`test_nested_reject_rejects_unknown_fields`、`test_nested_allow_accepts_unknown_fields`、顶层非法策略断言增强。
+
+## G1-004 — Journal detail shallowly immutable（P2，CLOSED）
+
+- 修改（`1114524`）：
+  1. `domain.freeze_json()` 递归冻结：dict/mapping → 递归 `MappingProxyType`；list/tuple → 递归 tuple；标量/null 原样。
+  2. `JournalEntry.__post_init__` 用 `freeze_json`；新增 `snapshot_detail()` 返回递归深拷贝（plain dict/list，可写，不影响快照）。
+  3. SQLite 序列化改用 `thaw_json()`（递归转回 dict/list 供 `json.dumps`），读取时再次冻结，round-trip 保持不可变。
+- 测试：`test_journal_detail_recursive_freeze_nested_dict_and_list`（改原始 dict/list 不影响、读出的嵌套结构不可改、snapshot 副本可写不影响）、`test_journal_detail_round_trip_with_nested_json`（多层嵌套 round-trip + 重新冻结）。
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -v`（TEST_RESULTS.txt） | **87 passed, 0 failed, 0 skipped, 0 error** |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| `git status --short` | 干净（提交后核验） |
+| 未修改 `REVIEW_VERDICT.md` / 未 merge / 未 tag / 未进入 G2 | 确认 |
+
+## Executor Conclusion（Re-review 1 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
