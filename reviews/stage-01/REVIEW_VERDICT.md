@@ -175,3 +175,62 @@ The Reviewer inspected the complete repair delta, reran the suite, and independe
 **CHANGES_REQUESTED**
 
 G1-001 and G1-002 are materially repaired. G1-003 remains partially open, G1-004 remains partially open, and G1-005 is a new P1 Port-parity/error-boundary finding. G1 must not be merged and G2 must not begin. The next repair is narrow: domain error translation, fake/SQLite parity, recursive journal snapshots and nested schema-policy validation.
+
+---
+
+## Re-review 2 — candidate `446252d53145be0c71c834bb1b65ecb96bce6e99`
+
+### Re-review identity and checks
+
+- Original G1 base: `5361b64d544c3134be9ba2b25a041ff146da613a`
+- Previous repair candidate: `c45831ea3587e06f9c390786bfabca050314f03d`
+- Previous Reviewer commit: `88591e37256f25ee672e322c8b54e469349ec436`
+- New repair candidate: `446252d53145be0c71c834bb1b65ecb96bce6e99`
+- Repair commits: `8c62c40`, `8b4af3c`, `1114524`; review-package commit: `446252d`
+- Worktree at review start: clean
+- Independent verification: 87 tests passed, Ruff passed, `git diff --check` passed
+
+The three repair concerns were split into coherent commits and no G2 implementation was added. The Reviewer inspected the repair delta and ran independent negative probes in addition to the committed suite.
+
+### Finding status
+
+| Finding | Re-review status | Evidence |
+|---|---|---|
+| G1-001 (P0) atomic official-history commit | **CLOSED** | the single SQLite transaction and rollback behavior remain intact |
+| G1-002 (P0) immutable delivery receipt | **CLOSED** | exact replay/no-overwrite semantics remain intact |
+| G1-003 (P1) strict nested schema policy | **PARTIAL / OPEN** | an invalid nested policy is detected only when record traversal happens to visit that field |
+| G1-004 (P2) recursive journal immutability | **CLOSED** | nested mappings/lists are recursively snapshotted and frozen; SQLite round-trip is covered |
+| G1-005 (P1) HistoryPort parity/error boundary | **PARTIAL / OPEN** | batch-conflict parity is fixed, but non-`commit_history` SQLite methods still leak provider exceptions |
+
+### [P1] G1-003 remains open — Schema correctness depends on the particular record shape
+
+- Location: `src/omda/schemas/validator.py:132-180`, especially the record-driven calls to `_validate_value()`
+- Independent reproduction: a schema containing an optional nested object with `"additional_fields": "typo"` is accepted by `validate_record(schema, {})`. The same malformed policy under an array item is accepted when the record contains an empty array. It raises `SchemaError` only if a record happens to contain a value that makes validation traverse that schema branch.
+- Impact: the same malformed schema can be accepted or rejected depending on input contents. A latent typo can remain undetected in checked-in schema until a future record exercises the branch; therefore the promised schema-author protection is not deterministic.
+- Root cause: `_validate_policy()` is now correct, but it is invoked during value validation rather than during an unconditional recursive validation of the schema document.
+- Required correction:
+  - validate the schema tree once, independently of the record values;
+  - recursively visit every field spec, object field set and array `items` spec, including optional/absent fields and empty arrays;
+  - validate every `additional_fields` policy and report the full schema path;
+  - then validate the record against the already-validated schema;
+  - add negative tests for an absent optional object, an empty array whose item schema is malformed, and a multi-level malformed branch.
+- Acceptance test: every malformed nested policy raises `SchemaError` for every record shape, including `{}` and empty collections.
+
+### [P1] G1-005 remains open — Provider-error translation covers only `commit_history()`
+
+- Location: `src/omda/storage/sqlite_history.py:118-194` and `:280-337`
+- Independent reproduction: after removing the relevant disposable-test tables, `append_journal()`, `journal_after()`, `save_delivery_receipt()` and `find_delivery_receipt()` each expose raw `sqlite3.OperationalError`. The official-history read methods have the same unguarded pattern. Only `commit_history()` translates `sqlite3.Error` into the domain taxonomy.
+- Impact: the G2 Orchestrator would still need SQLite-specific exception handling for journal recovery, history reads and receipt evidence, defeating `HistoryPort` and the accepted T1.4 rule that provider-specific failures do not cross the application boundary. Journal/receipt failures are central to the upcoming recovery state machine.
+- Required correction:
+  - define and document a complete SQLite-to-domain mapping for every `HistoryPort` operation;
+  - state-changing operations should surface `StateCommitFailureError` for unexpected persistence failures; read/source availability failures should use the applicable domain error such as `SourceUnavailableError`;
+  - preserve the original SQLite error as `__cause__` and do not catch/replace intentional `InvariantFailureError` conflicts;
+  - cover journal append/read, history reads, receipt save/read and official history commit; adapter initialization/migration behavior should also have a documented typed boundary;
+  - add failure-injection tests proving no `sqlite3.Error` escapes any public `HistoryPort` operation.
+- Acceptance test: identical table-loss/closed-connection probes across all public adapter operations yield documented domain errors with SQLite causes, never raw provider exceptions.
+
+### Re-review 2 verdict
+
+**CHANGES_REQUESTED**
+
+The substantive transaction, receipt, batch-parity and recursive-immutability repairs are sound. Two boundary defects remain: schema-document validation is still data-dependent, and SQLite provider-error translation is incomplete across `HistoryPort`. G1 must not be merged and G2 must not begin. The remaining repair should be limited to unconditional schema-tree validation, complete HistoryPort error translation, focused tests and updated G1 evidence.
