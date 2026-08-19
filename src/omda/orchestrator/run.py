@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -246,7 +247,7 @@ class RunEngine:
         album_source: AlbumSource,
         llm: LLM,
         delivery: Delivery,
-        seed: str = "default",
+        seed: str | None = None,
         input_version: str = "unknown",
         critic_rows: dict[str, list[CriticRatingRow]] | None = None,
         rating_weights: dict[str, float] | None = None,
@@ -258,15 +259,21 @@ class RunEngine:
         self._album_source = album_source
         self._llm = llm
         self._delivery = delivery
-        # G2-006: the RNG is bound to the recorded seed; journaling the seed must
-        # not consume a draw, so the generator starts from the same provenance.
-        self._seed = seed
+        # G2-006/G2-008: the engine never holds a mutable long-lived RNG. The base
+        # seed is explicit (caller argument takes precedence over Config.seed);
+        # every run derives its own generator from durable provenance, so later
+        # runs are reproducible across a process restart.
+        self._seed = seed if seed is not None else (config.seed or "default")
         self._input_version = input_version
         self._config_version = _config_fingerprint(config)
-        self._rng = make_rng(seed)
         self._critic_rows = critic_rows or {}
         self._rating_weights = rating_weights or {}
         self._missing_policy = missing_policy
+
+    def _run_rng(self, run_id: str) -> random.Random:
+        # G2-008: per-run RNG derived only from durable provenance (base seed +
+        # run id); no process-lifetime state is involved.
+        return make_rng(f"{self._seed}:{run_id}")
 
     # -- public API ------------------------------------------------------------
 
@@ -316,13 +323,16 @@ class RunEngine:
         self._history.append_journal(run_id, transition, utc_now(), detail)
 
     def _run_once(self, run_id: str) -> RunOutcome:
-        # G2-006: record provenance (seed/input/config versions) WITHOUT consuming
-        # the RNG — the recorded seed is the one the generator was built from.
+        # G2-006/G2-008: provenance records the exact per-run derivation inputs
+        # (base seed + run id + input/config versions) WITHOUT consuming a draw;
+        # the run generator is derived from exactly these values.
+        run_rng = self._run_rng(run_id)
         self._append(
             run_id,
             PLANNED,
             {
                 "seed": self._seed,
+                "run_id": run_id,
                 "input_version": self._input_version,
                 "config_version": self._config_version,
             },
@@ -338,7 +348,7 @@ class RunEngine:
             chosen = select_daily_genres(
                 genres,
                 self._config.daily_genre_count,
-                self._rng,
+                run_rng,
                 pick_history=pick_history,
                 global_start_index=global_start,
                 cooldown_picks=self._config.genre_cooldown_picks,

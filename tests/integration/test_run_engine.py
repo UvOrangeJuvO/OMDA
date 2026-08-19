@@ -19,7 +19,7 @@ from tests.fakes import (
     InMemoryHistory,
 )
 
-from omda.config import load_config
+from omda.config import Config, load_config
 from omda.orchestrator import (
     COMPLETE,
     DELIVERED,
@@ -67,10 +67,15 @@ def _album_source() -> FakeAlbumSource:
 
 
 def _engine(
-    history, delivery=None, album_source=None, llm=None, seed: str = "run-test-seed"
+    history,
+    delivery=None,
+    album_source=None,
+    llm=None,
+    seed: str | None = None,
+    config=None,
 ) -> RunEngine:
     return RunEngine(
-        config=load_config(),
+        config=config or load_config(),
         history=history,
         genre_source=FakeGenreSource(_genres()),
         album_source=album_source or _album_source(),
@@ -508,12 +513,81 @@ def test_fresh_process_reproduces_exact_plan_from_journal_evidence() -> None:
 
     # A brand-new process uses ONLY the journaled provenance (seed + input +
     # config) against the same sources to recreate the exact ordered plan.
+    # A fresh process must reproduce the exact plan using the journaled seed AND
+    # the same run id (the per-run RNG is derived from seed + run id, G2-008).
     fresh_history = InMemoryHistory()
     fresh_engine = _engine(fresh_history, seed=planned.detail["seed"])
-    fresh = fresh_engine.run("fresh-run")
+    fresh = fresh_engine.run("run-1")
     assert fresh.state == COMPLETE
-    fresh_entries = fresh_history.journal_after("fresh-run", 0)
+    fresh_entries = fresh_history.journal_after("run-1", 0)
     fresh_selected = next(e for e in fresh_entries if e.transition == "SELECTED")
     assert fresh_selected.detail is not None
     assert fresh_selected.detail["genres"] == original_selected.detail["genres"]
     assert fresh_selected.detail["albums"] == original_selected.detail["albums"]
+
+
+# --- G2-008: per-run randomness is reproducible across a process restart -------
+
+
+def _selected_digest(history, run_id: str):
+    entries = history.journal_after(run_id, 0)
+    selected = next(e for e in entries if e.transition == "SELECTED")
+    return selected.detail
+
+
+def test_run2_reproducible_across_process_restart() -> None:
+    # A pool large enough for two successive 3-pick runs (cooldown 30).
+    many_genres = [GenreRef(f"g{i:02d}", f"Genre {i}", f"F{i % 3}") for i in range(12)]
+    album_source = FakeAlbumSource({g.genre_id: _albums(g.genre_id) for g in many_genres})
+    genre_source = FakeGenreSource(many_genres)
+
+    def make_engine(history) -> RunEngine:
+        return RunEngine(
+            config=load_config(),
+            history=history,
+            genre_source=genre_source,
+            album_source=album_source,
+            llm=FakeLLM("Explanatory text."),
+            delivery=FakeDelivery(),
+            seed="g2-008-seed",
+        )
+
+    # Process A (long-lived): run 1 then run 2.
+    history_a = InMemoryHistory()
+    engine_a = make_engine(history_a)
+    assert engine_a.run("run-1").state == COMPLETE
+    planned_a = next(
+        e for e in history_a.journal_after("run-1", 0) if e.transition == "PLANNED"
+    )
+    assert planned_a.detail is not None
+    assert planned_a.detail["seed"] == "g2-008-seed"
+    assert planned_a.detail["run_id"] == "run-1"
+    assert planned_a.detail["config_version"]
+    run2_a = engine_a.run("run-2")
+    assert run2_a.state == COMPLETE
+    digest_a = _selected_digest(history_a, "run-2")
+
+    # Process restart: a brand-new engine reproduces run 2 using ONLY the
+    # journaled seed/input/config provenance and the same official history —
+    # its output must exactly match the long-lived process (G2-008).
+    history_b = InMemoryHistory()
+    engine_b = make_engine(history_b)
+    assert engine_b.run("run-1").state == COMPLETE
+    run2_b = engine_b.run("run-2")
+    assert run2_b.state == COMPLETE
+    digest_b = _selected_digest(history_b, "run-2")
+
+    assert digest_a == digest_b  # exact ordered Genres and Albums
+
+
+def test_config_seed_is_bound_to_rng_construction() -> None:
+    # With no explicit caller seed, Config.seed drives RNG construction (G2-008).
+    history = InMemoryHistory()
+    engine = _engine(history, seed=None, config=Config(seed="config-bound-seed"))
+    outcome = engine.run("run-1")
+    assert outcome.state == COMPLETE
+    planned = next(
+        e for e in history.journal_after("run-1", 0) if e.transition == "PLANNED"
+    )
+    assert planned.detail is not None
+    assert planned.detail["seed"] == "config-bound-seed"
