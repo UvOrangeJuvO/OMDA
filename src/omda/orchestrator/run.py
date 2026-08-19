@@ -345,6 +345,9 @@ class RunEngine:
                 g.genre_id: self._history.cooldown_pick_indices(g.genre_id) for g in genres
             }
             global_start = self._history.latest_pick_index() + 1
+            # G2-010: carry the source taxonomy's parent memberships and the
+            # configured parent limits into the Core as set constraints.
+            parents_by_genre = {g.genre_id: g.parents for g in genres}
             chosen = select_daily_genres(
                 genres,
                 self._config.daily_genre_count,
@@ -352,6 +355,8 @@ class RunEngine:
                 pick_history=pick_history,
                 global_start_index=global_start,
                 cooldown_picks=self._config.genre_cooldown_picks,
+                parent_limits=self._config.genre_parent_limits,
+                parents_by_genre=parents_by_genre,
             )
 
             # FETCH: candidates per genre.

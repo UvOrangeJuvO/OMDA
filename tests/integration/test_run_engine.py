@@ -680,3 +680,62 @@ def test_misbound_receipt_on_recovery_fails_closed() -> None:
     recovered = _engine(inner, delivery=FakeDelivery()).recover("run-1")
     assert recovered.state == RECOVERING  # fail closed, no history commit
     assert inner.latest_pick_index() == 0
+
+
+# --- G2-010: parent taxonomy flows Port -> Orchestrator -> Core -----------------
+
+
+def test_parent_diversity_enforced_through_orchestrated_run() -> None:
+    # Pool of 4 genres where 2 share a limited parent: an unconstrained planner
+    # would include g1+g2 together in ~50% of runs (2 of 4 possible 3-sets), so
+    # 30 runs must NEVER co-select them — proving the configured parent limit
+    # actually reaches the Core through the Port/Orchestrator path (G2-010).
+    genres = [
+        GenreRef("g1", "G1", "Electronic", parents=("electronic",)),
+        GenreRef("g2", "G2", "Electronic", parents=("electronic",)),
+        GenreRef("g3", "G3", "Jazz"),
+        GenreRef("g4", "G4", "Rock"),
+    ]
+    album_source = FakeAlbumSource({g.genre_id: _albums(g.genre_id) for g in genres})
+    config = Config(genre_parent_limits={"electronic": 1})
+    for i in range(30):
+        history = InMemoryHistory()
+        engine = RunEngine(
+            config=config,
+            history=history,
+            genre_source=FakeGenreSource(genres),
+            album_source=album_source,
+            llm=FakeLLM("Explanatory text."),
+            delivery=FakeDelivery(),
+            seed=f"parent-{i}",
+        )
+        outcome = engine.run("run-1")
+        assert outcome.state == COMPLETE
+        assert outcome.plan is not None
+        picked = {g.genre_id for g in outcome.plan.genres}
+        assert not ({"g1", "g2"} <= picked), f"run {i} violated parent limit"
+
+
+def test_parent_unsatisfiable_fails_explicitly() -> None:
+    # Two genres share the only limited parent and the pool cannot satisfy the
+    # constraint -> explicit FAILED (bounded), never an invalid selection.
+    genres = [
+        GenreRef("g1", "G1", "Electronic", parents=("electronic",)),
+        GenreRef("g2", "G2", "Electronic", parents=("electronic",)),
+        GenreRef("g3", "G3", "Jazz"),
+    ]
+    album_source = FakeAlbumSource({g.genre_id: _albums(g.genre_id) for g in genres})
+    config = Config(genre_parent_limits={"electronic": 1})
+    history = InMemoryHistory()
+    engine = RunEngine(
+        config=config,
+        history=history,
+        genre_source=FakeGenreSource(genres),
+        album_source=album_source,
+        llm=FakeLLM("Explanatory text."),
+        delivery=FakeDelivery(),
+        seed="unsat-parent",
+    )
+    outcome = engine.run("run-1")
+    assert outcome.state == FAILED
+    assert history.latest_pick_index() == 0  # nothing committed

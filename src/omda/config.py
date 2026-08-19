@@ -47,6 +47,9 @@ class Config:
     genre_cooldown_picks: int = DEFAULT_GENRE_COOLDOWN_PICKS
     modern_album_year: int = DEFAULT_MODERN_ALBUM_YEAR
     seed: str | None = None
+    # G2-010: per-parent per-run set limits (parent -> max selections); values
+    # are constraints for the Core, never popularity weights.
+    genre_parent_limits: dict[str, int] = field(default_factory=dict)
     delivery: DeliveryConfig = field(default_factory=DeliveryConfig)
 
 
@@ -58,6 +61,7 @@ def config_to_dict(config: Config) -> dict[str, Any]:
         "genre_cooldown_picks": config.genre_cooldown_picks,
         "modern_album_year": config.modern_album_year,
         "seed": config.seed,
+        "genre_parent_limits": config.genre_parent_limits,
         "delivery": {
             "channel": config.delivery.channel,
             "pushplus_token_env": config.delivery.pushplus_token_env,
@@ -99,6 +103,7 @@ def _from_dict(merged: dict[str, Any]) -> Config:
         genre_cooldown_picks=merged.get("genre_cooldown_picks", DEFAULT_GENRE_COOLDOWN_PICKS),
         modern_album_year=merged.get("modern_album_year", DEFAULT_MODERN_ALBUM_YEAR),
         seed=merged.get("seed"),
+        genre_parent_limits=merged.get("genre_parent_limits") or {},
         delivery=DeliveryConfig(
             channel=delivery.get("channel", "markdown"),
             pushplus_token_env=delivery.get("pushplus_token_env"),
