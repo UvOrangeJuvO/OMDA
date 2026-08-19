@@ -46,7 +46,8 @@ def test_product_semantic_fields_flagged() -> None:
     } == PRODUCT_SEMANTIC_FIELDS
 
 
-def test_unknown_extra_fields_are_forward_compatible() -> None:
+def test_unknown_extra_fields_are_rejected_with_full_path() -> None:
+    # G1-003: misspelled top-level fields must fail with field path evidence.
     record = {
         "genre_id": "ambient",
         "name": "Ambient",
@@ -55,9 +56,68 @@ def test_unknown_extra_fields_are_forward_compatible() -> None:
         "parents": ["electronic"],
         "eligible": True,
         "source": "rym",
-        "future_field": "ignored",
+        "famliy": "Electronic",  # typo of "family"
     }
-    validate("genre", record, "fixtures/genres.csv:1")
+    with pytest.raises(RecordValidationError) as exc:
+        validate("genre", record, "fixtures/genres.csv:1")
+    assert any("famliy" in e and "unknown field" in e for e in exc.value.errors)
+    assert exc.value.location == "fixtures/genres.csv:1"
+
+
+def test_album_misspelled_canonical_field_is_rejected() -> None:
+    bad = dict(VALID_ALBUM, canoncial_id="mb-1")  # typo of "canonical_id"
+    with pytest.raises(RecordValidationError) as exc:
+        validate("album", bad, "a.csv:1")
+    assert any("canoncial_id" in e and "unknown field" in e for e in exc.value.errors)
+
+
+def test_config_misspelled_semantic_field_is_rejected() -> None:
+    bad = {"genre_cooldown_pick": 999}  # typo of "genre_cooldown_picks"
+    with pytest.raises(RecordValidationError) as exc:
+        validate("config", bad, "config.yaml:1")
+    assert any("genre_cooldown_pick" in e and "unknown field" in e for e in exc.value.errors)
+
+
+def test_nested_misspelled_field_is_rejected_with_path() -> None:
+    bad = dict(VALID_CONFIG)
+    bad["delivery"] = {"chanel": "pushplus"}  # typo of "channel"
+    with pytest.raises(RecordValidationError) as exc:
+        validate("config", bad, "config.yaml:1")
+    assert any("delivery.chanel" in e and "unknown field" in e for e in exc.value.errors)
+
+
+def test_nested_plan_item_misspelled_field_is_rejected() -> None:
+    bad = dict(VALID_PLAN)
+    bad["genres"] = [{"genre_id": "ambient", "pick_index": 1, "family": "Electronic", "famly": "X"}]
+    with pytest.raises(RecordValidationError) as exc:
+        validate("plan", bad, "plans/run-1.json:1")
+    assert any("genres[0].famly" in e and "unknown field" in e for e in exc.value.errors)
+
+
+def test_opt_in_additional_fields_allow_passes_extension() -> None:
+    # Explicit, documented forward-compatibility policy (G1-003).
+    permissive = {
+        "schema_name": "permissive",
+        "schema_version": 1,
+        "additional_fields": "allow",
+        "fields": {"id": {"type": "string", "required": True}},
+    }
+    from omda.schemas.validator import validate_record
+
+    validate_record(permissive, {"id": "x", "future_field": 1}, "ext.json:1")
+
+
+def test_invalid_additional_fields_policy_is_schema_error() -> None:
+    from omda.schemas.validator import SchemaError, validate_record
+
+    bad_schema = {
+        "schema_name": "bad",
+        "schema_version": 1,
+        "additional_fields": "maybe",
+        "fields": {},
+    }
+    with pytest.raises(SchemaError):
+        validate_record(bad_schema, {})
 
 
 def test_schema_error_on_missing_schema_name() -> None:

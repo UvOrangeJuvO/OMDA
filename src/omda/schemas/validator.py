@@ -125,7 +125,8 @@ def _validate_value(
     elif type_name == "object":
         fields = spec.get("fields")
         if fields is not None:
-            _validate_fields(value, fields, path, errors)
+            nested_policy = spec.get("additional_fields", "reject")
+            _validate_fields(value, fields, path, errors, additional_fields=nested_policy)
 
 
 def _validate_fields(
@@ -133,7 +134,13 @@ def _validate_fields(
     fields: dict[str, Any],
     base_path: str,
     errors: list[str],
+    additional_fields: str = "reject",
 ) -> None:
+    if additional_fields == "reject":
+        declared = set(fields)
+        for key in sorted(set(record) - declared):
+            path = f"{base_path}.{key}" if base_path else key
+            errors.append(f"{path}: unknown field (additional_fields=reject)")
     for field_name, spec in fields.items():
         path = f"{base_path}.{field_name}" if base_path else field_name
         if field_name not in record:
@@ -150,8 +157,10 @@ def validate_record(
 ) -> None:
     """Validate ``record`` against ``schema``; raise ``RecordValidationError`` on failure.
 
-    A record with unknown extra fields is accepted (forward-compatible); schema vN only
-    constrains fields it knows about.
+    Unknown-field policy is explicit (G1-003): by default unknown top-level and
+    nested fields are REJECTED with a full field path, so misspelled keys cannot
+    silently pass. A schema may opt in to forward compatibility per scope via
+    ``"additional_fields": "allow"`` (top level and/or nested object specs).
     """
     schema_name = schema.get("schema_name")
     if not isinstance(schema_name, str) or not schema_name:
@@ -161,9 +170,12 @@ def validate_record(
     fields = schema.get("fields")
     if not isinstance(fields, dict):
         raise SchemaError(f"{schema_name}: 'fields' must be an object")
+    additional = schema.get("additional_fields", "reject")
+    if additional not in ("reject", "allow"):
+        raise SchemaError(f"{schema_name}: additional_fields must be 'reject' or 'allow'")
 
     errors: list[str] = []
-    _validate_fields(record, fields, "", errors)
+    _validate_fields(record, fields, "", errors, additional_fields=additional)
     if errors:
         raise RecordValidationError(schema_name, location, errors)
 
