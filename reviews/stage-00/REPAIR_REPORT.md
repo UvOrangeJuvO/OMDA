@@ -41,8 +41,8 @@
   3. `T2.6` rollback 删除「var/ 可重置」，改为：真实运行时数据（官方 history、delivery/recovery 证据）受保护，回滚仅限备份、迁移、恢复或非破坏性补偿；**只有 disposable test database 可重建**。
   4. `B.5` 新增数据保护边界段落。
   5. `D.2` 增加 exclusion set 参数测试行；`D.5` 增加架构测试「Core 无 persistence import/call」。
-- **验收证据**：计划不再包含任何「真实运行时历史可删除/重置」表述；Core 纯净性进入架构测试与单元测试要求。
-- **状态**：**CLOSED**。
+- **验收证据**：Core 纯净性进入架构测试与单元测试要求；B.5/T2.6 已改受保护状态规则。**第一轮疏漏更正（Re-review 1 指出）**：当时声称「计划不再包含任何『真实运行时历史可删除/重置』表述」并不属实——**T1.4（存储抽象）的 rollback 仍残留 `var/ 可删可重建（非真源）`**，第一轮漏掉了该行。该行已在本轮（Second repair）真正删除并替换为受保护状态规则（见下方 Second repair 部分）。故第一轮对本 Finding 的结论应为 **PARTIAL，非 CLOSED**。
+- **状态**：**PARTIAL（第一轮）→ CLOSED（第二轮，见下）**。
 
 ## G0-003 — Current handoff worktree is not clean and WorkBuddy memory has no repository policy（P2）
 
@@ -96,3 +96,59 @@
 ## Executor Conclusion
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对修复后新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# Second repair / Re-review 1（2026-08-19）
+
+对应 Reviewer commit：`63f31fb5e47b3569ee4cdeb3d1e3efea42a50087`（`review(g0): request second plan repair`）
+上一候选：`7bec77f3055c9afdad0f61593e985bb1eda8acfc`
+本轮 Candidate：提交后由 Executor 在最终聊天报告中给出精确 SHA（`PROJECT_STATE.json` 的 `candidate_commit` 保持 `null`，避免自引用）
+
+## Re-review 1 状态汇总
+
+| Finding | 严重度 | Re-review 1 判定 | 本轮结果 |
+|---|---|---|---|
+| G0-001 | P1 | CLOSED（原缺陷） | 维持 CLOSED；编号引用随 G1 重排同步修正 |
+| G0-002 | P1 | **OPEN**（T1.4 rollback 残留） | CLOSED（见下） |
+| G0-003 | P2 | CLOSED | 维持 |
+| G0-004 | P2 | CLOSED | 维持 |
+| G0-005 | P2 | CLOSED | 维持 |
+| G0-006 | P1 | **新发现** | CLOSED（见下） |
+
+## G0-002 真正关闭（Re-review 1）
+
+- **根因**：第一轮修复漏掉了 T1.4（存储抽象与 SQLite runtime 层）rollback 行的 `var/ 可删可重建（非真源）`；第一轮报告声称「不再包含任何删除/重置表述」不属实。`var/` 明确承载 official pick history、Album history、delivery receipt 与 run journal，「不是社区数据真源」并不使其可废弃。
+- **修改**：G1 重排后该任务为 **T1.5（SQLite runtime Adapter）**，rollback 修正为受保护状态规则——真实官方 history、run journal、delivery receipt、recovery evidence 均为受保护用户状态，**不得删除/重置**；回滚只能使用备份、迁移、恢复或非破坏性补偿；只有明确创建为测试用途的 **disposable test database** 才能重建；「不是社区数据真源」不等于「可以删除」。
+- **验收证据**：全文搜索 `可删可重建`、授权性 `可重置/可删除` 表述结果为零（仅剩否定性「不得删除/重置」与历史记录文本）。
+- **状态**：**CLOSED**。
+
+## G0-006 依赖方向与 Adapter 归属（Re-review 1 新发现，P1）
+
+三个子问题及修复：
+
+1. **依赖方向统一**：架构图与 B.9 统一为——`Orchestrator → Recommendation Core`（调用纯规则）且 `Orchestrator → Ports`（调用契约）；`Adapters → Ports`（实现契约）；**Core 不调用 GenreSource、HistoryPort、LLM、Delivery 或其他外部 Port**，只接收/返回领域值，零 persistence / vendor / network / 文件读写依赖（B.1/B.9/D.5 架构测试强制）。
+2. **G1 先契约后实现**：G1 重新编号——**T1.4 应用 Port protocols 与领域错误分类**（先于任何具体实现）；**T1.5 SQLite runtime Adapter** 显式实现 History/Journal 相关 Port（依赖 T1.4，不允许先写具体 SQLite abstraction 再反向适配 Port）；T1.6 测试基建与 fixtures。全文档 T1.x 引用已同步修正（T2.1/T2.4/T2.6/T3.1/T4.1/T4.3 等，见 grep 验证）。
+3. **G3/G4 Adapter 归属去重**：T3.1 只实现**数据/来源类**（文本数据集、MusicBrainz/community enrichment、critic 数据、Browser Companion/RYM，以及数据来源的缓存、provenance 与错误映射）；**LLM Provider、Markdown output、PushPlus Delivery 实现独占 G4**（T4.1–T4.3）。每个具体 Adapter 只有唯一实现 Gate；T3.1 已删除对 LLM/Markdown/PushPlus 的实现声称。
+
+- **状态**：**CLOSED**。
+
+## 第二轮实际运行检查
+
+| 命令 | 结果 |
+|---|---|
+| `git branch --show-current` | `exec/g0-plan` |
+| `git rev-parse HEAD`（开始时） | `63f31fb5e47b3569ee4cdeb3d1e3efea42a50087`（含 Reviewer commit） |
+| `git status --short`（开始时） | 空（干净） |
+| grep `可删可重建\|可重置\|可删除`（授权性表述） | 零命中（仅否定性与历史记录） |
+| 全文档 T1.x/T2.x/T3.x/T4.x 引用核对 | 与新编号一致（见 IMPLEMENTATION_PLAN.md） |
+| `git diff --check`（提交前） | 通过（无 whitespace 错误） |
+| `git status --short`（提交后） | 空（干净） |
+
+## 修复范围声明（第二轮）
+
+仅修改允许范围：`governance/IMPLEMENTATION_PLAN.md`、`reviews/stage-00/REPAIR_REPORT.md`（本文件：新增本节 + 更正第一轮 G0-002 结论）、`governance/PROJECT_STATE.json`（仅 updated_at）。`RISK_REGISTER.md` 复核后无真实引用错误，未改动。未修改/删除 `REVIEW_VERDICT.md`；未写 production code；未进入 G1。
+
+## Executor Conclusion（第二轮）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）

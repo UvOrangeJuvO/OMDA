@@ -57,44 +57,41 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 
 ## B. 最小架构与模块职责
 
-目标：Core 纯净、边界显式、依赖单向、平台无关。所有模块按「依赖箭头永远朝内指向 Core」组织。
+目标：Core 纯净、边界显式、依赖单向、平台无关。依赖方向（G0-006 修复）：**Orchestrator → Recommendation Core**（调用纯规则）且 **Orchestrator → Ports**（调用契约）；**Adapters → Ports**（实现契约）；**Core 不指向任何外部 Port**——只接收和返回领域值。
 
 ```text
                         ┌─────────────────────────────┐
                         │  CLI / Scheduler（G5 之前仅 CLI） │
                         └──────────────┬──────────────┘
+                                       │ 调用
                                        ▼
                         ┌─────────────────────────────┐
                         │  Application Orchestrator     │◄── Run Journal（状态机）
                         │  编排一次 run、错误分类、重试、  │
                         │  验证门、交付门、history commit │
-                        └──────────────┬──────────────┘
-                                       ▼
-                        ┌─────────────────────────────┐
-                        │  Recommendation Core（纯/确定性）│◄── Config / Domain Models
-                        │  资格 · cooldown · diversity ·  │
-                        │  去重 · 年份 · 评分组合 · 选择     │
-                        └──────────────┬──────────────┘
-                                       ▼
-                        ┌─────────────────────────────┐
-                        │  Ports（接口，无实现）            │
-                        │  Genre / Album / Critic /     │
-                        │  History / LLM / Delivery     │
-                        └──────────────┬──────────────┘
-                                       ▼
-                        ┌─────────────────────────────┐
-                        │  Adapters                     │
-                        │  文本数据集 · MusicBrainz ·    │
-                        │  Browser Companion · SQLite · │
-                        │  LLM Provider · Markdown ·    │
-                        │  PushPlus                     │
-                        └─────────────────────────────┘
+                        └───────────┬──────────┬───────┘
+                                    │ 调用纯规则  │ 调用 Port 契约
+                                    ▼          ▼
+                  ┌──────────────────────┐  ┌─────────────────────────────┐
+                  │  Recommendation Core  │  │  Ports（接口，无实现）         │
+                  │  纯/确定性 · 领域值进出  │  │  Genre / Album / Critic /    │
+                  │  零 persistence /     │  │  History / LLM / Delivery    │
+                  │  vendor / network /   │  └──────────────┬──────────────┘
+                  │  文件依赖             │                 ▲ 实现
+                  └──────────────────────┘                 │
+                                    ┌───────────────────────┴──────────┐
+                                    │  Adapters                          │
+                                    │  文本数据 · MusicBrainz ·           │
+                                    │  Browser Companion · SQLite        │
+                                    │  LLM Provider · PushPlus           │
+                                    └────────────────────────────────────┘
 ```
 
 ### B.1 Recommendation Core（核心）
 
 - 职责：领域模型 + 纯确定性规则。包括：Genre 资格与等权选择、cooldown 推进、family/parent 集合约束求解、Album canonical 去重与永久排除、年份约束、评分组合（权重/缺失策略/确定性破平）、选择结果生成。
-- 硬约束：**零导入**具体浏览器、RYM DOM、PushPlus、LLM vendor、数据库驱动；只操作领域值与 Ports。
+- 硬约束：**零依赖**——不导入或调用任何外部 Port（GenreSource、HistoryPort、LLM、Delivery 等）、具体浏览器、RYM DOM、PushPlus、LLM vendor、数据库驱动；**零 persistence / vendor / network / 文件读写依赖**（架构测试强制，见 §D.5）。
+- 边界：只接收和返回领域值；历史 exclusion set、配置、seed 等一律以参数输入。
 - 确定性：接受可注入的随机源或 seed；禁止依赖 set/dict 迭代序做排序依据。
 
 ### B.2 Application Orchestrator（应用编排）
@@ -106,7 +103,7 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 
 - 最小接口集：`GenreSource`、`AlbumSource/Enricher`、`CriticRatingSource`、`HistoryPort`、`LLM`、`Delivery`。
 - 每个 Port 定义领域级错误类型（SPEC §8 错误分类），不泄漏供应商控制流。
-- **时序（G0-001 修复）**：G2 Orchestrator 所需的最小 Port protocols 与领域错误分类在 **G1 末尾（T1.6）定义**，先于任何 Orchestrator 工作；G2 全程基于 fake/in-memory 测试实现运行。具体外部 Adapter（RYM/MusicBrainz/PushPlus/LLM vendor 等）在 G3/G4 实现，可经正常 Gate 评审细化 source-specific 契约，但**不是**应用边界的首次出现点。
+- 时序（G0-001 修复）：G2 Orchestrator 所需的最小 Port protocols 与领域错误分类在 **G1 的 T1.4 定义**（位于任何具体实现之前）；G2 全程基于 fake/in-memory 测试实现运行。具体外部 Adapter（RYM/MusicBrainz/PushPlus/LLM vendor 等）在 G3/G4 实现，可经正常 Gate 评审细化 source-specific 契约，但**不是**应用边界的首次出现点。
 
 ### B.4 Adapters（适配器，位于边缘）
 
@@ -141,8 +138,8 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 
 ### B.9 依赖方向与禁止项（架构约束）
 
-- 依赖方向：CLI → Orchestrator → Core；Core → Ports ← Adapters；Storage 只被 Adapters/Orchestrator 用。
-- **Core 纯净性（G0-002 修复，架构测试强制）**：Core 无任何 persistence import/call——不得导入或调用 SQLite、`HistoryStore` 或文件读写；历史 exclusion set 由 Orchestrator/History Port 读取后以**不可变领域输入**传入 Core。
+- 依赖方向（G0-006 修复）：**Orchestrator → Recommendation Core**（调用纯规则，传入领域值）；**Orchestrator → Ports**（调用契约，进行副作用操作）；**Adapters → Ports**（实现契约）；**Core 不调用 GenreSource、HistoryPort、LLM、Delivery 或其他外部 Port**，只接收/返回领域值。Storage 只被 Adapters/Orchestrator 用。
+- **Core 纯净性（G0-002/G0-006 修复，架构测试强制）**：Core 无任何 persistence import/call——不得导入或调用 SQLite、`HistoryStore` 或文件读写；**零 vendor / network / 文件依赖**；历史 exclusion set 由 Orchestrator/History Port 读取后以**不可变领域输入**传入 Core。
 - 禁止（无 ADR 不得引入）：Core 内出现 vendor SDK 或 persistence 导入；社区数据以 SQLite 为真源；历史在交付成功前写入；无界重试/搜索；秘密/cookie/profile 进入仓库工件；Cloudflare 对抗、全量预爬、默认 fan-out；LLM 参与选择。
 
 ---
@@ -153,7 +150,7 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 
 ### C.1 G1 Foundation（对应 SPEC §10：schemas、config、validation、storage boundary、test infra）
 
-**Milestone 目标**：仓库骨架、版本化 Schema 全集、分层配置、SQLite runtime 边界与迁移、测试基建与 fixtures 全部就位；**不含任何推荐逻辑**。
+**Milestone 目标**：仓库骨架、版本化 Schema 全集、分层配置、最小 Port protocols 与领域错误分类（T1.4，先于任何具体实现）、SQLite runtime Adapter（T1.5，实现 History/Journal Port）、测试基建与 fixtures 全部就位；**不含任何推荐逻辑**。
 
 #### T1.1 仓库骨架与工程基线
 - Goal：可安装、可测试、可 lint 的最小工程。
@@ -188,38 +185,38 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 - Rollback：配置纯文本，回退易。
 - Risks：把「可配置」误解为「可改语义」——Schema 注释与测试双重约束。
 
-#### T1.4 存储抽象与 SQLite runtime 层
-- Goal：runtime 状态落库边界；事务、迁移、journal 表骨架。
-- Inputs：SPEC §3.3、§4、§5；MP §5。
-- 允许范围：`omda/storage/` 抽象 + SQLite 实现（append-friendly journal、pick history、album history、cache、idempotency、迁移元数据）。
-- Deliverables：表结构与迁移 v1；事务化读写；schema_version 记录。
-- Tests：事务回滚、迁移幂等、并发/重入基本行为。
-- Acceptance：写入可审计；迁移可检测可备份；社区真源不落 SQLite。
-- Dependencies：T1.2。
-- Rollback：`var/` 可删可重建（非真源）；代码回退用 `git revert`。
-- Risks：把 SQLite 当社区真源——架构约束测试（§D）把关。
-
-#### T1.5 测试基建与 fixtures
-- Goal：fixtures 目录、确定性 seed 工具、property 测试骨架、统计检验骨架。
-- Inputs：SPEC §6、§7；OPH §12。
-- 允许范围：`tests/fixtures/`、`tests/unit|integration|contract/` 骨架、conftest。
-- Deliverables：可复现 seed；Genre/Album/critic fixtures；统计测试基础设施。
-- Tests：fixture 本身过 Schema。
-- Acceptance：任何测试可用 `--seed` 复现；live 网络非必需。
-- Dependencies：T1.2。
-- Rollback：新增测试文件，易回退。
-- Risks：fixture 与真实数据脱节——fixture 附带 provenance 与生成说明。
-
-#### T1.6 应用 Port protocols 与领域错误分类（G0-001 修复：前置至 G1）
-- Goal：在任何 Orchestrator 工作开始前，定义 G2 所需的最小应用边界。
+#### T1.4 应用 Port protocols 与领域错误分类（G0-001 修复；G0-006 编号重排：先契约后实现）
+- Goal：在任何具体实现（含 SQLite runtime Adapter）之前，定义 G2 所需的最小应用边界。
 - Inputs：SPEC §3.1/§3.2/§8；MP §4。
 - 允许范围：`omda/ports/`（接口与领域错误类型，**无实现**）。
 - Deliverables：`GenreSource`、`AlbumSource/Enricher`、`CriticRatingSource`、`HistoryPort`、`LLM`、`Delivery` 六个最小 Port protocol；SPEC §8 领域错误分类（invalid input / unavailable / insufficient candidates / invariant / generation / validation / delivery / state commit）。
 - Tests：契约测试骨架（接口形状、错误分类映射）；**fake/in-memory 测试实现**（供 G2 使用：fake LLM、fake Delivery、in-memory journal/history）。
-- Acceptance：G2 无任何任务依赖 G3 才首次出现的契约；错误分类不泄漏供应商细节。
+- Acceptance：G2 无任何任务依赖 G3 才首次出现的契约；错误分类不泄漏供应商细节；T1.5（SQLite）依赖本任务而非反之。
 - Dependencies：T1.2。
 - Rollback：纯接口层，可 revert。
 - Risks：接口过度设计——按 G2 Orchestrator 实际需要的最小集收敛。
+
+#### T1.5 SQLite runtime Adapter（实现 History/Journal Port；G0-006 编号重排）
+- Goal：为 T1.4 已定义的 History/Journal 相关 Port 提供 SQLite 具体实现；runtime 状态落库边界；事务、迁移、journal 表骨架。
+- Inputs：SPEC §3.3、§4、§5；MP §5；T1.4 契约。
+- 允许范围：`omda/adapters/storage_sqlite.py`（实现 HistoryPort/Journal 相关契约；append-friendly journal、pick history、album history、cache、idempotency、迁移元数据）。**不允许先写具体 SQLite abstraction 再反向适配 Port**。
+- Deliverables：表结构与迁移 v1；事务化读写；schema_version 记录；明确实现对应 Port 契约。
+- Tests：事务回滚、迁移幂等、并发/重入基本行为；契约测试（满足 T1.4 定义的接口形状）。
+- Acceptance：写入可审计；迁移可检测可备份；社区真源不落 SQLite；实现依附契约而非契约依附实现。
+- Dependencies：T1.4（Port 契约）、T1.2。
+- Rollback（G0-002 修复）：真实官方 history、run journal、delivery receipt、recovery evidence 均为受保护用户状态，**不得删除/重置**；回滚只能使用备份、迁移、恢复或非破坏性补偿；只有明确创建为测试用途的 **disposable test database** 才能重建；「不是社区数据真源」不等于「可以删除」。
+- Risks：把 SQLite 当社区真源——架构约束测试（§D.5）把关。
+
+#### T1.6 测试基建与 fixtures
+- Goal：fixtures 目录、确定性 seed 工具、property 测试骨架、统计检验骨架。
+- Inputs：SPEC §6、§7；OPH §12。
+- 允许范围：`tests/fixtures/`、`tests/unit|integration|contract/` 骨架、conftest。
+- Deliverables：可复现 seed；Genre/Album/critic fixtures；统计测试基础设施。
+- Tests：fixture 本身过 Schema；T1.4 的 Port 契约 fake 可被测试复用。
+- Acceptance：任何测试可用 `--seed` 复现；live 网络非必需。
+- Dependencies：T1.2、T1.4。
+- Rollback：新增测试文件，易回退。
+- Risks：fixture 与真实数据脱节——fixture 附带 provenance 与生成说明。
 
 ### C.2 G2 Recommendation Core（SPEC §10 最高风险 Gate）
 
@@ -232,7 +229,7 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 - Deliverables：`eligible()`、等权抽样（无 popularity 输入）、内部 pick 顺序确定性。
 - Tests：等权 property/统计测试（SPEC §7-2）；同一 input+config+seed 可复现（§7 一般要求）。
 - Acceptance：统计上无明显偏差且无 flaky 阈值；随机源可注入。
-- Dependencies：T1.3（配置）、T1.5（seed 工具）。
+- Dependencies：T1.3（配置）、T1.6（seed 工具）。
 - Rollback：Core 纯函数，可 revert；不触历史数据。
 - Risks：R-003 等权被悄悄替代——Core 契约测试禁止 popularity 字段进入选择路径。
 
@@ -265,7 +262,7 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 - Deliverables：`canonical_id` 匹配；run 内 dedup；历史排除（基于**传入的不可变 exclusion set**）；模糊匹配记录歧义且不静默永久封禁。
 - Tests：同名不同发行不误并、同发行不同名仍判重（SPEC §7-6）；跨 Genre 候选重叠不重复选；**以历史 exclusion set 作为参数输入的单元测试**（Core 不读取任何存储）。
 - Acceptance：破坏性永久排除只基于可审查 identity；Core 不读取 SQLite/HistoryStore/文件。
-- Dependencies：T2.1、T1.6（HistoryPort 契约：Orchestrator 读取版本化历史快照/exclusion set 后作为领域输入传入 Core）。
+- Dependencies：T2.1、T1.4（Port 契约：HistoryPort——Orchestrator 读取版本化历史快照/exclusion set 后作为领域输入传入 Core）。
 - Rollback：纯逻辑。
 - Risks：R-004 canonical 错配——fixtures 覆盖混淆场景。
 
@@ -287,22 +284,22 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 - Deliverables：状态机推进；每步失败落 FAILED 且历史不变（SPEC §7-9）；delivered-but-not-committed 恢复（§7-10）；崩溃重跑（§7-11）。
 - Tests：**本任务全程针对 T1.6 定义的 Port 契约运行，使用 fake/in-memory 测试实现**——fake LLM（返回预置文本）、fake Delivery（记录投递收据）、in-memory journal/history；覆盖 GENERATE、DELIVER、journal 与 history 各状态迁移；失败注入（fetch/generate/validate/deliver 各失败）；交付成功但 commit 失败的恢复；每个持久转变点崩溃重放。具体 LLM/PushPlus/RYM 等外部 Adapter 在 G3/G4 实现，不阻塞本任务。
 - Acceptance：官方 history 仅在 DELIVERED 后写；幂等键稳定；恢复查询持久证据而非记忆。
-- Dependencies：T2.1–T2.5、T1.4（存储实现）、T1.6（Port 契约）。
+- Dependencies：T2.1–T2.5、T1.5（SQLite runtime Adapter）、T1.4（Port 契约）。
 - Rollback（G0-002 修复）：状态机逻辑 revert；**真实运行时数据（官方 history、delivery/recovery 证据）受保护，回滚仅限备份、迁移、恢复或非破坏性补偿，不得删除/重置**；只有 disposable test database 可重建。
 - Risks：R-001/R-009——本 Gate 核心风险，测试矩阵专门覆盖。
 
 ### C.3 G3 Data & Adapters（SPEC §10：数据与 adapter 契约、provenance、缓存、Browser Companion 边界）
 
-**Milestone 目标**：Port 契约定型；文本数据、MusicBrainz、critic、Browser Companion 各 adapter 以 fixtures 为主可测；live RYM 非必需。
+**Milestone 目标**：数据/来源类 Adapter 实现（文本数据、MusicBrainz/community enrichment、critic、Browser Companion/RYM）以 fixtures 为主可测；**LLM/Markdown/PushPlus 实现归属 G4，不在本 Gate**；live RYM 非必需。
 
-#### T3.1 具体外部 Adapter 实现（基于 G1/T1.6 既有 Port 契约）
-- Goal：为 G1/T1.6 已定义的六个 Port 契约提供具体外部实现；**Port 接口的首次定义不在本任务**。
-- Inputs：SPEC §3.1/§3.2/§8；MP §4；T1.6 契约。
-- 允许范围：`omda/adapters/` 实现类（文本数据集、MusicBrainz、Browser Companion、LLM Provider、Markdown/PushPlus；SQLite 存储实现已在 T1.4）。
-- Deliverables：各 Adapter 实现 + 错误分类映射；source-specific 契约细化（如有）必须经正常 Gate 评审，不得改变 T1.6 已定应用边界。
+#### T3.1 数据/来源类 Adapter 实现（G0-006 修复：G3 独占数据与 enrichment 边界）
+- Goal：为 T1.4 已定义的 Port 契约提供**数据/来源类**具体实现；**Port 接口的首次定义不在本任务**；LLM/Markdown/PushPlus 实现归属 G4，本任务**不得**实现。
+- Inputs：SPEC §3.1/§3.2/§8；MP §4；T1.4 契约。
+- 允许范围：`omda/adapters/` 中**数据/来源类**实现——文本数据集、MusicBrainz/community enrichment、critic 数据、Browser Companion/RYM；以及数据来源的缓存、provenance 与错误映射。SQLite runtime Adapter 已在 T1.5。
+- Deliverables：上述 Adapter 实现 + 错误分类映射；source-specific 契约细化（如有）必须经正常 Gate 评审，不得改变 T1.4 已定应用边界。
 - Tests：契约测试（§D.5）；每个 Adapter 的 fixtures 测试（SPEC §7-12）。
-- Acceptance：Core 只见领域错误，不见供应商细节；Port 接口形状不因 Adapter 实现而返工。
-- Dependencies：G2 全部、T1.6。
+- Acceptance：每个具体 Adapter 只有唯一实现 Gate（LLM Provider、Markdown output、PushPlus Delivery 的实现归属 G4/T4.1–T4.3，本任务不得重复实现）。
+- Dependencies：G2 全部、T1.4（Port 契约）。
 - Rollback：Adapter 可独立回退。
 - Risks：接口过度设计——按最小集收敛，任何多余抽象需自证。
 
@@ -361,7 +358,7 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 - Deliverables：事实包构造；系统指令不可被外部文本覆盖；供应商 SDK 仅在此处。
 - Tests：prompt-injection 隔离（SPEC §7-13）。
 - Acceptance：LLM 输出不改变任何选择结果。
-- Dependencies：T3.1、G2。
+- Dependencies：T1.4（Port 契约）、G2 全部。
 - Rollback：adapter 可替换。
 - Risks：R-008 注入——测试固化「外部文本只作数据」。
 
@@ -383,7 +380,7 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 - Deliverables：幂等键（由 run id 派生）；投递收据写入 runtime 存储；重试边界。
 - Tests：重复投递防护；PushPlus 长度/转义（OPH §12）。
 - Acceptance：同一 run 重放不产生第二次外部投递。
-- Dependencies：T1.4、T4.2。
+- Dependencies：T1.5（SQLite runtime Adapter）、T4.2。
 - Rollback：不投递即回滚；已投递走补偿协议。
 - Risks：R-001 重复投递——幂等测试为 Gate 阻断项。
 
@@ -560,11 +557,15 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 自批判结论：本稿已在上述八点上完成修订；未发现需触发 BLOCKED_ARCHITECTURE 或 ADR 的高层冲突（详见报告 §5 规范理解矩阵——全部一致）。
 
 > G0 独立评审修复记录（2026-08-19，详见 `reviews/stage-00/REPAIR_REPORT.md`）：
-> - G0-001：Port protocols 与领域错误分类前置至 G1/T1.6；G2 全程 fake/in-memory 测试；G3 只实现具体外部 Adapter。
-> - G0-002：Core 零 persistence（架构测试强制）；历史 exclusion set 作为参数输入；真实运行时数据受保护（不再出现「var/ 可重置」表述）。
-> - G0-003：`.workbuddy/` 加入 `.gitignore`（不删除目录）。
-> - G0-004：R-010 优先级修正为 P1（与 RISK_REGISTER 一致）；OD-4 引用修正为 R-006/R-005。
-> - G0-005：Open Decisions 分为 Owner 产品决策 / 架构-ADR 决策 / 可逆工程选择 三类。
+> - **第一轮（Re-review 0 对应）**：
+>   - G0-001：Port protocols 与领域错误分类前置至 G1（当时编号 T1.6）；G2 全程 fake/in-memory 测试；G3 只实现具体外部 Adapter。
+>   - G0-002（部分）：Core 零 persistence（架构测试强制）；历史 exclusion set 作为参数输入；B.5/T2.6 真实运行时数据受保护。**但当时漏掉了 T1.4 的 rollback 一行（「var/ 可删可重建」），见第二轮修正**。
+>   - G0-003：`.workbuddy/` 加入 `.gitignore`（不删除目录）。
+>   - G0-004：R-010 优先级修正为 P1（与 RISK_REGISTER 一致）；OD-4 引用修正为 R-006/R-005。
+>   - G0-005：Open Decisions 分为 Owner 产品决策 / 架构-ADR 决策 / 可逆工程选择 三类。
+> - **第二轮（Re-review 1 对应，2026-08-19）**：
+>   - G0-002（真正关闭）：T1.5（原 T1.4）rollback 修正为受保护状态规则，删除「var/ 可删可重建（非真源）」；明确「不是社区数据真源」≠「可以删除」。
+>   - G0-006：依赖方向统一为 Orchestrator → Core 且 Orchestrator → Ports ← Adapters（Core 不指向任何外部 Port）；G1 重排为先契约（T1.4 Port）后实现（T1.5 SQLite，显式实现 History/Journal Port）；G3 仅数据/来源类 Adapter，LLM/Markdown/PushPlus 独占 G4。
 
 ---
 
