@@ -610,8 +610,10 @@ class MisboundReceiptDelivery:
         self._key = idempotency_key
         self._channel = channel
         self._status = status
+        self.calls = 0
 
     def deliver(self, payload, idempotency_key, target=None):
+        self.calls += 1
         return DeliveryReceipt(
             run_id=self._run_id if self._run_id is not None else "",
             idempotency_key=self._key if self._key is not None else idempotency_key,
@@ -631,9 +633,6 @@ MISBOUND_CASES = [
     pytest.param(
         {"channel": "pushplus"}, "wrong channel", id="wrong-channel"
     ),
-    pytest.param(
-        {"status": "failed"}, "failed status", id="failed-status"
-    ),
 ]
 
 
@@ -643,13 +642,18 @@ def test_misbound_receipt_never_commits_history(factory, overrides, label) -> No
     history = factory()
     delivery = MisboundReceiptDelivery(**overrides)
     outcome = _engine(history, delivery=delivery).run("run-1")
-    assert outcome.state == FAILED, f"{label} must fail closed"
-    # No official history written; no receipt stored under the run's key.
+    # G2-012: an ok-but-misbound receipt is delivery AMBIGUITY -> RECOVERING
+    # (manual review), never an ordinary terminal failure and never history.
+    assert outcome.state == RECOVERING, f"{label} must enter recovery"
     assert history.latest_pick_index() == 0
     assert history.excluded_album_identities() == frozenset()
     assert history.find_delivery_receipt("run-1:markdown") is None
     tails = [e.transition for e in history.journal_after("run-1", 0)]
-    assert tails[-1] == FAILED
+    assert tails[-1] == RECOVERING
+    # Anomaly is auditable in the journal.
+    anomaly = next(e for e in history.journal_after("run-1", 0) if e.transition == "RECOVERING")
+    assert anomaly.detail is not None
+    assert "ok delivery receipt does not match" in anomaly.detail["reason"]
 
 
 @pytest.mark.parametrize("factory", HISTORY_FACTORIES)
@@ -739,3 +743,25 @@ def test_parent_unsatisfiable_fails_explicitly() -> None:
     outcome = engine.run("run-1")
     assert outcome.state == FAILED
     assert history.latest_pick_index() == 0  # nothing committed
+
+
+# --- G2-012: ambiguous successful delivery enters recovery, never terminal -----
+
+
+@pytest.mark.parametrize("overrides,label", MISBOUND_CASES)
+def test_ambiguous_delivery_records_one_effect_and_never_redelivers(overrides, label) -> None:
+    # The external side effect already happened (one deliver call); the misbound
+    # ok receipt cannot prove otherwise. Repeated run() must not re-deliver.
+    history = InMemoryHistory()
+    delivery = MisboundReceiptDelivery(**overrides)
+    engine = _engine(history, delivery=delivery)
+    first = engine.run("run-1")
+    assert first.state == RECOVERING
+    assert delivery.calls == 1  # exactly one external delivery attempt
+    # Repeated run() of the same id: durable recovery state, no second push.
+    second = engine.run("run-1")
+    assert second.state == RECOVERING
+    assert delivery.calls == 1
+    # History never committed.
+    assert history.latest_pick_index() == 0
+    assert history.excluded_album_identities() == frozenset()

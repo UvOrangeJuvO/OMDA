@@ -473,35 +473,49 @@ class RunEngine:
 
     def _receipt_matches(self, receipt: DeliveryReceipt, run_id: str, key: str) -> bool:
         """G2-009: a receipt only authorises official history for the current run
-        when it is bound to the exact run id, idempotency key, configured channel
-        and a successful status."""
+        when it is bound to the exact run id, idempotency key and configured
+        channel. Success status is checked separately (G2-012)."""
         return (
             receipt.run_id == run_id
             and receipt.idempotency_key == key
             and receipt.channel == self._config.delivery.channel
-            and receipt.status == "ok"
         )
 
     def _deliver_and_commit(self, run_id: str, plan: Plan, payload: str) -> RunOutcome:
         key = self._idempotency_key(run_id)
         self._append(run_id, DELIVERING, {"idempotency_key": key})
         receipt = self._delivery.deliver(payload, key)
-        if not self._receipt_matches(receipt, run_id, key):
-            # G2-009: an unbound receipt (wrong run/key/channel or non-ok status)
-            # must fail closed WITHOUT committing official history; no receipt is
-            # stored under a key it does not own.
+        if receipt.status != "ok":
+            # A confirmed delivery failure (the adapter explicitly reported a
+            # non-success status) is an ordinary terminal failure.
             self._append(
                 run_id,
                 FAILED,
                 {
-                    "reason": "delivery receipt does not match run/key/channel/status",
+                    "reason": "delivery reported failure",
+                    "receipt_status": receipt.status,
+                },
+            )
+            return RunOutcome(run_id=run_id, state=FAILED, payload=payload)
+        if not self._receipt_matches(receipt, run_id, key):
+            # G2-012: an OK-status receipt bound to another run/key/channel is
+            # delivery AMBIGUITY, not a confirmed failure — the external call may
+            # already have delivered. Fail closed into RECOVERING (manual review)
+            # with durable anomaly evidence; never commit history, never re-push.
+            self._append(
+                run_id,
+                RECOVERING,
+                {
+                    "reason": "ok delivery receipt does not match run/key/channel",
                     "receipt_run_id": receipt.run_id,
                     "receipt_key": receipt.idempotency_key,
                     "receipt_channel": receipt.channel,
                     "receipt_status": receipt.status,
                 },
             )
-            return RunOutcome(run_id=run_id, state=FAILED, payload=payload)
+            return RunOutcome(
+                run_id=run_id, state=RECOVERING, plan=plan, payload=payload, receipt=receipt
+            )
         try:
             self._history.save_delivery_receipt(receipt)  # durable evidence first
         except InvariantFailureError as exc:
@@ -551,9 +565,13 @@ class RunEngine:
         plan = Plan.from_digest(run_id, digest)
         key = self._idempotency_key(run_id)
         receipt = self._history.find_delivery_receipt(key)
-        if receipt is None or not self._receipt_matches(receipt, run_id, key):
-            # G2-009: missing OR unbound evidence -> do NOT re-push; fail closed
-            # for human review; no official history mutation.
+        if (
+            receipt is None
+            or receipt.status != "ok"
+            or not self._receipt_matches(receipt, run_id, key)
+        ):
+            # G2-009/G2-012: missing, failed OR unbound evidence -> do NOT re-push;
+            # fail closed for human review; no official history mutation.
             self._append(run_id, RECOVERING, {"reason": "delivery evidence missing or mismatched"})
             return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
         try:
