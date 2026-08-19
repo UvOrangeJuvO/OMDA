@@ -281,3 +281,51 @@ The repair remains within G1. The Reviewer reran the complete suite, replayed th
 **CHANGES_REQUESTED**
 
 G1-003 is now fully closed and the broad error-boundary repair is correct for seven of eight public Port operations. One narrow P1 remains in `commit_history()` because its transaction context sits outside the exception boundary. G1 must not be merged and G2 must not begin. The next repair should change only that transaction boundary, add the missing failure probes, update G1 evidence and return to `READY_FOR_REVIEW`.
+
+---
+
+## Re-review 4 — candidate `d280e7879fad7a4714a83c1add1e3ae60a06484c`
+
+### Final verification
+
+- Original G1 base: `5361b64d544c3134be9ba2b25a041ff146da613a`
+- Previous repair candidate: `6b30b55d4c27af1979aaf42b53ade80deb838578`
+- Previous Reviewer commit: `44d512d0d00f425eda5c05c96ef55c6308b8ba89`
+- Final candidate: `d280e7879fad7a4714a83c1add1e3ae60a06484c`
+- Repair commit: `ed72986`; review-package commit: `d280e78`
+- Candidate branch observed: `exec/g1-foundation`
+- Worktree at review start and after read-only checks: clean
+- `git merge-base` equals the exact accepted G0/main base
+- `git diff --check`: passed
+- Independent full suite: **110 passed**
+- Independent Ruff run: passed
+- Independent closed-connection reproduction: `commit_history()` now raises `StateCommitFailureError` with `sqlite3.ProgrammingError` preserved as `__cause__`
+- Scope check: no G2 Recommendation Core or external-adapter implementation was added
+
+### Final finding closure
+
+| Finding | Final status | Evidence |
+|---|---|---|
+| G1-001 (P0) atomic official-history commit | **CLOSED** | one transaction covers all picks, Albums and `HISTORY_COMMITTED`; failures roll back all three areas |
+| G1-002 (P0) immutable delivery evidence | **CLOSED** | exact replay is a no-op; conflicting receipts cannot replace stored evidence |
+| G1-003 (P1) strict and unconditional schema validation | **CLOSED** | unknown fields are strict by default and the schema tree is checked independently of record shape |
+| G1-004 (P2) immutable domain snapshots | **CLOSED** | exclusion inputs are immutable and journal detail is recursively snapshotted/frozen |
+| G1-005 (P1) fake/SQLite parity and provider-error boundary | **CLOSED** | batch conflicts match across implementations; every public HistoryPort operation translates SQLite failures; transaction entry/body/finalization are guarded |
+| G0-007 G1 follow-up | **CLOSED** | stale task reference and journal ownership decision were resolved and documented |
+
+### Final acceptance assessment
+
+- T1.1 repository skeleton/tooling: PASS
+- T1.2 versioned schemas and precise validation: PASS
+- T1.3 layered configuration: PASS
+- T1.4 Port contracts, fakes and domain taxonomy: PASS
+- T1.5 protected transactional SQLite runtime adapter: PASS
+- T1.6 deterministic fixtures/test infrastructure: PASS
+- Architecture boundaries and G1 scope: PASS
+- Open P0/P1 findings: **none**
+
+### Final G1 verdict
+
+**ACCEPTED**
+
+Acceptance applies only to candidate `d280e7879fad7a4714a83c1add1e3ae60a06484c` against base `5361b64d544c3134be9ba2b25a041ff146da613a`. All known G1 findings are closed and no blocking finding remains. G1 may now be merged into `main`; G2 may begin only after that merge is complete and a new G2 branch is created from the resulting accepted main baseline. The Reviewer does not perform that merge, tag or G2 transition as part of this verdict.
