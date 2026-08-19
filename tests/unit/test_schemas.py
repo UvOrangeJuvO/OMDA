@@ -116,8 +116,89 @@ def test_invalid_additional_fields_policy_is_schema_error() -> None:
         "additional_fields": "maybe",
         "fields": {},
     }
-    with pytest.raises(SchemaError):
+    with pytest.raises(SchemaError) as exc:
         validate_record(bad_schema, {})
+    assert "bad.additional_fields" in str(exc.value)
+    assert "'reject' or 'allow'" in str(exc.value)
+
+
+def test_nested_one_level_invalid_policy_is_schema_error() -> None:
+    from omda.schemas.validator import SchemaError, validate_record
+
+    schema = {
+        "schema_name": "nested1",
+        "schema_version": 1,
+        "fields": {
+            "delivery": {
+                "type": "object",
+                "additional_fields": "typo",
+                "fields": {"channel": {"type": "string", "required": True}},
+            }
+        },
+    }
+    with pytest.raises(SchemaError) as exc:
+        validate_record(schema, {"delivery": {"channel": "markdown"}})
+    assert "nested1.fields.delivery.additional_fields" in str(exc.value)
+    assert "'reject' or 'allow'" in str(exc.value)
+
+
+def test_multi_level_invalid_policy_is_schema_error() -> None:
+    from omda.schemas.validator import SchemaError, validate_record
+
+    schema = {
+        "schema_name": "nested2",
+        "schema_version": 1,
+        "fields": {
+            "outer": {
+                "type": "object",
+                "fields": {
+                    "inner": {
+                        "type": "object",
+                        "additional_fields": "permissive",
+                        "fields": {"x": {"type": "integer", "required": True}},
+                    }
+                },
+            }
+        },
+    }
+    with pytest.raises(SchemaError) as exc:
+        validate_record(schema, {"outer": {"inner": {"x": 1}}})
+    assert "nested2.fields.outer.fields.inner.additional_fields" in str(exc.value)
+
+
+def test_nested_reject_rejects_unknown_fields() -> None:
+    from omda.schemas.validator import RecordValidationError, validate_record
+
+    schema = {
+        "schema_name": "nest_reject",
+        "schema_version": 1,
+        "fields": {
+            "delivery": {
+                "type": "object",
+                "fields": {"channel": {"type": "string", "required": True}},
+            }
+        },
+    }
+    with pytest.raises(RecordValidationError) as exc:
+        validate_record(schema, {"delivery": {"channel": "markdown", "chanel": "x"}})
+    assert any("delivery.chanel" in e and "unknown field" in e for e in exc.value.errors)
+
+
+def test_nested_allow_accepts_unknown_fields() -> None:
+    from omda.schemas.validator import validate_record
+
+    schema = {
+        "schema_name": "nest_allow",
+        "schema_version": 1,
+        "fields": {
+            "delivery": {
+                "type": "object",
+                "additional_fields": "allow",
+                "fields": {"channel": {"type": "string", "required": True}},
+            }
+        },
+    }
+    validate_record(schema, {"delivery": {"channel": "markdown", "future": 1}}, "x.json:1")
 
 
 def test_schema_error_on_missing_schema_name() -> None:

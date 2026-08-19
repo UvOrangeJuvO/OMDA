@@ -83,15 +83,28 @@ def _check_format(value: str, fmt: str) -> bool:
     raise SchemaError(f"unsupported format {fmt!r}")
 
 
+def _validate_policy(policy: Any, schema_path: str) -> None:
+    """Validate an ``additional_fields`` policy value at any object scope (G1-003).
+
+    Raises ``SchemaError`` with the full schema path so a schema-author typo can
+    never silently disable strict validation for a nested object.
+    """
+    if policy not in ("reject", "allow"):
+        raise SchemaError(
+            f"{schema_path}: additional_fields must be 'reject' or 'allow', got {policy!r}"
+        )
+
+
 def _validate_value(
     path: str,
     value: Any,
     spec: dict[str, Any],
     errors: list[str],
+    schema_path: str = "",
 ) -> None:
     type_name = spec.get("type", "string")
     if type_name not in _SUPPORTED_TYPES:
-        raise SchemaError(f"{path}: unsupported type {type_name!r}")
+        raise SchemaError(f"{schema_path or path}: unsupported type {type_name!r}")
 
     if not _type_matches(value, type_name):
         errors.append(f"{path}: expected {type_name}, got {type(value).__name__}")
@@ -120,13 +133,24 @@ def _validate_value(
         items = spec.get("items")
         if items is not None:
             for idx, item in enumerate(value):
-                _validate_value(f"{path}[{idx}]", item, items, errors)
+                _validate_value(
+                    f"{path}[{idx}]", item, items, errors, schema_path=f"{schema_path}.items"
+                )
 
     elif type_name == "object":
         fields = spec.get("fields")
-        if fields is not None:
+        if "additional_fields" in spec or fields is not None:
             nested_policy = spec.get("additional_fields", "reject")
-            _validate_fields(value, fields, path, errors, additional_fields=nested_policy)
+            _validate_policy(nested_policy, f"{schema_path}.additional_fields")
+        if fields is not None:
+            _validate_fields(
+                value,
+                fields,
+                path,
+                errors,
+                additional_fields=spec.get("additional_fields", "reject"),
+                schema_path=f"{schema_path}.fields",
+            )
 
 
 def _validate_fields(
@@ -135,6 +159,7 @@ def _validate_fields(
     base_path: str,
     errors: list[str],
     additional_fields: str = "reject",
+    schema_path: str = "",
 ) -> None:
     if additional_fields == "reject":
         declared = set(fields)
@@ -147,7 +172,13 @@ def _validate_fields(
             if spec.get("required", False):
                 errors.append(f"{path}: missing required field")
             continue
-        _validate_value(path, record[field_name], spec, errors)
+        _validate_value(
+            path,
+            record[field_name],
+            spec,
+            errors,
+            schema_path=f"{schema_path}.{field_name}",
+        )
 
 
 def validate_record(
@@ -171,11 +202,17 @@ def validate_record(
     if not isinstance(fields, dict):
         raise SchemaError(f"{schema_name}: 'fields' must be an object")
     additional = schema.get("additional_fields", "reject")
-    if additional not in ("reject", "allow"):
-        raise SchemaError(f"{schema_name}: additional_fields must be 'reject' or 'allow'")
+    _validate_policy(additional, f"{schema_name}.additional_fields")
 
     errors: list[str] = []
-    _validate_fields(record, fields, "", errors, additional_fields=additional)
+    _validate_fields(
+        record,
+        fields,
+        "",
+        errors,
+        additional_fields=additional,
+        schema_path=f"{schema_name}.fields",
+    )
     if errors:
         raise RecordValidationError(schema_name, location, errors)
 
