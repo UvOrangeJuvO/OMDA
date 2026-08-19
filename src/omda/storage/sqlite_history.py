@@ -30,7 +30,11 @@ from omda.ports.domain import (
     JournalEntry,
     thaw_json,
 )
-from omda.ports.errors import InvariantFailureError, StateCommitFailureError
+from omda.ports.errors import (
+    InvariantFailureError,
+    SourceUnavailableError,
+    StateCommitFailureError,
+)
 
 _SCHEMA_VERSION = 1
 
@@ -84,14 +88,27 @@ class SqliteHistory:
 
     A single connection is held for the lifetime of the adapter so ``:memory:``
     databases behave correctly; call :meth:`close` when done.
+
+    Error boundary (G1-005): every public HistoryPort operation translates
+    unexpected ``sqlite3.Error`` into the domain taxonomy — state writes surface
+    ``StateCommitFailureError``, reads/availability surface
+    ``SourceUnavailableError``, and the provider exception is preserved as
+    ``__cause__``. Intentional ``InvariantFailureError`` conflicts are never
+    caught or replaced.
     """
 
     def __init__(self, path: str | Path) -> None:
         self._path = str(path)
-        self._conn = sqlite3.connect(self._path)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA foreign_keys = ON")
-        self._migrate(self._conn)
+        try:
+            conn = sqlite3.connect(self._path)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            self._migrate(conn)
+        except sqlite3.Error as exc:
+            raise SourceUnavailableError(
+                f"cannot open/migrate runtime store at {self._path!r}"
+            ) from exc
+        self._conn = conn
 
     def close(self) -> None:
         self._conn.close()
@@ -122,17 +139,23 @@ class SqliteHistory:
         at: str,
         detail: dict | None = None,
     ) -> JournalEntry:
-        with self._conn as conn:
-            cursor = conn.execute(
-                "INSERT INTO run_journal (run_id, transition, at, detail) VALUES (?, ?, ?, ?)",
-                (
-                    run_id,
-                    transition,
-                    at,
-                    json.dumps(thaw_json(detail)) if detail is not None else None,
-                ),
-            )
-            journal_id = int(cursor.lastrowid)
+        try:
+            with self._conn as conn:
+                cursor = conn.execute(
+                    "INSERT INTO run_journal (run_id, transition, at, detail) VALUES (?, ?, ?, ?)",
+                    (
+                        run_id,
+                        transition,
+                        at,
+                        json.dumps(thaw_json(detail)) if detail is not None else None,
+                    ),
+                )
+                journal_id = int(cursor.lastrowid)
+        except sqlite3.Error as exc:
+            raise StateCommitFailureError(
+                f"append_journal failed for run {run_id!r}",
+                detail={"run_id": run_id},
+            ) from exc
         return JournalEntry(
             journal_id=journal_id,
             run_id=run_id,
@@ -142,12 +165,18 @@ class SqliteHistory:
         )
 
     def journal_after(self, run_id: str, after_journal_id: int) -> list[JournalEntry]:
-        with self._conn as conn:
-            rows = conn.execute(
-                "SELECT journal_id, run_id, transition, at, detail FROM run_journal "
-                "WHERE run_id = ? AND journal_id > ? ORDER BY journal_id ASC",
-                (run_id, after_journal_id),
-            ).fetchall()
+        try:
+            with self._conn as conn:
+                rows = conn.execute(
+                    "SELECT journal_id, run_id, transition, at, detail FROM run_journal "
+                    "WHERE run_id = ? AND journal_id > ? ORDER BY journal_id ASC",
+                    (run_id, after_journal_id),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise SourceUnavailableError(
+                f"journal read failed for run {run_id!r}",
+                detail={"run_id": run_id},
+            ) from exc
         return [
             JournalEntry(
                 journal_id=int(row["journal_id"]),
@@ -162,27 +191,41 @@ class SqliteHistory:
     # -- official history reads -------------------------------------------------
 
     def latest_pick_index(self) -> int:
-        with self._conn as conn:
-            row = conn.execute(
-                "SELECT COALESCE(MAX(pick_index), 0) AS m FROM genre_pick_history"
-            ).fetchone()
+        try:
+            with self._conn as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(pick_index), 0) AS m FROM genre_pick_history"
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise SourceUnavailableError(
+                "latest_pick_index read failed"
+            ) from exc
         return int(row["m"])
 
     def cooldown_pick_indices(self, genre_id: str) -> list[int]:
-        with self._conn as conn:
-            rows = conn.execute(
-                "SELECT pick_index FROM genre_pick_history "
-                "WHERE genre_id = ? ORDER BY pick_index ASC",
-                (genre_id,),
-            ).fetchall()
+        try:
+            with self._conn as conn:
+                rows = conn.execute(
+                    "SELECT pick_index FROM genre_pick_history "
+                    "WHERE genre_id = ? ORDER BY pick_index ASC",
+                    (genre_id,),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise SourceUnavailableError(
+                f"cooldown_pick_indices read failed for genre {genre_id!r}",
+                detail={"genre_id": genre_id},
+            ) from exc
         return [int(row["pick_index"]) for row in rows]
 
     def excluded_album_identities(self) -> frozenset[AlbumIdentity]:
-        with self._conn as conn:
-            rows = conn.execute(
-                "SELECT album_id, canonical_id, canonical_source, identity_confidence "
-                "FROM album_history"
-            ).fetchall()
+        try:
+            with self._conn as conn:
+                rows = conn.execute(
+                    "SELECT album_id, canonical_id, canonical_source, identity_confidence "
+                    "FROM album_history"
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise SourceUnavailableError("excluded_album_identities read failed") from exc
         return frozenset(
             AlbumIdentity(
                 album_id=row["album_id"],
@@ -278,49 +321,62 @@ class SqliteHistory:
     # -- delivery receipts (immutable idempotency evidence, G1-002) -------------
 
     def save_delivery_receipt(self, receipt: DeliveryReceipt) -> DeliveryReceipt:
-        with self._conn as conn:
-            row = conn.execute(
-                "SELECT run_id, delivered_at, channel, status, target "
-                "FROM delivery_receipt WHERE idempotency_key = ?",
-                (receipt.idempotency_key,),
-            ).fetchone()
-            if row is None:
-                conn.execute(
-                    "INSERT INTO delivery_receipt "
-                    "(idempotency_key, run_id, delivered_at, channel, status, target) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        receipt.idempotency_key,
-                        receipt.run_id,
-                        receipt.delivered_at,
-                        receipt.channel,
-                        receipt.status,
-                        receipt.target,
-                    ),
+        try:
+            with self._conn as conn:
+                row = conn.execute(
+                    "SELECT run_id, delivered_at, channel, status, target "
+                    "FROM delivery_receipt WHERE idempotency_key = ?",
+                    (receipt.idempotency_key,),
+                ).fetchone()
+                if row is None:
+                    conn.execute(
+                        "INSERT INTO delivery_receipt "
+                        "(idempotency_key, run_id, delivered_at, channel, status, target) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            receipt.idempotency_key,
+                            receipt.run_id,
+                            receipt.delivered_at,
+                            receipt.channel,
+                            receipt.status,
+                            receipt.target,
+                        ),
+                    )
+                    return receipt
+                existing = DeliveryReceipt(
+                    run_id=row["run_id"],
+                    idempotency_key=receipt.idempotency_key,
+                    delivered_at=row["delivered_at"],
+                    channel=row["channel"],
+                    status=row["status"],
+                    target=row["target"],
                 )
-                return receipt
-            existing = DeliveryReceipt(
-                run_id=row["run_id"],
-                idempotency_key=receipt.idempotency_key,
-                delivered_at=row["delivered_at"],
-                channel=row["channel"],
-                status=row["status"],
-                target=row["target"],
-            )
-            if existing == receipt:
-                return existing  # exact replay: no-op
-            raise InvariantFailureError(
-                f"delivery receipt conflict for key {receipt.idempotency_key!r}; "
-                "evidence is immutable (G1-002)"
-            )
+                if existing == receipt:
+                    return existing  # exact replay: no-op
+                raise InvariantFailureError(
+                    f"delivery receipt conflict for key {receipt.idempotency_key!r}; "
+                    "evidence is immutable (G1-002)"
+                )
+        except sqlite3.Error as exc:
+            # InvariantFailureError above is not a sqlite3.Error and passes through.
+            raise StateCommitFailureError(
+                f"save_delivery_receipt failed for key {receipt.idempotency_key!r}",
+                detail={"idempotency_key": receipt.idempotency_key},
+            ) from exc
 
     def find_delivery_receipt(self, idempotency_key: str) -> DeliveryReceipt | None:
-        with self._conn as conn:
-            row = conn.execute(
-                "SELECT idempotency_key, run_id, delivered_at, channel, status, target "
-                "FROM delivery_receipt WHERE idempotency_key = ?",
-                (idempotency_key,),
-            ).fetchone()
+        try:
+            with self._conn as conn:
+                row = conn.execute(
+                    "SELECT idempotency_key, run_id, delivered_at, channel, status, target "
+                    "FROM delivery_receipt WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise SourceUnavailableError(
+                f"find_delivery_receipt failed for key {idempotency_key!r}",
+                detail={"idempotency_key": idempotency_key},
+            ) from exc
         if row is None:
             return None
         return DeliveryReceipt(
