@@ -1,6 +1,6 @@
 {
   "schema_name": "config",
-  "schema_version": 1,
+  "schema_version": 2,
   "fields": {
     "daily_genre_count": {"type": "integer", "required": false, "min": 1, "max": 10},
     "albums_per_genre": {"type": "integer", "required": false, "min": 1, "max": 10},
@@ -10,7 +10,11 @@
     "genre_parent_limits": {
       "type": "object",
       "required": false,
-      "additional_fields": "allow",
+      "additional_fields": {
+        "type": "integer",
+        "min": 1,
+        "max": 10
+      },
       "fields": {}
     },
     "delivery": {

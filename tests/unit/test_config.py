@@ -75,3 +75,68 @@ def test_config_round_trip_through_mapping() -> None:
     assert mapping["seed"] == "fixed-seed"
     assert mapping["delivery"] == {"channel": "pushplus", "pushplus_token_env": "PUSHPLUS_TOKEN"}
     assert load_config(overrides=mapping) == cfg
+
+
+# --- G2-011: genre_parent_limits are value-validated and immutable ------------
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        "one",        # string
+        -1,           # negative
+        0,            # zero would permanently starve a parent
+        1.5,          # float
+        True,         # bool is not an integer
+        {"nested": 1},  # nested object
+    ],
+    ids=["string", "negative", "zero", "float", "bool", "nested-object"],
+)
+def test_invalid_parent_limit_rejected_at_exact_path(bad_value) -> None:
+    with pytest.raises(RecordValidationError) as exc:
+        load_config(overrides={"genre_parent_limits": {"electronic": bad_value}})
+    assert any(
+        "genre_parent_limits.electronic" in e for e in exc.value.errors
+    ), exc.value.errors
+
+
+def test_valid_parent_limits_load_and_round_trip() -> None:
+    cfg = load_config(overrides={"genre_parent_limits": {"electronic": 1, "jazz": 2}})
+    assert cfg.genre_parent_limits["electronic"] == 1
+    assert cfg.genre_parent_limits["jazz"] == 2
+    assert load_config(overrides=config_to_dict(cfg)) == cfg
+
+
+def test_original_overrides_mutation_cannot_alter_config() -> None:
+    overrides = {"genre_parent_limits": {"electronic": 1}}
+    cfg = load_config(overrides=overrides)
+    overrides["genre_parent_limits"]["electronic"] = 9
+    assert cfg.genre_parent_limits["electronic"] == 1
+
+
+def test_config_parent_limits_are_immutable() -> None:
+    cfg = load_config(overrides={"genre_parent_limits": {"electronic": 1}})
+    with pytest.raises(TypeError):
+        cfg.genre_parent_limits["electronic"] = 5  # MappingProxyType is read-only
+
+
+def test_fingerprint_matches_exact_config_snapshot_used_for_selection() -> None:
+    # The journaled config fingerprint is derived from the immutable snapshot,
+    # so it always equals the constraints actually applied (G2-011).
+    from tests.fakes import FakeAlbumSource, FakeDelivery, FakeGenreSource, FakeLLM, InMemoryHistory
+
+    from omda.orchestrator.run import RunEngine, _config_fingerprint
+    from omda.ports.domain import GenreRef
+
+    genres = [GenreRef("g1", "G1", "Electronic", parents=("electronic",))]
+    cfg = load_config(overrides={"genre_parent_limits": {"electronic": 1}})
+    engine = RunEngine(
+        config=cfg,
+        history=InMemoryHistory(),
+        genre_source=FakeGenreSource(genres),
+        album_source=FakeAlbumSource({}),
+        llm=FakeLLM("x"),
+        delivery=FakeDelivery(),
+        seed="fp-check",
+    )
+    assert engine._config_version == _config_fingerprint(cfg)

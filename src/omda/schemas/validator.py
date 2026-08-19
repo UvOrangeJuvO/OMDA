@@ -86,12 +86,18 @@ def _check_format(value: str, fmt: str) -> bool:
 def _validate_policy(policy: Any, schema_path: str) -> None:
     """Validate an ``additional_fields`` policy value at any object scope (G1-003).
 
-    Raises ``SchemaError`` with the full schema path so a schema-author typo can
-    never silently disable strict validation for a nested object.
+    A policy is either ``"reject"``, ``"allow"`` (any extra keys accepted) or a
+    value-spec dict — meaning extra keys are allowed but each value must match
+    that spec (G2-011). Raises ``SchemaError`` with the full schema path so a
+    schema-author typo can never silently disable strict validation.
     """
+    if isinstance(policy, dict):
+        _walk_schema_spec(policy, f"{schema_path}.values")
+        return
     if policy not in ("reject", "allow"):
         raise SchemaError(
-            f"{schema_path}: additional_fields must be 'reject' or 'allow', got {policy!r}"
+            f"{schema_path}: additional_fields must be 'reject' or 'allow' "
+            f"(or a value-spec object), got {policy!r}"
         )
 
 
@@ -192,18 +198,32 @@ def _validate_value(
 
     elif type_name == "object":
         fields = spec.get("fields")
+        nested_policy = spec.get("additional_fields", "reject")
         if "additional_fields" in spec or fields is not None:
-            nested_policy = spec.get("additional_fields", "reject")
             _validate_policy(nested_policy, f"{schema_path}.additional_fields")
         if fields is not None:
+            declared = set(fields)
             _validate_fields(
                 value,
                 fields,
                 path,
                 errors,
-                additional_fields=spec.get("additional_fields", "reject"),
+                additional_fields=nested_policy,
                 schema_path=f"{schema_path}.fields",
             )
+        else:
+            declared = set()
+        if isinstance(nested_policy, dict):
+            # G2-011: extra keys are allowed but every value must match the spec.
+            value_spec = nested_policy
+            for key in sorted(set(value) - declared):
+                _validate_value(
+                    f"{path}.{key}",
+                    value[key],
+                    value_spec,
+                    errors,
+                    schema_path=f"{schema_path}.additional_fields.values",
+                )
 
 
 def _validate_fields(

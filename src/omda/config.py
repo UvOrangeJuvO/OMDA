@@ -12,8 +12,10 @@ were changed so governance/tests can enforce the ADR rule.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from omda.schemas import get_schema, validate_record
@@ -47,9 +49,10 @@ class Config:
     genre_cooldown_picks: int = DEFAULT_GENRE_COOLDOWN_PICKS
     modern_album_year: int = DEFAULT_MODERN_ALBUM_YEAR
     seed: str | None = None
-    # G2-010: per-parent per-run set limits (parent -> max selections); values
-    # are constraints for the Core, never popularity weights.
-    genre_parent_limits: dict[str, int] = field(default_factory=dict)
+    # G2-010/G2-011: per-parent per-run set limits (parent -> max selections).
+    # Immutable mapping (MappingProxyType): values are constraints for the Core,
+    # never popularity weights, and can never be mutated after loading.
+    genre_parent_limits: Mapping[str, int] = field(default_factory=dict)
     delivery: DeliveryConfig = field(default_factory=DeliveryConfig)
 
 
@@ -61,7 +64,7 @@ def config_to_dict(config: Config) -> dict[str, Any]:
         "genre_cooldown_picks": config.genre_cooldown_picks,
         "modern_album_year": config.modern_album_year,
         "seed": config.seed,
-        "genre_parent_limits": config.genre_parent_limits,
+        "genre_parent_limits": dict(config.genre_parent_limits),
         "delivery": {
             "channel": config.delivery.channel,
             "pushplus_token_env": config.delivery.pushplus_token_env,
@@ -103,7 +106,7 @@ def _from_dict(merged: dict[str, Any]) -> Config:
         genre_cooldown_picks=merged.get("genre_cooldown_picks", DEFAULT_GENRE_COOLDOWN_PICKS),
         modern_album_year=merged.get("modern_album_year", DEFAULT_MODERN_ALBUM_YEAR),
         seed=merged.get("seed"),
-        genre_parent_limits=merged.get("genre_parent_limits") or {},
+        genre_parent_limits=MappingProxyType(dict(merged.get("genre_parent_limits") or {})),
         delivery=DeliveryConfig(
             channel=delivery.get("channel", "markdown"),
             pushplus_token_env=delivery.get("pushplus_token_env"),
