@@ -52,3 +52,49 @@
 | `git diff --check` | clean |
 | 既有测试未删除/弱化/skip | 确认（计数 206 → 225 单调增长） |
 | 未 merge / 未 tag / 未进入 G3 / 未改 verdict | 确认 |
+
+---
+
+# G2 Re-review 3 Repair（2026-08-19）
+
+对应 Reviewer commit：`266ccdc1c69b5b90d76366af125b3009f688c19d`（`review(g2): request bounded configuration and recovery repairs`）
+上一 candidate：`c0bf31d974a85499082a2e3e6eeb24e66fea1ed9`
+本轮修复 commits：`fd3340a`（G2-011）、`a39d351`（G2-012）、`e405898`（G2-013）
+
+## G2-011（P1）— genre_parent_limits 绕过校验且可变破坏 provenance — CLOSED
+
+- **根因**：schema 用 `additional_fields="allow"` 无值校验（接受 "one"/-1/0/1.5/true/嵌套）；畸形值到达 Core 抛未捕获 TypeError；`Config` frozen 但持可变 dict，引擎构造后 mutate 改变选择而 journal 指纹是旧的。
+- **修复**（`fd3340a`）：
+  1. validator 扩展：`additional_fields` 支持值 spec dict（`reject`/`allow`/值 spec 三态；schema 树无条件校验值 spec）；
+  2. `config.schema.json`：`genre_parent_limits` 值 spec `{type: integer, min: 1, max: 10}`（0/负数会永久饿死 parent → 禁止；上限与 daily_genre_count 一致），schema_version 1→2；
+  3. `Config.genre_parent_limits` 存 `MappingProxyType`（不可变）；`config_to_dict` 确定性序列化；`_from_dict` 冻结快照。
+- **测试**：6 种畸形值在精确路径 `genre_parent_limits.electronic` 拒绝；合法值 round-trip；mutate 原 overrides 不影响 Config；直接改 Config 值抛 TypeError；journal fingerprint 恒等于 selection 用配置快照。
+- **关闭证据**：畸形值在 PLANNED 前被 RecordValidationError 拒绝（精确 field path）；不可变快照保证 fingerprint 与实际生效约束一致。
+
+## G2-012（P1）— 歧义成功投递被终态 FAILED — CLOSED
+
+- **根因**：deliver 返回 ok 但 run/key/channel 错 → 拒绝 commit 后 append 终态 FAILED 并丢弃收据；外部可能已投递，歧义被隐藏。
+- **修复**（`a39d351`）：拆分状态判定——`status != "ok"`（确认失败）→ 普通 FAILED；`ok` 但 misbound → **RECOVERING**（manual review），journal 持久化异常证据（receipt_run_id/key/channel/status），不 commit、不重投、不终态；恢复路径对持久收据同样校验。
+- **测试**：`test_misbound_receipt_never_commits_history` 升级为 RECOVERING + anomaly 可审计断言；`test_ambiguous_delivery_records_one_effect_and_never_redelivers`（3 种 misbound × calls==1、重复 run 不二次投递、历史零写入）；`test_failed_receipt_run_fails_without_history` 保持确认失败 → FAILED。
+- **关闭证据**：外部副作用发生一次后歧义进入 recovery 而非终态；重复 run 零额外投递；历史不变；异常可审计。
+
+## G2-013（P1）— 无偏求解器组合内存增长且跨 run 保留 — CLOSED
+
+- **根因**：`_counts_cached` 存全部可达状态（含全部终态三元组）；`build_unbiased_sampler` 总是先建 DP（快路径在 sampler 内，无法避免构建）；LRU 128 变体累积组合 memo（5 次不同 start → 388MB）。
+- **修复**（`e405898`）：
+  1. **快路径前置**：无 cooldown + 无 family/parent 限制 → 直接 `rng.sample`（数学等价），零 DP；
+  2. **终态不 memoize**：depth==count 直接返回 1，sampler 对终态子分支直接取 1；
+  3. **LRU maxsize 128 → 4**（`_counts_cached` 与 `_enumerate_cached`），跨 run 旧 memo 被逐出而非累积。
+- **测试**：200 Genre 无约束 → 快路径且 `_counts_cached` currsize 不增；8 个不同 global start → 缓存 ≤ 4（有界）；30 Genre 有约束 → memo 大小 << C(30,3) 全组合（终态不存储）。既有 exact-count/等权/cooldown/parent/satisfiable/unsatisfiable 测试全部保留通过。
+- **关闭证据**：无约束大池零组合构建；跨 run 缓存有界；约束路径仅保留非终态状态。
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **239 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 239 passed |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（225 → 239 单调增长；G2-009 misbound 测试按新验收语义升级为 RECOVERING，属修复而非弱化） |
+| 未 merge / 未 tag / 未进入 G3 / 未改 verdict | 确认 |

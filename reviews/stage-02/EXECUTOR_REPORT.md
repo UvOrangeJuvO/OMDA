@@ -185,3 +185,35 @@
 ## Executor Conclusion（G2 Re-review 2 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G2 Re-review 3 Repair（2026-08-19）
+
+对应 Reviewer commit：`266ccdc1c69b5b90d76366af125b3009f688c19d`（`review(g2): request bounded configuration and recovery repairs`）
+上一 candidate：`c0bf31d974a85499082a2e3e6eeb24e66fea1ed9`
+本轮修复 commits：`fd3340a`（G2-011）、`a39d351`（G2-012）、`e405898`（G2-013）
+详细逐项修复记录见 `reviews/stage-02/REPAIR_REPORT.md`。
+
+## Re-review 3 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G2-011 genre_parent_limits 绕过校验且可变 | P1 | `fd3340a` | CLOSED |
+| G2-012 歧义成功投递被终态 FAILED | P1 | `a39d351` | CLOSED |
+| G2-013 无偏求解器组合内存增长 | P1 | `e405898` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **239 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 239 passed |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（225 → 239 单调增长） |
+| 未 merge / 未 tag / 未进入 G3 / 未改 verdict | 确认 |
+
+## Executor Conclusion（G2 Re-review 3 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
