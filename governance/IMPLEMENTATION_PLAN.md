@@ -104,8 +104,9 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 
 ### B.3 Ports（端口，接口契约）
 
-- 最小接口集：`GenreSource`、`AlbumSource/Enricher`、`CriticRatingSource`、`HistoryStore`、`LLM`、`Delivery`。
-- 每个 Port 定义领域级错误类型（见 §D/D 与 SPEC §8），不泄漏供应商控制流。
+- 最小接口集：`GenreSource`、`AlbumSource/Enricher`、`CriticRatingSource`、`HistoryPort`、`LLM`、`Delivery`。
+- 每个 Port 定义领域级错误类型（SPEC §8 错误分类），不泄漏供应商控制流。
+- **时序（G0-001 修复）**：G2 Orchestrator 所需的最小 Port protocols 与领域错误分类在 **G1 末尾（T1.6）定义**，先于任何 Orchestrator 工作；G2 全程基于 fake/in-memory 测试实现运行。具体外部 Adapter（RYM/MusicBrainz/PushPlus/LLM vendor 等）在 G3/G4 实现，可经正常 Gate 评审细化 source-specific 契约，但**不是**应用边界的首次出现点。
 
 ### B.4 Adapters（适配器，位于边缘）
 
@@ -120,6 +121,7 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 
 - **社区真源**：`data/` 下的可 diff 文本（genres/、critics/、schemas/），Git 提交，版本化 Schema。
 - **运行时**：`var/`（SQLite、缓存、临时输出），`.gitignore` 已排除；迁移可检测、可备份、可回滚或提供恢复说明。
+- **数据保护边界（G0-002 修复）**：真实运行时数据（官方 history、delivery/recovery 证据）受保护，**不得被删除或重置**；恢复只允许备份、迁移、非破坏性补偿。只有 **disposable test database**（测试隔离的临时库）可自由重建。
 - 密钥：仅环境变量 / 本地 secret store；cookie/profile 永入 Git、日志、Prompt。
 
 ### B.6 Browser Companion（浏览器伴生）
@@ -140,7 +142,8 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 ### B.9 依赖方向与禁止项（架构约束）
 
 - 依赖方向：CLI → Orchestrator → Core；Core → Ports ← Adapters；Storage 只被 Adapters/Orchestrator 用。
-- 禁止（无 ADR 不得引入）：Core 内出现 vendor SDK 导入；社区数据以 SQLite 为真源；历史在交付成功前写入；无界重试/搜索；秘密/cookie/profile 进入仓库工件；Cloudflare 对抗、全量预爬、默认 fan-out；LLM 参与选择。
+- **Core 纯净性（G0-002 修复，架构测试强制）**：Core 无任何 persistence import/call——不得导入或调用 SQLite、`HistoryStore` 或文件读写；历史 exclusion set 由 Orchestrator/History Port 读取后以**不可变领域输入**传入 Core。
+- 禁止（无 ADR 不得引入）：Core 内出现 vendor SDK 或 persistence 导入；社区数据以 SQLite 为真源；历史在交付成功前写入；无界重试/搜索；秘密/cookie/profile 进入仓库工件；Cloudflare 对抗、全量预爬、默认 fan-out；LLM 参与选择。
 
 ---
 
@@ -207,6 +210,17 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 - Rollback：新增测试文件，易回退。
 - Risks：fixture 与真实数据脱节——fixture 附带 provenance 与生成说明。
 
+#### T1.6 应用 Port protocols 与领域错误分类（G0-001 修复：前置至 G1）
+- Goal：在任何 Orchestrator 工作开始前，定义 G2 所需的最小应用边界。
+- Inputs：SPEC §3.1/§3.2/§8；MP §4。
+- 允许范围：`omda/ports/`（接口与领域错误类型，**无实现**）。
+- Deliverables：`GenreSource`、`AlbumSource/Enricher`、`CriticRatingSource`、`HistoryPort`、`LLM`、`Delivery` 六个最小 Port protocol；SPEC §8 领域错误分类（invalid input / unavailable / insufficient candidates / invariant / generation / validation / delivery / state commit）。
+- Tests：契约测试骨架（接口形状、错误分类映射）；**fake/in-memory 测试实现**（供 G2 使用：fake LLM、fake Delivery、in-memory journal/history）。
+- Acceptance：G2 无任何任务依赖 G3 才首次出现的契约；错误分类不泄漏供应商细节。
+- Dependencies：T1.2。
+- Rollback：纯接口层，可 revert。
+- Risks：接口过度设计——按 G2 Orchestrator 实际需要的最小集收敛。
+
 ### C.2 G2 Recommendation Core（SPEC §10 最高风险 Gate）
 
 **Milestone 目标**：纯推荐规则 + 可恢复事务模型全部实现并经受最强测试；Core 零外部依赖。
@@ -248,10 +262,10 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 - Goal：run 内去重 + 历史永久排除；canonical identity 优先，字符串降级带置信度。
 - Inputs：SPEC §2.4；MP §3.2。
 - 允许范围：`omda/core/album.py`、identity 规范化。
-- Deliverables：`canonical_id` 匹配；run 内 dedup；历史排除；模糊匹配记录歧义且不静默永久封禁。
-- Tests：同名不同发行不误并、同发行不同名仍判重（SPEC §7-6）；跨 Genre 候选重叠不重复选。
-- Acceptance：破坏性永久排除只基于可审查 identity。
-- Dependencies：T2.1、T1.4（history 读取）。
+- Deliverables：`canonical_id` 匹配；run 内 dedup；历史排除（基于**传入的不可变 exclusion set**）；模糊匹配记录歧义且不静默永久封禁。
+- Tests：同名不同发行不误并、同发行不同名仍判重（SPEC §7-6）；跨 Genre 候选重叠不重复选；**以历史 exclusion set 作为参数输入的单元测试**（Core 不读取任何存储）。
+- Acceptance：破坏性永久排除只基于可审查 identity；Core 不读取 SQLite/HistoryStore/文件。
+- Dependencies：T2.1、T1.6（HistoryPort 契约：Orchestrator 读取版本化历史快照/exclusion set 后作为领域输入传入 Core）。
 - Rollback：纯逻辑。
 - Risks：R-004 canonical 错配——fixtures 覆盖混淆场景。
 
@@ -271,25 +285,25 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 - Inputs：SPEC §4、§8；MP §3.7。
 - 允许范围：`omda/orchestrator/`（状态机）、journal 写入协议。
 - Deliverables：状态机推进；每步失败落 FAILED 且历史不变（SPEC §7-9）；delivered-but-not-committed 恢复（§7-10）；崩溃重跑（§7-11）。
-- Tests：失败注入（fetch/generate/validate/deliver 各失败）；交付成功但 commit 失败的恢复；每个持久转变点崩溃重放。
+- Tests：**本任务全程针对 T1.6 定义的 Port 契约运行，使用 fake/in-memory 测试实现**——fake LLM（返回预置文本）、fake Delivery（记录投递收据）、in-memory journal/history；覆盖 GENERATE、DELIVER、journal 与 history 各状态迁移；失败注入（fetch/generate/validate/deliver 各失败）；交付成功但 commit 失败的恢复；每个持久转变点崩溃重放。具体 LLM/PushPlus/RYM 等外部 Adapter 在 G3/G4 实现，不阻塞本任务。
 - Acceptance：官方 history 仅在 DELIVERED 后写；幂等键稳定；恢复查询持久证据而非记忆。
-- Dependencies：T2.1–T2.5、T1.4。
-- Rollback：状态机逻辑 revert；`var/` 运行时数据可重置。
+- Dependencies：T2.1–T2.5、T1.4（存储实现）、T1.6（Port 契约）。
+- Rollback（G0-002 修复）：状态机逻辑 revert；**真实运行时数据（官方 history、delivery/recovery 证据）受保护，回滚仅限备份、迁移、恢复或非破坏性补偿，不得删除/重置**；只有 disposable test database 可重建。
 - Risks：R-001/R-009——本 Gate 核心风险，测试矩阵专门覆盖。
 
 ### C.3 G3 Data & Adapters（SPEC §10：数据与 adapter 契约、provenance、缓存、Browser Companion 边界）
 
 **Milestone 目标**：Port 契约定型；文本数据、MusicBrainz、critic、Browser Companion 各 adapter 以 fixtures 为主可测；live RYM 非必需。
 
-#### T3.1 Port 接口与错误分类
-- Goal：六个 Port 契约 + 领域错误类型（SPEC §8）。
-- Inputs：SPEC §3.1/§3.2/§8；MP §4。
-- 允许范围：`omda/ports/`、错误类型定义。
-- Deliverables：接口定义；错误分类（invalid input / unavailable / insufficient candidates / invariant / generation / validation / delivery / state commit）。
-- Tests：契约测试（§D）；错误分类映射。
-- Acceptance：Core 只见领域错误，不见供应商细节。
-- Dependencies：G2 全部（Core 已就位）。
-- Rollback：接口层新增为主。
+#### T3.1 具体外部 Adapter 实现（基于 G1/T1.6 既有 Port 契约）
+- Goal：为 G1/T1.6 已定义的六个 Port 契约提供具体外部实现；**Port 接口的首次定义不在本任务**。
+- Inputs：SPEC §3.1/§3.2/§8；MP §4；T1.6 契约。
+- 允许范围：`omda/adapters/` 实现类（文本数据集、MusicBrainz、Browser Companion、LLM Provider、Markdown/PushPlus；SQLite 存储实现已在 T1.4）。
+- Deliverables：各 Adapter 实现 + 错误分类映射；source-specific 契约细化（如有）必须经正常 Gate 评审，不得改变 T1.6 已定应用边界。
+- Tests：契约测试（§D.5）；每个 Adapter 的 fixtures 测试（SPEC §7-12）。
+- Acceptance：Core 只见领域错误，不见供应商细节；Port 接口形状不因 Adapter 实现而返工。
+- Dependencies：G2 全部、T1.6。
+- Rollback：Adapter 可独立回退。
 - Risks：接口过度设计——按最小集收敛，任何多余抽象需自证。
 
 #### T3.2 文本数据集 Adapter
@@ -463,10 +477,10 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 | 策略 | 目的 | 位置 | 代表用例 |
 |---|---|---|---|
 | D.1 Schema tests | 记录级校验的接受/精确拒绝 | `tests/unit/test_schemas.py` + fixtures | 每类记录合法通过、畸形报字段/行（SPEC §7-1） |
-| D.2 Unit tests | 每个纯规则的确定性行为 | `tests/unit/` | cooldown 30/31、年份三态、去重、评分 tie |
+| D.2 Unit tests | 每个纯规则的确定性行为 | `tests/unit/` | cooldown 30/31、年份三态、去重、评分 tie；**历史 exclusion set 作为参数输入**（Core 不读取任何存储） |
 | D.3 Property/统计 tests | 等权与约束满足的统计学证据 | `tests/property/`（hypothesis 或手写） | 等权无偏差（SPEC §7-2）、diversity 不饿死家族；非 flaky 阈值设计 |
 | D.4 Integration tests | 模块协同（Orchestrator+Core+Adapter fakes） | `tests/integration/` | PLAN→…→DELIVER 全链路用 fakes 跑通 |
-| D.5 Contract tests | Port/Adapter 边界与合规约束 | `tests/contract/` | Core 无 vendor 导入；adapter 错误分类；RYM 无对抗行为；社区真源非 SQLite |
+| D.5 Contract tests | Port/Adapter 边界与合规约束 | `tests/contract/` | **架构测试：Core 无 persistence import/call（无 SQLite/HistoryStore/文件读写导入或调用）**；Core 无 vendor 导入；adapter 错误分类；RYM 无对抗行为；社区真源非 SQLite |
 | D.6 Failure-injection tests | 各类失败的受控注入 | `tests/integration/` + 注入工具 | fetch/generate/validate/deliver 各失败→历史不变（SPEC §7-9） |
 | D.7 Crash-recovery tests | 每个持久转变点崩溃/重放 | `tests/integration/` | 崩溃重跑无半提交；delivered-but-not-committed 恢复（§7-10/11） |
 | D.8 E2E tests | 干净环境真实（fixture）端到端 | `tests/e2e/` | 3×3 生成、重复率=0、cooldown 违规=0 |
@@ -481,8 +495,8 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 完整登记表见 `governance/RISK_REGISTER.md`（本计划引用并受其约束）。摘要：
 
 - **P0**：R-001 交付歧义污染/重复历史（缓解：journal + 幂等 + T2.6/T4.4）；R-002 凭据/cookie/profile 入 Git（缓解：ignore + secret 扫描 + 脱敏日志）；R-009 虚假原子性声明（缓解：补偿/幂等协议显式文档 + T4.4）。
-- **P1**：R-003 Genre 等权被 popularity 替代（Core 契约 + property 测试）；R-004 canonical Album 错配（稳定 ID + 置信度降级 + fixtures）；R-005 RYM 布局/会话变化（薄 adapter + fixtures + 人工介入）；R-006 外部数据许可（provenance + license audit）；R-008 LLM 注入/越权（受控 fact packet + 输出校验）。
-- **P2**：R-007 角色坍塌（exact-SHA + verdict 分离）；R-010 不可复现（seed + 输入版本入 journal）；R-011 统计测试 flaky（非阈值化设计）；R-012 时区/每日边界（UTC ISO 8601 + 显式 daily window 配置）；R-013 社区贡献摩擦（版本化 Schema + 行级错误信息 + 贡献指南）。
+- **P1**：R-003 Genre 等权被 popularity 替代（Core 契约 + property 测试）；R-004 canonical Album 错配（稳定 ID + 置信度降级 + fixtures）；R-005 RYM 布局/会话变化（薄 adapter + fixtures + 人工介入）；R-006 外部数据许可（provenance + license audit）；R-008 LLM 注入/越权（受控 fact packet + 输出校验）；**R-010 不可复现（seed + 输入版本入 journal）——P1，与 RISK_REGISTER 一致（G0-004 修复）**。
+- **P2**：R-007 角色坍塌（exact-SHA + verdict 分离）；R-011 统计测试 flaky（非阈值化设计）；R-012 时区/每日边界（UTC ISO 8601 + 显式 daily window 配置）；R-013 社区贡献摩擦（版本化 Schema + 行级错误信息 + 贡献指南）。
 
 每风险带 Owner（默认 Executor，重大项升级 Owner/Reviewer）与缓解验证点（Gate 验收矩阵条目）。
 
@@ -505,24 +519,28 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 
 ---
 
-## G. 决策待确认项（Open Decisions）
+## G. 决策待确认项（G0-005 修复：三分类，避免治理过载）
 
-以下事项**规范未确定**，需 Owner（或经 Reviewer 批准的 ADR）确认；**规范已确定的事项（§A.3 十条不变量、四个默认常量、Gate 顺序、权威顺序、双模型分工）不在此列，一律不重新开放**。
+原则：**规范已确定的事项（§A.3 十条不变量、四个默认常量、Gate 顺序、权威顺序、双模型分工）不在此列，一律不重新开放**。待确认项按决策机制分三类：
 
-| ID | 待确认项 | 规范现状 | 建议默认 | 影响 |
+- **(a) Owner 产品决策**：涉及产品语义、数据范围或许可，必须由 Owner 定案；未定案前对应 Gate 不实现该部分。
+- **(b) 架构/契约决策**：仅在**改变已接受契约**（公开 Schema、持久化结构、Port 契约、RYM 访问策略、历史提交时机）时才需要 ADR；不改变契约的选型在对应 Gate 由 Reviewer 正常评审。
+- **(c) 可逆工程选择**：Executor 在对应 Gate 提出并实现，Reviewer 在该 Gate 评审中审查；**不自动要求 Owner 介入或 ADR**。
+
+| ID | 待确认项 | 分类 | 决策机制 / 最近决策 Gate | 建议默认 |
 |---|---|---|---|---|
-| OD-1 | Python 版本基线 | 未定 | 3.12（pyproject 声明） | 依赖生态与 CI 镜像 |
-| OD-2 | LLM provider 具体选型与模型标识 | 只定边界 | DeepSeek API（与执行模型同系），Provider 可替换 | G4 实现 |
-| OD-3 | PushPlus token 注入方式 | 只说不入 Git | 环境变量 + `.env.example` | G4/G5 |
-| OD-4 | canonical identity 默认来源 | MP 建议 MusicBrainz release-group | MusicBrainz（受许可/限流约束，见 R-006/R-012） | G3 |
-| OD-5 | 每日运行触发与 daily window 定义 | 未定 | 手动/本地 cron；UTC 日界可配置 | G5 之后 |
-| OD-6 | v0.1 默认交付通道 | 未定 | 本地 Markdown；PushPlus 显式开启 | G4 |
-| OD-7 | 初始 Genre 数据集范围 | 未定 | 以 Owner 既有 RYM 流派目录为种子，经 Schema 与许可审查后入库 | G3 |
-| OD-8 | 项目与数据许可证 | 未定 | 代码 OSI 许可 + 数据单独许可声明 | G5 |
-| OD-9 | 统计「明显偏差」判据 | SPEC 禁 flaky 阈值 | 固定 seed 基准 + 非阈值化分布检验 | G2/D.3 |
-| OD-10 | RYM 每 run 页面预算 | 只要求最小化 | 每 run 有界预算（如候选枚举页数上限），可配置 | G3 |
+| OD-1 | Python 版本基线 | (c) | G1 评审 | 3.12（pyproject 声明） |
+| OD-2 | LLM provider 具体选型与模型标识 | (c) | G4 评审（涉及外部账户/成本时 Owner 知晓） | DeepSeek API，Provider 可替换 |
+| OD-3 | PushPlus token 注入方式 | (c) | G4 评审 | 环境变量 + `.env.example` |
+| OD-4 | canonical identity 默认来源 | (b) | G3 评审；若偏离 MP 建议（MusicBrainz）或改变身份契约则 ADR。许可风险见 R-006，外部网络/限流行为见 R-005 | MusicBrainz release-group |
+| OD-5 | 「每日」运行窗口与触发方式 | (a)+(c) | 窗口语义 → Owner；触发机制（本地 cron/手动）属 (c) G5 后 | UTC 日界可配置；先手动/dry-run |
+| OD-6 | v0.1 默认交付通道 | (a)+(c) | 真实推送默认目标 → Owner；dry-run 默认本地 Markdown 属 (c) G4 评审 | dry-run 本地文件；推送显式开启 |
+| OD-7 | 初始 Genre 数据集范围 | (a) | Owner（数据范围与许可，R-006） | 以 Owner 既有 RYM 目录为种子，经 Schema 与许可审查后入库 |
+| OD-8 | 项目与数据许可证 | (a) | Owner | 代码 OSI 许可 + 数据单独许可声明 |
+| OD-9 | 统计「明显偏差」判据 | (c) | G2 评审（verdict 确认可按可评审实现选择） | 固定 seed 基准 + 非阈值化分布检验 |
+| OD-10 | RYM 每 run 页面预算 | (b) | G3 评审；若突破 SPEC §3.4 最小化边界则 ADR | 每 run 有界预算，可配置 |
 
-规则：任一 OD 的实现前提是在对应 Gate 前被 Owner 确认或由 ADR 定案；不得在执行中擅自选择。
+规则：任何 (b) 类项若在 Gate 执行中发现必须改变已接受契约，立即进入 BLOCKED_ARCHITECTURE 并提出 ADR，不在执行中擅自选择。(c) 类项默认由 Executor 提出、Reviewer 评审闭环，无需 Owner 审批，除非其实际后果超出普通可逆范围。
 
 ---
 
@@ -540,6 +558,13 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 | 用户操作复杂度 | 多步终端命令 + 自动推送会让 Owner 日常使用复杂 | 默认 dry-run、一键 CLI、dry-run 与手动运行先行（T4.5/T5.5）；人工介入路径文档化 |
 
 自批判结论：本稿已在上述八点上完成修订；未发现需触发 BLOCKED_ARCHITECTURE 或 ADR 的高层冲突（详见报告 §5 规范理解矩阵——全部一致）。
+
+> G0 独立评审修复记录（2026-08-19，详见 `reviews/stage-00/REPAIR_REPORT.md`）：
+> - G0-001：Port protocols 与领域错误分类前置至 G1/T1.6；G2 全程 fake/in-memory 测试；G3 只实现具体外部 Adapter。
+> - G0-002：Core 零 persistence（架构测试强制）；历史 exclusion set 作为参数输入；真实运行时数据受保护（不再出现「var/ 可重置」表述）。
+> - G0-003：`.workbuddy/` 加入 `.gitignore`（不删除目录）。
+> - G0-004：R-010 优先级修正为 P1（与 RISK_REGISTER 一致）；OD-4 引用修正为 R-006/R-005。
+> - G0-005：Open Decisions 分为 Owner 产品决策 / 架构-ADR 决策 / 可逆工程选择 三类。
 
 ---
 
