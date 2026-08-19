@@ -591,3 +591,92 @@ def test_config_seed_is_bound_to_rng_construction() -> None:
     )
     assert planned.detail is not None
     assert planned.detail["seed"] == "config-bound-seed"
+
+
+# --- G2-009: receipt must be bound to run id / key / channel / status ----------
+
+
+class MisboundReceiptDelivery:
+    """Returns an ok-format receipt but with configurable wrong bindings."""
+
+    def __init__(
+        self,
+        run_id: str | None = None,
+        idempotency_key: str | None = None,
+        channel: str | None = None,
+        status: str = "ok",
+    ) -> None:
+        self._run_id = run_id
+        self._key = idempotency_key
+        self._channel = channel
+        self._status = status
+
+    def deliver(self, payload, idempotency_key, target=None):
+        return DeliveryReceipt(
+            run_id=self._run_id if self._run_id is not None else "",
+            idempotency_key=self._key if self._key is not None else idempotency_key,
+            delivered_at=AT,
+            channel=self._channel if self._channel is not None else "markdown",
+            status=self._status,
+        )
+
+
+MISBOUND_CASES = [
+    pytest.param(
+        {"run_id": "another-run"}, "wrong run id", id="wrong-run-id"
+    ),
+    pytest.param(
+        {"idempotency_key": "another-key"}, "wrong key", id="wrong-key"
+    ),
+    pytest.param(
+        {"channel": "pushplus"}, "wrong channel", id="wrong-channel"
+    ),
+    pytest.param(
+        {"status": "failed"}, "failed status", id="failed-status"
+    ),
+]
+
+
+@pytest.mark.parametrize("factory", HISTORY_FACTORIES)
+@pytest.mark.parametrize("overrides,label", MISBOUND_CASES)
+def test_misbound_receipt_never_commits_history(factory, overrides, label) -> None:
+    history = factory()
+    delivery = MisboundReceiptDelivery(**overrides)
+    outcome = _engine(history, delivery=delivery).run("run-1")
+    assert outcome.state == FAILED, f"{label} must fail closed"
+    # No official history written; no receipt stored under the run's key.
+    assert history.latest_pick_index() == 0
+    assert history.excluded_album_identities() == frozenset()
+    assert history.find_delivery_receipt("run-1:markdown") is None
+    tails = [e.transition for e in history.journal_after("run-1", 0)]
+    assert tails[-1] == FAILED
+
+
+@pytest.mark.parametrize("factory", HISTORY_FACTORIES)
+def test_exact_matching_receipt_still_succeeds(factory) -> None:
+    history = factory()
+    outcome = _engine(history, delivery=FakeDelivery()).run("run-1")
+    assert outcome.state == COMPLETE
+    assert history.latest_pick_index() == 3
+    receipt = history.find_delivery_receipt("run-1:markdown")
+    assert receipt is not None and receipt.status == "ok"
+
+
+def test_misbound_receipt_on_recovery_fails_closed() -> None:
+    inner = InMemoryHistory()
+    history = CrashPointHistory(inner, crash_after="DELIVERED")
+    engine = _engine(history, delivery=FakeDelivery())
+    with contextlib.suppress(SimulatedCrash):
+        engine.run("run-1")
+    assert inner.journal_after("run-1", 0)[-1].transition == DELIVERED
+    # Tamper the stored receipt to bind it to another run (evidence mismatch).
+    inner._receipts["run-1:markdown"] = DeliveryReceipt(
+        run_id="evil-run",
+        idempotency_key="run-1:markdown",
+        delivered_at=AT,
+        channel="markdown",
+        status="ok",
+    )
+    recovered = _engine(inner, delivery=FakeDelivery()).recover("run-1")
+    assert recovered.state == RECOVERING  # fail closed, no history commit
+    assert inner.latest_pick_index() == 0

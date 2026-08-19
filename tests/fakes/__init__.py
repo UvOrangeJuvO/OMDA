@@ -187,22 +187,25 @@ class FakeDelivery:
         target: str | None = None,
     ) -> DeliveryReceipt:
         self.calls += 1
+        # The idempotency key is "{run_id}:{channel}"; the receipt must bind to
+        # the same run and channel (G2-009) so the Orchestrator can trust it.
+        run_id, _, channel = idempotency_key.partition(":")
         if idempotency_key in self.delivered:
             # Replay of the same key: no second external delivery (SPEC §4).
             return DeliveryReceipt(
-                run_id="",
+                run_id=run_id,
                 idempotency_key=idempotency_key,
                 delivered_at="2026-08-19T00:00:00+00:00",
-                channel="fake",
+                channel=channel or "markdown",
                 status="ok",
                 target=target,
             )
         self.delivered[idempotency_key] = payload
         return DeliveryReceipt(
-            run_id="",
+            run_id=run_id,
             idempotency_key=idempotency_key,
             delivered_at="2026-08-19T00:00:00+00:00",
-            channel="fake",
+            channel=channel or "markdown",
             status="ok",
             target=target,
         )
