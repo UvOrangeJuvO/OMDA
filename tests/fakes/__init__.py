@@ -169,10 +169,16 @@ class FakeLLM:
 
 
 class FakeDelivery:
-    """Records deliveries; same idempotency key never delivers twice."""
+    """Records deliveries; same idempotency key never delivers twice.
+
+    ``calls`` counts deliver() invocations; ``delivered`` maps only the keys that
+    produced a real external side effect — recovery must never increment
+    ``delivered`` for an already-delivered run (G2-005).
+    """
 
     def __init__(self) -> None:
         self.delivered: dict[str, str] = {}
+        self.calls = 0
 
     def deliver(
         self,
@@ -180,6 +186,7 @@ class FakeDelivery:
         idempotency_key: str,
         target: str | None = None,
     ) -> DeliveryReceipt:
+        self.calls += 1
         if idempotency_key in self.delivered:
             # Replay of the same key: no second external delivery (SPEC §4).
             return DeliveryReceipt(

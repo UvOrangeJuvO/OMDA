@@ -29,6 +29,7 @@ from omda.orchestrator import (
 )
 from omda.ports.domain import (
     AlbumCandidate,
+    DeliveryReceipt,
     GenreRef,
 )
 from omda.ports.errors import (
@@ -216,89 +217,181 @@ def test_delivered_but_not_committed_recovers_without_redelivery(factory) -> Non
     first = engine.run("run-1")
     assert first.state == RECOVERING  # delivered, history commit failed
     assert len(delivery.delivered) == 1
+    assert delivery.calls == 1
 
     # Recovery uses durable journal + immutable receipt; must NOT re-deliver.
     second = engine.recover("run-1")
     assert second.state == COMPLETE
     assert len(delivery.delivered) == 1  # no second external push
+    assert delivery.calls == 1  # no second deliver() call either
     assert flaky.commits == 2
     assert history.latest_pick_index() == 3
     assert len(history.excluded_album_identities()) == 9
 
 
-def test_recovery_with_missing_receipt_fails_closed() -> None:
-    history = InMemoryHistory()
-    delivery = FakeDelivery()
-
-    # Deliver but strip the receipt evidence, then crash before commit.
-    engine = _engine(history, delivery=delivery)
-    history._receipts.clear()  # simulate lost receipt (test-only access)
-
-    # Force DELIVERED journal without receipt by running normally then deleting.
-    outcome = engine.run("run-1")
-    assert outcome.state == COMPLETE
-    # Second run with a fresh engine on the same history: no receipts -> FAILED closed.
-    fresh = _engine(history, delivery=delivery)
-    # A new run would replan; instead verify recover() on an empty-journal run fails closed.
-    assert fresh.recover("no-such-run").state == FAILED
+# --- G2-005: real crash harness (durable write first, then process death) ------
 
 
-# --- crash-replay at every durable transition ---------------------------------
-
-CRASH_POINTS = [
-    pytest.param("after-plan", id="after-plan"),
-    pytest.param("after-fetch", id="after-fetch"),
-    pytest.param("after-select", id="after-select"),
-    pytest.param("after-generate", id="after-generate"),
-    pytest.param("after-validate", id="after-validate"),
-    pytest.param("after-deliver", id="after-deliver"),
-]
+class SimulatedCrash(Exception):
+    """Raised AFTER the transition/evidence is durably persisted."""
 
 
-class StepwiseHistory:
-    """InMemoryHistory that raises a crash at the requested durable point."""
+class CrashPointHistory:
+    """Wraps a HistoryPort: persists the operation first, then simulates death."""
 
-    def __init__(self, crash_after_transition: str | None = None) -> None:
-        self._inner = InMemoryHistory()
-        self._crash_after = crash_after_transition
-        self._appended = 0
+    def __init__(self, inner, crash_after: str | None = None) -> None:
+        self._inner = inner
+        self._crash_after = crash_after
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
 
     def append_journal(self, run_id, transition, at, detail=None):
-        self._appended += 1
+        entry = self._inner.append_journal(run_id, transition, at, detail)  # durable FIRST
         if self._crash_after is not None and transition == self._crash_after:
-            raise StateCommitFailureError(f"crash injected at {transition}")
-        return self._inner.append_journal(run_id, transition, at, detail)
+            raise SimulatedCrash(f"crash after durable {transition}")
+        return entry
+
+    def save_delivery_receipt(self, receipt):
+        self._inner.save_delivery_receipt(receipt)  # durable FIRST
+        if self._crash_after == "receipt-saved":
+            raise SimulatedCrash("crash after durable receipt saved")
+
+    def commit_history(self, *args, **kwargs):
+        self._inner.commit_history(*args, **kwargs)  # durable FIRST
+        if self._crash_after == "history-committed":
+            raise SimulatedCrash("crash after durable history commit")
 
 
-@pytest.mark.parametrize("crash_point", CRASH_POINTS)
-def test_crash_replay_is_bounded_and_never_redelivers(crash_point) -> None:
-    history = StepwiseHistory(crash_after_transition=crash_point)
+CRASH_WINDOWS = [
+    "PLANNED",
+    "FETCHED",
+    "SELECTED",
+    "GENERATED",
+    "VALIDATED",
+    "DELIVERING",
+    "receipt-saved",
+    "DELIVERED",
+    "history-committed",
+    "COMPLETE",
+]
+
+
+@pytest.mark.parametrize("window", CRASH_WINDOWS)
+def test_crash_recovery_table(window) -> None:
+    inner = InMemoryHistory()
+    history = CrashPointHistory(inner, crash_after=window)
     delivery = FakeDelivery()
     engine = _engine(history, delivery=delivery)
 
-    with contextlib.suppress(Exception):
-        engine.run("run-1")  # crash surface
+    with contextlib.suppress(SimulatedCrash):
+        engine.run("run-1")  # the persisted state at the crash point stays durable
 
-    # Recover with the same engine; must not re-deliver and must not crash-loop.
-    outcome = engine.recover("run-1")
-    assert outcome.state in (COMPLETE, FAILED, RECOVERING)
-    # If delivery ever succeeded, it happened at most once.
+    # Recovery in a "fresh process" against the same durable store.
+    recovered = _engine(inner, delivery=delivery).recover("run-1")
+    assert recovered.state in (COMPLETE, FAILED, RECOVERING)
+    # Delivery happened at most once (calls) and at most one external side effect.
+    assert delivery.calls <= 1
     assert len(delivery.delivered) <= 1
+    # A COMPLETE outcome has a durable COMPLETE tail and committed history.
+    if recovered.state == COMPLETE:
+        tail = inner.journal_after("run-1", 0)[-1].transition
+        assert tail == COMPLETE
+        assert inner.latest_pick_index() == 3
+    else:
+        # Non-COMPLETE: history must not be partially committed.
+        assert inner.journal_after("run-1", 0)[-1].transition != "COMPLETE"
+        if recovered.state == FAILED:
+            assert inner.latest_pick_index() == 0
 
 
-def test_exact_replay_of_completed_run_does_not_rewrite_history() -> None:
+def test_missing_receipt_for_delivered_run_fails_closed() -> None:
+    inner = InMemoryHistory()
+    history = CrashPointHistory(inner, crash_after="DELIVERED")
+    delivery = FakeDelivery()
+    engine = _engine(history, delivery=delivery)
+    with contextlib.suppress(SimulatedCrash):
+        engine.run("run-1")
+    assert inner.journal_after("run-1", 0)[-1].transition == DELIVERED
+
+    # Evidence lost after delivery: recovery must fail closed, never re-push.
+    inner._receipts.clear()  # test-only access to simulate lost evidence
+    recovered = _engine(inner, delivery=delivery).recover("run-1")
+    assert recovered.state == RECOVERING
+    assert len(delivery.delivered) <= 1
+    assert inner.latest_pick_index() == 0  # history never committed
+
+
+class FailedReceiptDelivery:
+    def deliver(self, payload, idempotency_key, target=None):
+        return DeliveryReceipt(
+            run_id="",
+            idempotency_key=idempotency_key,
+            delivered_at=AT,
+            channel="fake",
+            status="failed",
+        )
+
+
+def test_failed_receipt_run_fails_without_history() -> None:
+    history = InMemoryHistory()
+    outcome = _engine(history, delivery=FailedReceiptDelivery()).run("run-1")
+    assert outcome.state == FAILED
+    assert history.latest_pick_index() == 0
+    assert history.excluded_album_identities() == frozenset()
+
+
+def test_conflicting_receipt_fails_closed_without_overwrite() -> None:
+    history = InMemoryHistory()
+    # Durable evidence already exists for this idempotency key (delivery happened),
+    # but no run journal exists — the engine must fail closed on a conflicting
+    # receipt instead of overwriting evidence or writing history.
+    existing = DeliveryReceipt(
+        run_id="prior-run",
+        idempotency_key="run-1:markdown",
+        delivered_at=AT,
+        channel="markdown",
+        status="ok",
+    )
+    history.save_delivery_receipt(existing)
+
+    outcome = _engine(history, delivery=FailedReceiptDelivery()).run("run-1")
+    assert outcome.state == FAILED
+    # Original success evidence intact; no official history written.
+    assert history.find_delivery_receipt("run-1:markdown") == existing
+    assert history.latest_pick_index() == 0
+
+
+def test_repeated_completed_run_id_is_idempotent_replay() -> None:
     history = InMemoryHistory()
     engine = _engine(history)
     first = engine.run("run-1")
     assert first.state == COMPLETE
-    # Re-running the same run id does not duplicate history entries (cooldown prevents).
-    second = engine.run("run-1")
-    assert second.state == FAILED  # genres now in cooldown; no double-commit
-    assert history.latest_pick_index() == 3  # unchanged from the first commit
+    second = engine.run("run-1")  # same id: durable terminal state, no fresh plan
+    assert second.state == COMPLETE
+    assert history.latest_pick_index() == 3  # no duplicate commit
     assert len(history.excluded_album_identities()) == 9
+    tails = [e.transition for e in history.journal_after("run-1", 0)]
+    assert tails.count("COMPLETE") == 1  # durable COMPLETE exactly once
+
+
+def test_history_committed_tail_gets_durable_complete() -> None:
+    inner = InMemoryHistory()
+    history = CrashPointHistory(inner, crash_after="history-committed")
+    delivery = FakeDelivery()
+    engine = _engine(history, delivery=delivery)
+    with contextlib.suppress(SimulatedCrash):
+        engine.run("run-1")
+    assert inner.journal_after("run-1", 0)[-1].transition == "HISTORY_COMMITTED"
+    # Recovery appends durable COMPLETE exactly once.
+    recovered = _engine(inner, delivery=delivery).recover("run-1")
+    assert recovered.state == COMPLETE
+    assert inner.journal_after("run-1", 0)[-1].transition == "COMPLETE"
+    assert inner.journal_after("run-1", 0)[-1].transition == "COMPLETE"
+    # Calling again never appends a second COMPLETE.
+    _engine(inner, delivery=delivery).recover("run-1")
+    tails = [e.transition for e in inner.journal_after("run-1", 0)]
+    assert tails.count("COMPLETE") == 1
 
 
 # --- G2-001: global ordered pick indices --------------------------------------
@@ -383,3 +476,44 @@ def test_year_fallback_status_is_persisted_in_journal() -> None:
     statuses = [s["status"] for s in selected.detail["album_selection"]]
     assert statuses and all(s == "fallback_no_modern" for s in statuses)
     assert all(s["reason"] for s in selected.detail["album_selection"])
+
+
+# --- G2-006: provenance in the journal reproduces the exact plan --------------
+
+
+def test_provenance_recorded_without_consuming_rng() -> None:
+    history = InMemoryHistory()
+    engine = _engine(history, seed="provenance-seed", )
+    outcome = engine.run("run-1")
+    assert outcome.state == COMPLETE
+
+    entries = history.journal_after("run-1", 0)
+    planned = next(e for e in entries if e.transition == "PLANNED")
+    assert planned.detail is not None
+    # The journaled seed is the ACTUAL construction seed, not a consumed draw.
+    assert planned.detail["seed"] == "provenance-seed"
+    assert planned.detail["input_version"] == "unknown"
+    assert planned.detail["config_version"]
+
+
+def test_fresh_process_reproduces_exact_plan_from_journal_evidence() -> None:
+    history = InMemoryHistory()
+    engine = _engine(history, seed="provenance-seed")
+    outcome = engine.run("run-1")
+    assert outcome.state == COMPLETE
+
+    entries = history.journal_after("run-1", 0)
+    planned = next(e for e in entries if e.transition == "PLANNED")
+    original_selected = next(e for e in entries if e.transition == "SELECTED")
+
+    # A brand-new process uses ONLY the journaled provenance (seed + input +
+    # config) against the same sources to recreate the exact ordered plan.
+    fresh_history = InMemoryHistory()
+    fresh_engine = _engine(fresh_history, seed=planned.detail["seed"])
+    fresh = fresh_engine.run("fresh-run")
+    assert fresh.state == COMPLETE
+    fresh_entries = fresh_history.journal_after("fresh-run", 0)
+    fresh_selected = next(e for e in fresh_entries if e.transition == "SELECTED")
+    assert fresh_selected.detail is not None
+    assert fresh_selected.detail["genres"] == original_selected.detail["genres"]
+    assert fresh_selected.detail["albums"] == original_selected.detail["albums"]

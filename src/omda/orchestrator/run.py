@@ -44,6 +44,7 @@ from omda.ports.errors import (
     DomainError,
     GenerationFailureError,
     InsufficientCandidatesError,
+    InvariantFailureError,
     SourceUnavailableError,
     StateCommitFailureError,
     ValidationFailureError,
@@ -270,9 +271,17 @@ class RunEngine:
     # -- public API ------------------------------------------------------------
 
     def run(self, run_id: str) -> RunOutcome:
-        # Single bounded pass: a failed run is FAILED with history untouched.
-        # (Replanning is intentionally not layered here — G2 keeps retry paths
-        # explicit and bounded at the Orchestrator level.)
+        # G2-005: inspect durable state first — an existing run is only returned
+        # in its terminal state or recovered; never a fresh plan under the same
+        # idempotency key.
+        entries = self._journal(run_id)
+        if entries:
+            last = entries[-1].transition
+            if last in _TERMINAL_FAILED:
+                return RunOutcome(run_id=run_id, state=last)
+            if last in (HISTORY_COMMITTED, COMPLETE):
+                return self._complete_durably(run_id, last)
+            return self.recover(run_id)
         return self._run_once(run_id)
 
     def recover(self, run_id: str) -> RunOutcome:
@@ -284,12 +293,19 @@ class RunEngine:
         if last in _TERMINAL_FAILED:
             return RunOutcome(run_id=run_id, state=last)
         if last in (HISTORY_COMMITTED, COMPLETE):
-            return RunOutcome(run_id=run_id, state=COMPLETE)
+            return self._complete_durably(run_id, last)
         if last in _AFTER_DELIVER:
             return self._finish_after_delivery(run_id, entries)
         # Mid-flight failure before delivery: safe to fail (history untouched).
         self._append(run_id, FAILED, {"reason": "recover from incomplete pre-delivery state"})
         return RunOutcome(run_id=run_id, state=FAILED)
+
+    def _complete_durably(self, run_id: str, last: str) -> RunOutcome:
+        """A HISTORY_COMMITTED tail gets a durable COMPLETE appended exactly once
+        (G2-005); a COMPLETE tail is returned unchanged."""
+        if last == HISTORY_COMMITTED:
+            self._append(run_id, COMPLETE)
+        return RunOutcome(run_id=run_id, state=COMPLETE)
 
     # -- internals --------------------------------------------------------------
 
@@ -444,7 +460,17 @@ class RunEngine:
         key = self._idempotency_key(run_id)
         self._append(run_id, DELIVERING, {"idempotency_key": key})
         receipt = self._delivery.deliver(payload, key)
-        self._history.save_delivery_receipt(receipt)  # durable evidence first
+        try:
+            self._history.save_delivery_receipt(receipt)  # durable evidence first
+        except InvariantFailureError as exc:
+            # G2-005: a conflicting receipt must fail closed — original evidence
+            # stays intact, never overwritten, and no history is written.
+            self._append(
+                run_id,
+                FAILED,
+                {"reason": "delivery receipt conflict", "message": str(exc)},
+            )
+            return RunOutcome(run_id=run_id, state=FAILED, payload=payload)
         if receipt.status != "ok":
             self._append(run_id, FAILED, {"reason": "delivery reported failure"})
             return RunOutcome(run_id=run_id, state=FAILED, payload=payload)
