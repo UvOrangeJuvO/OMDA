@@ -152,3 +152,36 @@
 ## Executor Conclusion（G2 Re-review 1 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G2 Re-review 2 Repair（2026-08-19）
+
+对应 Reviewer commit：`4953297a268a16696752ab3b3400734674dfbc19`（`review(g2): request unbiased and durable core repairs`）
+上一 candidate：`284fea8e08370ffe0a31cc1ad5f661eaa6bf314d`
+本轮修复 commits：`673ed1e`（G2-007）、`66fed46`（G2-008）、`ddca821`（G2-009）、`a8ae643`（G2-010）
+详细逐项修复记录见 `reviews/stage-02/REPAIR_REPORT.md`（verdict 要求的 handbook 命名文件）。
+
+## Re-review 2 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G2-007 有界解前缀造成 Genre-ID 选择偏差 | P0 | `673ed1e` | CLOSED |
+| G2-008 journaled seed 不能跨进程重现已 run 2 | P1 | `66fed46` | CLOSED |
+| G2-009 他 run/key 的 ok receipt 被接受并提交历史 | P0 | `ddca821` | CLOSED |
+| G2-010 parent 多样性仅存在于 test-only Core 参数 | P1 | `a8ae643` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **225 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 225 passed |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（206 → 225 单调增长） |
+| 未 merge / 未 tag / 未进入 G3 / 未改 verdict | 确认 |
+
+## Executor Conclusion（G2 Re-review 2 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
