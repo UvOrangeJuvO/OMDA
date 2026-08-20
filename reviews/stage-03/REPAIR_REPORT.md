@@ -131,3 +131,70 @@ Browser Companion URL 校验使用标准库 `urllib.parse`（惰性 URL 解析�
 | G2 verdict 未改；G2 Core/Orchestrator/Ports/storage/config 未改（domain.py 完全回退） | 确认 |
 | 无 G4 scope creep；无 live RYM 依赖；无反爬绕过 | 确认 |
 | 未 merge / 未 tag / 未进入 G4 | 确认 |
+
+---
+
+# G3 Re-review 3 Repair（2026-08-20）
+
+对应 Reviewer commit：`033e599468ff8677b262d1714c67a6a7bcc6eacb`（`review(g3): keep live adapter and budget findings open`）
+上一 candidate：`e8baf77787d552b086489f78850e71e1e363f0be`
+本轮修复 commit：`ce67bd3`（G3-003/G3-005/G3-006/G3-007/G3-008/G3-009）
+每项先加失败测试复现 Reviewer 反例、再做最小修复；未弱化既有测试（详见各节）。
+
+## G3-003（P1）— provider 字符串 score 被拒 + 低/非有限 score 装 exact — CLOSED
+
+- **根因**：`_parse_item` 只接受 int/float score → 官方 API 的字符串 `"100"` 被判畸形；`_sufficient_evidence` 用 `score <= 0` 作正数检查 → `NaN <= 0` 为 False、`0.01`/`Infinity` 都通过 → 装 destructive exact。
+- **修复**（`ce67bd3`）：
+  1. `_parse_score()`：接受 provider 文档化的**十进制字符串**（`"100"`）与 JSON number，解析为单一有限数值域 `[0, 100]`；拒绝 bool、非有限（NaN/±Inf）、畸形字符串、超范围（负/101+）→ typed `SourceUnavailableError`；
+  2. 命名保守阈值 `MIN_EXACT_SCORE = 90.0`（`__all__` 导出、模块常量文档化）——低于阈值的弱匹配**永不**装 destructive canonical ID；
+  3. `_sufficient_evidence` 改为 `score >= MIN_EXACT_SCORE`。
+- **测试**：provider 形状 `"100"` 正常 enrichment；字符串 `"10"`/数值 `0.01`/`89` 不装 exact；boundary 恰好阈值接受；NaN/±Inf、bool、`"high"`/`"1O0"`/`"-5"`/`"101"`/list 受控拒绝（14 项新测试）。
+- **关闭证据**：Reviewer 反例（`"100"`→失败、`0.01`/`NaN`/`Infinity`→exact）全部关闭；只有 title+完整 artist credit+必需 year+阈值 score 才装 canonical ID。
+
+## G3-005（P1）— 计数非整数可禁用边界 + URL 反斜杠/双重编码绕过 + 占位 UA — CLOSED
+
+- **根因**：`max_pages_per_run`/`max_tracked_runs` 只查 `<= 0`（NaN/Infinity/分数/bool 通过，NaN/Inf 使预算永不耗尽）；`max_retries` 无整数校验（1.5/NaN/Inf 后期 range() 抛裸 TypeError、字符串裸比较）；`_check_url` 只查原始 path 前缀（`..\` 反斜杠、双重编码 `%252e%252e` 可逃逸）；`DEFAULT_USER_AGENT` 是未验证联系点的占位符。
+- **修复**（`ce67bd3`）：
+  1. `_is_positive_int()`（int 非 bool 且 >0）应用于 `max_pages_per_run`/`max_tracked_runs`；`max_retries` 校验非负整数（int 非 bool 且 >=0）→ 构造时确定性失败；
+  2. `_check_url`：拒绝反斜杠（原始与编码 `%5c`）；`_has_residual_encoding()` 拒绝任何残留/双重百分号编码（`%252e`/`%2f` 等）；最多 3 层 unquote 后仍须以 `/genre/` 开头且无点段——所有非规范目标在 PageFetcher 边界前被拒（`fetcher.calls == 0` 断言）；
+  3. **User-Agent 必填**：移除占位默认（`DEFAULT_USER_AGENT = None`），构造时必须显式提供 contactable UA 字符串，否则受控 `ValueError`——不提供无法 live 构造。
+- **测试**：companion 计数 bool/1.5/NaN/Inf 拒绝；MB retries bool/1.5/NaN/Inf/-1/string 拒绝；5 种非规范 URL（反斜杠、编码反斜杠、双重 `..`、双重 `/`、编码点段）拒绝且不达 fetcher；`user_agent=None` 拒绝；规范 URL 仍接受。
+- **关闭证据**：Reviewer 反例全部关闭；计数类型与上限可强制执行；URL 在 fetcher 前规范化；live 请求必须有联系 UA。
+
+## G3-007（P1）— FIFO 驱逐让活跃 run 重置并超限 — CLOSED
+
+- **根因**：`_consume_budget` 容量满时静默驱逐最旧 ledger（可能活跃）→ 交错 run 可轮换 ID 绕过页面上限；既有测试固化了 reset 行为（`budget_used("r1") == 0`）。
+- **修复**（`ce67bd3`）：**移除静默驱逐**——新 run ID 在满容量时 fail-closed 拒绝（明确 `SourceUnavailableError`，含 finish 提示）；活跃 run 的计数器永不被其他 run 到达重置；容量释放**只**通过显式 `finish_run(run_id)` 生命周期操作；`finish_run` 后标识符可复用为新 run。
+- **测试**：Reviewer 精确 `r1 → r2 → r1` 交错（`max_pages=1, max_tracked=2`：r1 抓 A、r2 抓 B、r1 再抓 C 被拒且 `fetcher.calls == 2`、r1/r2 计数保持）；满容量新 run fail-closed；`finish_run` 释放后标识符复用（新 run 重新计数、超限仍拒）；原 `test_budget_ledger_is_bounded_by_tracked_runs` 改为 `test_budget_ledger_capacity_is_fail_closed`（语义修复，非弱化）。
+- **关闭证据**：第三次请求未达 fetcher；活跃 run 预算为硬边界；ledger 有界且可释放。
+
+## G3-006（P2）— cache max_entries 非整数禁用容量上限 — CLOSED
+
+- **根因**：`EnrichmentCache`/`PageCache` 构造只查 `<= 0` → `max_entries=NaN/Infinity` 使 `len >= max` 永不成立（缓存无界），1.5/bool 也被接受。
+- **修复**（`ce67bd3`）：两个 cache 的 `max_entries` 均校验为**正整数（int 非 bool 且 >0）**，构造时受控拒绝。
+- **测试**：两 cache 各 6 类（bool/1.5/NaN/Inf/0/-1）拒绝。
+
+## G3-008（P2）— README 空分母示例不是可工作 CSV 行 — CLOSED
+
+- **根因**：示例行 `my-source,album-b,3,,            # blank...` 第五个 cell 是字面注释 → 被当 `review_url` 解析 → 非 HTTP(S) 拒绝。
+- **修复**（`ce67bd3`）：示例行改为第五 cell 真空白（`my-source,album-b,3,,https://example.org/reviews/b`），解释放行外；注明 CSV 无行内注释。
+- **测试**：`test_readme_blank_denominator_example_is_parseable`——从 README 提取示例代码块、构造真实包、经 adapter 解析：album-b `rating_max == 5.0`（继承 scale_max）、`rating == 3.0`。
+
+## G3-009（P2）— 模块 docstring 仍描述已删除的 stale fallback — CLOSED
+
+- **根因**：`musicbrainz.py` 模块 docstring 说刷新失败"falls back to the stale value"，与实现的 fail-closed（raise typed error 且不返回 stale identity）矛盾。
+- **修复**（`ce67bd3`）：docstring 更新为精确契约——刷新失败是**带 stale provenance 的 typed `SourceUnavailableError`**（detail 含 cache_status/source/fetched_at/query_version），stale identity 永不 serve。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **463 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 463 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（411 → 463 单调增长；G3-007 一个固化错误行为的测试按新验收语义改造并披露） |
+| tracked 敏感文件 | 无 |
+| G2 verdict 未改；G2 Core/Orchestrator/Ports/storage/config 零改动 | 确认（`git diff 033e599` 该目录树 0 文件） |
+| 无 G4 scope creep；无 live RYM 依赖；无反爬绕过 | 确认 |
+| 未 merge / 未 tag / 未进入 G4 | 确认 |

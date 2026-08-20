@@ -168,3 +168,38 @@
 ## Executor Conclusion（G3 Re-review 2 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G3 Re-review 3 Repair（2026-08-20）
+
+对应 Reviewer commit：`033e599468ff8677b262d1714c67a6a7bcc6eacb`
+上一 candidate：`e8baf77787d552b086489f78850e71e1e363f0be`
+本轮修复 commit：`ce67bd3`（G3-003/G3-005/G3-006/G3-007/G3-008/G3-009）
+详细逐项修复记录见 `reviews/stage-03/REPAIR_REPORT.md`。
+
+## Re-review 3 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G3-003 provider 字符串 score 被拒 + 低/非有限 score 装 exact | P1 | `ce67bd3` | CLOSED |
+| G3-005 计数非整数可禁用边界 + URL 反斜杠/双重编码绕过 + 占位 UA | P1 | `ce67bd3` | CLOSED |
+| G3-007 FIFO 驱逐让活跃 run 重置并超限 | P1 | `ce67bd3` | CLOSED |
+| G3-006 cache max_entries 非整数禁用容量上限 | P2 | `ce67bd3` | CLOSED |
+| G3-008 README 空分母示例不是可工作 CSV 行 | P2 | `ce67bd3` | CLOSED |
+| G3-009 模块 docstring 仍描述已删除的 stale fallback | P2 | `ce67bd3` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **463 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 463 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（411 → 463 单调增长；G3-007 一个固化错误行为的测试按新验收语义改造并披露） |
+| 未 merge / 未 tag / 未进入 G4 / 未改 verdict | 确认 |
+
+## Executor Conclusion（G3 Re-review 3 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
