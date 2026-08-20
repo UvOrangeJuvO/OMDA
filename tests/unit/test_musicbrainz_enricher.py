@@ -267,7 +267,7 @@ def test_fresh_cache_short_circuits_transport() -> None:
     cache = EnrichmentCache()
     cache.put(
         EnrichmentEntry(
-            query_key="v1|johncoltrane|bluetrain|1958",
+            query_key=f"{QUERY_VERSION}|johncoltrane|bluetrain|1958",
             canonical_id="mb-cached",
             canonical_source="musicbrainz",
             fetched_at=AT0,
@@ -286,7 +286,7 @@ def test_stale_cache_refreshes_with_new_data() -> None:
     cache = EnrichmentCache()
     cache.put(
         EnrichmentEntry(
-            query_key="v1|johncoltrane|bluetrain|1958",
+            query_key=f"{QUERY_VERSION}|johncoltrane|bluetrain|1958",
             canonical_id="mb-stale",
             canonical_source="musicbrainz",
             fetched_at=AT0,
@@ -298,7 +298,7 @@ def test_stale_cache_refreshes_with_new_data() -> None:
     enriched = _enricher(transport, clock=LATER, cache=cache).enrich(_candidate())
     assert enriched.identity is not None and enriched.identity.canonical_id == "mb-fresh"
     assert transport.calls == 1  # refresh did query
-    assert cache.get("v1|johncoltrane|bluetrain|1958").canonical_id == "mb-fresh"
+    assert cache.get(f"{QUERY_VERSION}|johncoltrane|bluetrain|1958").canonical_id == "mb-fresh"
 
 
 def test_stale_cache_refresh_failure_fails_clearly_with_evidence() -> None:
@@ -308,7 +308,7 @@ def test_stale_cache_refresh_failure_fails_clearly_with_evidence() -> None:
     cache = EnrichmentCache()
     cache.put(
         EnrichmentEntry(
-            query_key="v1|johncoltrane|bluetrain|1958",
+            query_key=f"{QUERY_VERSION}|johncoltrane|bluetrain|1958",
             canonical_id="mb-stale",
             canonical_source="musicbrainz",
             fetched_at=AT0,
@@ -337,7 +337,7 @@ def test_cache_entry_carries_full_provenance() -> None:
     transport = ScriptedTransport([_single_ok_response("mb-p")])
     cache = EnrichmentCache()
     _enricher(transport, clock=AT0, cache=cache).enrich(_candidate())
-    entry = cache.get("v1|johncoltrane|bluetrain|1958")
+    entry = cache.get(f"{QUERY_VERSION}|johncoltrane|bluetrain|1958")
     assert entry is not None
     assert entry.source == "musicbrainz"
     assert entry.fetched_at == AT0
@@ -744,3 +744,115 @@ def test_enrichment_cache_max_entries_must_be_positive_integer(bad) -> None:
     # G3-006: NaN/Infinity/fractions/booleans would disable the capacity bound.
     with pytest.raises(ValueError):
         EnrichmentCache(max_entries=bad)
+
+
+# --- G3-003 re-review 3: cache policy version invalidates weaker entries ---------
+
+
+def test_old_version_cache_entry_does_not_bypass_threshold() -> None:
+    # Reviewer counter-example: a canonical ID accepted by the PREVIOUS weak
+    # rule (any positive score) must NOT be served as "exact" from a fresh
+    # cache hit under the current 90-point policy — the policy change must
+    # invalidate the old cache namespace and force a current lookup.
+    transport = ScriptedTransport([_single_ok_response("mb-current")])
+    cache = EnrichmentCache()
+    # Seed the OLD "v1" namespace with an entry the old rule accepted (weak
+    # evidence), as if produced before the threshold repair.
+    cache.put(
+        EnrichmentEntry(
+            query_key="v1|johncoltrane|bluetrain|1958",
+            canonical_id="pre-threshold-id",
+            canonical_source="musicbrainz",
+            fetched_at=AT0,
+            query_version="v1",
+            source="musicbrainz",
+        )
+    )
+    enricher = _enricher(transport, clock=AT0, cache=cache)
+    enriched = enricher.enrich(_candidate())
+    # The old-version entry is NOT served: a current lookup happened instead.
+    assert enriched.identity is not None
+    assert enriched.identity.canonical_id == "mb-current"
+    assert transport.calls == 1
+
+
+def test_old_version_cache_entry_is_never_served_directly() -> None:
+    # Even when the current lookup FAILS, an old-version entry must not become
+    # an "exact" canonical identity — version mismatch means stale-by-policy.
+    transport = ScriptedTransport([TimeoutError("down")])
+    cache = EnrichmentCache()
+    cache.put(
+        EnrichmentEntry(
+            query_key="v1|johncoltrane|bluetrain|1958",
+            canonical_id="pre-threshold-id",
+            canonical_source="musicbrainz",
+            fetched_at=AT0,
+            query_version="v1",
+            source="musicbrainz",
+        )
+    )
+    with pytest.raises(SourceUnavailableError):
+        _enricher(transport, clock=LATER, cache=cache, max_retries=0).enrich(_candidate())
+
+
+def test_same_key_old_query_version_entry_is_not_served() -> None:
+    # Defensive: even a current-key entry whose query_version field is stale
+    # (e.g. injected by a buggy persistent backend) must NOT serve as exact.
+    transport = ScriptedTransport([_single_ok_response("mb-current")])
+    cache = EnrichmentCache()
+    cache.put(
+        EnrichmentEntry(
+            query_key=f"{QUERY_VERSION}|johncoltrane|bluetrain|1958",
+            canonical_id="pre-threshold-id",
+            canonical_source="musicbrainz",
+            fetched_at=AT0,
+            query_version="v1",
+            source="musicbrainz",
+        )
+    )
+    enricher = _enricher(transport, clock=AT0, cache=cache)
+    enriched = enricher.enrich(_candidate())
+    assert enriched.identity is not None
+    assert enriched.identity.canonical_id == "mb-current"
+    assert transport.calls == 1
+
+
+# --- G3-005 re-review 3: contactable User-Agent shape is validated -------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["x", "omda/0.1", "not contactable", "anonymous/1.0", "app/1.0 (no contact)"],
+    ids=["single-char", "no-contact", "nonsense", "anonymous", "no-contact-parens"],
+)
+def test_non_contactable_user_agent_rejected(bad) -> None:
+    # G3-005: an explicit value alone is NOT enough — MusicBrainz requires a
+    # contactable identity (Application/version (contact URL or email)).
+    with pytest.raises(ValueError):
+        MusicBrainzEnricher(
+            transport=ScriptedTransport([]),
+            clock=FixedClock(AT0),
+            sleeper=RecordingSleeper(),
+            user_agent=bad,
+        )
+
+
+@pytest.mark.parametrize(
+    "good",
+    [
+        "omda-test/0.1 (+https://example.invalid/omda-test; testing only)",
+        "omda/1.0 (+mailto:omda@example.org)",
+        "omda/1.0 <maintainer@example.org>",
+    ],
+    ids=["url", "mailto", "email-angle"],
+)
+def test_contactable_user_agent_accepted(good) -> None:
+    # Application/version with a contact URL or email is a valid UA.
+    enricher = MusicBrainzEnricher(
+        transport=ScriptedTransport([_single_ok_response()]),
+        clock=FixedClock(AT0),
+        sleeper=RecordingSleeper(),
+        user_agent=good,
+    )
+    enricher.enrich(_candidate())
+    assert enricher is not None

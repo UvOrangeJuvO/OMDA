@@ -53,7 +53,12 @@ MIN_EXACT_SCORE = 90.0
 _SCORE_MIN = 0.0
 _SCORE_MAX = 100.0
 
-QUERY_VERSION = "v1"
+# G3-003: the query/cache policy version. Advance this version whenever
+# matching or destructive-identity acceptance semantics change — cache entries
+# written under an older policy (e.g. the pre-90-point weak-score rule) carry a
+# different namespace prefix and are NEVER served as current exact identities;
+# a version mismatch forces a fresh lookup under the current policy.
+QUERY_VERSION = "v2"
 
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
@@ -164,11 +169,15 @@ class MusicBrainzEnricher:
             raise ValueError(
                 f"max_retries must be a non-negative integer, got {max_retries!r}"
             )
-        # G3-005: a meaningful, contactable User-Agent is REQUIRED for live use
-        # (MusicBrainz policy); no placeholder default is offered.
-        if not isinstance(user_agent, str) or not user_agent.strip():
+        # G3-005: a MEANINGFUL, CONTACTABLE User-Agent is REQUIRED for live use
+        # (MusicBrainz policy). An explicit value is not enough — it must carry
+        # an `Application/version (contact URL or email)` contact shape, so an
+        # anonymous/non-contact string can never be silently substituted.
+        if not _is_contactable_user_agent(user_agent):
             raise ValueError(
-                "user_agent is required: provide a contactable User-Agent string"
+                "user_agent must match 'Application/version (contact URL or "
+                "email)' with a contactable URL or email, got "
+                f"{user_agent!r}"
             )
         # G3-005: every time/delay/pacing value must be finite and positive —
         # zero/negative/NaN/infinity would defeat the promised bounded access.
@@ -212,7 +221,13 @@ class MusicBrainzEnricher:
         key = self._query_key(candidate)
         cached = self._cache.get(key)
         now = self._clock()
-        if cached is not None and self._is_fresh(cached, now):
+        if cached is not None and cached.query_version == QUERY_VERSION and self._is_fresh(
+            cached, now
+        ):
+            # G3-003: only entries written under the CURRENT policy version are
+            # served as exact identities. A version mismatch (even under the
+            # same key from a persistent backend) is stale-by-policy and forces
+            # a fresh lookup under the current rules.
             return self._apply(candidate, cached)
         try:
             entry = self._lookup(candidate, key, now)
@@ -446,6 +461,30 @@ class MusicBrainzEnricher:
             candidate,
             identity=identity or candidate.identity,
         )
+
+
+def _is_contactable_user_agent(value) -> bool:
+    """True when ``value`` matches the MusicBrainz UA shape.
+
+    MusicBrainz requires ``Application/version (contact URL or email)``: an
+    app/version token followed by a parenthesized contact URL/email (or an
+    angle-bracketed email). Anything else — bare tokens, "anonymous/1.0",
+    "(no contact)" — is rejected at construction so a non-contact string can
+    never be silently substituted for a contactable identity.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return False
+    stripped = value.strip()
+    # Requires an application name/version token before the contact.
+    if not stripped[0].isalnum():
+        return False
+    # Parenthesized contact: (+https://...), (+mailto:...), (mailto:...)
+    if "(+https://" in stripped or "(+http://" in stripped:
+        return True
+    if "(+mailto:" in stripped or "(mailto:" in stripped:
+        return True
+    # Angle-bracketed email contact: <user@example.org>
+    return "<" in stripped and ">" in stripped and "@" in stripped
 
 
 def _parse_score(value) -> float | None:

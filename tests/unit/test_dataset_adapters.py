@@ -769,8 +769,17 @@ def test_readme_blank_denominator_example_is_parseable() -> None:
             encoding="utf-8",
         )
         (pkg / "ratings.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        rows = CriticDatasetAdapter(pkg).all_ratings()
+        adapter = CriticDatasetAdapter(pkg)
+        rows = adapter.all_ratings()
         by_album = {r.album_id: r for r in rows}
         assert by_album["album-a"].rating_max == 5.0
         assert by_album["album-b"].rating_max == 5.0  # blank inherits scale_max
         assert by_album["album-b"].rating == 3.0
+        # G3-008: the README contract — Core normalizes the stored raw rating
+        # and filled denominator pair to rating/max (3/5 = 0.6).
+        from omda.core.rating import compose_rating
+        from omda.ports.domain import AlbumCandidate
+
+        album = AlbumCandidate(album_id="album-b", title="B", artist="X")
+        score = compose_rating(adapter.ratings_for(album), {"my-source": 1.0})
+        assert score == pytest.approx(3.0 / 5.0)

@@ -60,9 +60,12 @@ source_id,album_id,rating,rating_max,review_url
 
 ### Normalization rule (one unambiguous rule)
 
-Every row is stored as `rating / rating_max`, where `rating_max` is the declared
-`rating_scale_max` (inherited when blank). Example under a declared 1–5 scale
-(note: CSV has no inline comments — keep the fifth cell truly empty):
+Each rating is normalized to `rating / rating_max` at composition time, where
+`rating_max` is the declared `rating_scale_max`. The **fourth** `rating_max`
+cell may be blank; when blank the adapter fills and stores
+`rating_max = rating_scale_max` alongside the raw `rating` value. When
+supplied it MUST equal `rating_scale_max`. Example under a declared 1–5 scale
+(note: CSV has no inline comments):
 
 ```
 source_id,album_id,rating,rating_max,review_url
@@ -70,8 +73,11 @@ my-source,album-a,4,5,https://example.org/reviews/a
 my-source,album-b,3,,https://example.org/reviews/b
 ```
 
-Row `album-b` has a blank `rating_max`, so it inherits `rating_scale_max = 5`
-and is stored as `3/5` (not `3.0`). Both rows are accepted by the adapter.
+Row `album-b` has a blank **fourth** `rating_max` cell (the fifth `review_url`
+cell is populated), so the adapter stores `CriticRatingRow(rating=3.0,
+rating_max=5.0)` — the raw `rating` and the filled denominator — and the
+Recommendation Core normalizes that pair to `3/5 = 0.6` during composition
+(`compose_rating`). Both rows are accepted by the adapter.
 
 ## Adding a new source (no code required)
 
