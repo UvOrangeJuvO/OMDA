@@ -758,3 +758,112 @@ repaired. G3-003 remains one blocking P1 because the unchanged `v1` cache namesp
 new destructive-identity threshold. G3-005 and G3-008 have focused P2 corrections to include in
 the same repair. Candidate `98b13b892787caf0dd52e511a2e8913d53e380e9` must not be merged,
 `gate-g3-accepted` must not be created, and G4 must not begin.
+
+---
+
+## Re-review 4 — candidate `f4ca34f168899d98f83fd23d2b081836e1cbd7f5`
+
+### Re-review identity and checks
+
+- Original G3 base: `f69c540ee8d98741b9a90f2175fdde012ea81c45`
+- Previous repair candidate: `98b13b892787caf0dd52e511a2e8913d53e380e9`
+- Previous Reviewer commit: `068b49df50ed5d7cf3bfbd931b43507a21b7ee8e`
+- New repair candidate: `f4ca34f168899d98f83fd23d2b081836e1cbd7f5`
+- Repair commit: `fd925e8`; review-package commit: `f4ca34f`
+- Candidate branch observed: `exec/g3-adapters`
+- Merge base of original base and new candidate: exact original base
+  `f69c540ee8d98741b9a90f2175fdde012ea81c45`
+- Worktree at review start: clean
+- Independent full suite: **474 passed in 3.31s**
+- Ruff over `src`, `tests`, `browser_companion`: **passed**
+- `git diff --check` over original base to new candidate: **passed**
+- Tracked cookie/profile/database/`.env` filename scan: **no matches**
+- Scope audit: no G4 implementation, merge, tag, live RYM dependency, anti-bot code or accepted
+  G2 contract change observed
+
+The `v2` cache namespace plus same-key version check closes the last canonical-identity P1: old
+weak-policy entries are no longer served and the current lookup is required. The critic guide now
+matches adapter storage and Core composition. The only remaining defect is the User-Agent format
+validator: it searches for a few substrings rather than validating the declared complete shape,
+so obviously non-contactable and control-character values still pass construction.
+
+### Finding status
+
+| Finding | Re-review status | Evidence |
+|---|---|---|
+| G3-001 Genre eligibility/provenance | **CLOSED** | No regression. |
+| G3-002 critic scale consistency | **CLOSED** | No regression. |
+| G3-003 canonical exactness/cache policy | **CLOSED** | `QUERY_VERSION=v2`; old-key and same-key/old-field entries cannot short-circuit current lookup. |
+| G3-004 stale evidence / Port parity | **CLOSED** | No regression. |
+| G3-005 external-access bounds and identification | **PARTIAL / OPEN (P2)** | All numeric, URL, pacing and ledger defects are closed; the new contact format predicate remains trivially bypassable. |
+| G3-006 bounded immutable caches | **CLOSED** | No regression. |
+| G3-007 run-budget ledger lifecycle | **CLOSED** | No regression. |
+| G3-008 critic documentation parity | **CLOSED** | README and end-to-end normalization test now agree. |
+| G3-009 stale-cache module documentation | **CLOSED** | No regression. |
+
+### [P2] G3-005 remains open — the contact predicate accepts empty, anonymous and control-character contacts
+
+- Location: `src/omda/adapters/musicbrainz.py:169-180`, `:463-485`;
+  `tests/unit/test_musicbrainz_enricher.py:834-875`
+- Evidence: `_is_contactable_user_agent()` checks only that the first character is alphanumeric
+  and that the string contains one of a few marker substrings. It does not enforce the documented
+  application/version token, complete contact field, host/email, closing syntax, or absence of
+  control characters.
+- Independent reproduction: all of these values construct successfully:
+  - `x(+https://)` — no application/version separation and an empty URL;
+  - `x <@>` — empty local part and domain;
+  - `anonymous/1.0 (+https://)` — explicitly anonymous with an empty contact;
+  - `app (+mailto:)` — no version and an empty mailbox;
+  - `app/1 (+https://example.org)\r\nX-Test: injected` — trailing CRLF/header content.
+- Impact: the adapter and report claim that non-contact strings cannot be substituted, but runtime
+  configuration can still send an upstream-policy-noncompliant identifier. Control characters may
+  also escape as a provider-specific transport failure or unsafe header content rather than being
+  rejected at the adapter configuration boundary.
+- Violated contract: the prior G3-005 acceptance explicitly required a documented
+  `Application/version (contact URL or email)` shape. MusicBrainz requires enough information to
+  contact the application's maintainers.
+- Required acceptance:
+  - validate the **entire** User-Agent value, reject ASCII control characters/CR/LF and trailing
+    content, and require a real application token plus `/version`;
+  - parse the contact portion: HTTP(S) URLs need a non-empty hostname; `mailto:` and angle-bracket
+    forms need non-empty local/domain parts; do not accept the word “anonymous” as the app token;
+  - add the five exact counterexamples above as negative tests, while retaining valid URL,
+    `mailto:` and angle-email cases.
+
+Official requirement: [MusicBrainz API rate limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting).
+
+### Re-review 4 acceptance matrix
+
+| G3 criterion | Result |
+|---|---|
+| Genre and critic runtime data contracts | **PASS** |
+| Critic contribution documentation and composition example | **PASS** |
+| MusicBrainz response parsing and confidence threshold | **PASS** |
+| Canonical identity safety across cache-policy versions | **PASS** |
+| Stale-cache fail-closed behavior and Port parity | **PASS** |
+| Browser Companion URL/page/run/cache boundaries | **PASS** |
+| MusicBrainz explicit contact identification | **PARTIAL (P2) — G3-005** |
+| Human-intervention/no-circumvention boundary | **PASS** |
+| Ordinary fixture-only CI and Core isolation | **PASS** |
+| G3 scope / no G4 implementation | **PASS** |
+| Open P0/P1 findings | **NONE** |
+
+### Re-review 4 checks and limitations
+
+- Reviewed the full original `base..new candidate` diff and the
+  `068b49d..f4ca34f` repair increment; verified exact ancestry and commit chain.
+- Re-ran all 474 tests and Ruff using the WorkBuddy Python environment.
+- Independently reproduced old-cache invalidation and the five malformed User-Agent cases using
+  local fakes; no live MusicBrainz or RYM requests were made.
+- No test weakening, production-code edit by Reviewer, merge, tag, push or G4 work was performed.
+
+### Re-review 4 verdict
+
+**CHANGES_REQUESTED**
+
+There are no remaining P0/P1 findings, and G3-003/G3-008 are closed. However, G3's own external-
+access identification criterion is not complete while G3-005's validator accepts empty,
+anonymous and control-character contacts contrary to its declared contract. Complete this one
+focused P2 correction, rerun the Gate suite and resubmit. Candidate
+`f4ca34f168899d98f83fd23d2b081836e1cbd7f5` must not be merged,
+`gate-g3-accepted` must not be created, and G4 must not begin.
