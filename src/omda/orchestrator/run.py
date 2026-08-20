@@ -29,6 +29,11 @@ from omda.core.album import dedupe_candidates, filter_candidates
 from omda.core.genre import select_daily_genres
 from omda.core.rating import rank_candidates
 from omda.core.year import AlbumSelectionResult, select_albums_for_genre
+from omda.output.markdown import (
+    build_report_data,
+    render_markdown,
+    validate_markdown,
+)
 from omda.ports.album import AlbumSource
 from omda.ports.critic import CriticRatingRow
 from omda.ports.delivery import Delivery
@@ -382,7 +387,7 @@ class RunEngine:
             # GENERATE + VALIDATE.
             payload = self._generate(plan)
             self._append(run_id, GENERATED)
-            self._validate_payload(payload)
+            self._validate_payload(payload, plan)
             self._append(run_id, VALIDATED)
 
             # DELIVER with stable idempotency key; persist receipt first.
@@ -452,21 +457,44 @@ class RunEngine:
         )
 
     def _generate(self, plan: Plan) -> str:
+        # G4-001: the LLM only explains from the fact packet; the DELIVERED
+        # payload is a deterministic structured Markdown report whose facts come
+        # exclusively from the selected plan. The raw LLM response is embedded
+        # as untrusted narrative inside that structure — it can never change the
+        # recommendation facts (SPEC §3.5, MP §3.6, T4.2).
         packet = FactPacket(run_id=plan.run_id, plan=plan)
         try:
-            return self._llm.generate_narrative(_packet_dict(packet))
+            narrative = self._llm.generate_narrative(_packet_dict(packet))
         except DomainError:
             raise
         except Exception as exc:  # provider-side generation failure
             raise GenerationFailureError(f"narrative generation failed: {exc}") from exc
+        return render_markdown(self._report_data(plan), narrative)
 
-    def _validate_payload(self, payload: str) -> None:
-        if not payload or not payload.strip():
-            raise ValidationFailureError("generated payload is empty")
-        if len(payload) > MAX_PAYLOAD_LENGTH:
-            raise ValidationFailureError(
-                f"generated payload exceeds {MAX_PAYLOAD_LENGTH} characters"
-            )
+    def _validate_payload(self, payload: str, plan: Plan) -> None:
+        # G4-001: full structure/length/fact-reference validation of the
+        # rendered report BEFORE any delivery (SPEC §8, T4.2). A payload that
+        # fails this never reaches the Delivery Port.
+        validate_markdown(payload, self._report_data(plan))
+
+    def _report_data(self, plan: Plan):
+        """Plain report facts from the selected plan (leaf data for Markdown)."""
+        return build_report_data(
+            run_id=plan.run_id,
+            genres=[
+                {"genre_id": g.genre_id, "name": g.name} for g in plan.genres
+            ],
+            albums=[
+                {
+                    "album_id": a.album_id,
+                    "genre_id": a.genre_id,
+                    "title": a.title,
+                    "artist": a.artist,
+                    "year": a.year,
+                }
+                for a in plan.albums
+            ],
+        )
 
     def _idempotency_key(self, run_id: str) -> str:
         return f"{run_id}:{self._config.delivery.channel}"
