@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import Protocol
 
 from omda.core.album import normalized_text
-from omda.ports.domain import AlbumCandidate, AlbumEvidence, AlbumIdentity
+from omda.ports.domain import AlbumCandidate, AlbumIdentity
 from omda.ports.errors import SourceUnavailableError
 
 DEFAULT_USER_AGENT = "omda/0.1 (+https://github.com/omda) enrichment"
@@ -154,32 +154,17 @@ class MusicBrainzEnricher:
         """Return an enriched copy (canonical identity) for ONE candidate.
 
         Driven only by this candidate (finite, per-run): no bulk/batch lookup.
-        G3-004: the Port signature is unchanged, so a stale-refresh failure
-        cannot carry evidence through the return value — it therefore FAILS
-        CLEARLY with the stale evidence in the error detail instead of silently
-        serving unlabelled old data. Callers that need observable freshness use
-        :meth:`enrich_with_evidence`.
-        """
-        enriched, _ = self.enrich_with_evidence(candidate)
-        return enriched
-
-    def enrich_with_evidence(
-        self, candidate: AlbumCandidate
-    ) -> tuple[AlbumCandidate, AlbumEvidence]:
-        """Enrich one candidate and return its caller-visible evidence.
-
-        ``AlbumEvidence`` carries cache_status ("fresh"|"stale"), source,
-        fetched_at and query_version so downstream code can report source age or
-        decide whether stale evidence is acceptable (MP §6).
+        G3-004: the accepted Port signature is unchanged, so a stale-refresh
+        failure cannot carry cache evidence through the return value — it
+        therefore FAILS CLEARLY with the stale evidence in the error detail
+        instead of silently serving unlabelled old data (MP §6). No parallel
+        concrete-only enrichment API is provided.
         """
         key = self._query_key(candidate)
         cached = self._cache.get(key)
         now = self._clock()
         if cached is not None and self._is_fresh(cached, now):
-            return (
-                self._apply(candidate, cached),
-                AlbumEvidence("fresh", cached.source, cached.fetched_at, cached.query_version),
-            )
+            return self._apply(candidate, cached)
         try:
             entry = self._lookup(candidate, key, now)
         except SourceUnavailableError as exc:
@@ -199,10 +184,7 @@ class MusicBrainzEnricher:
                 ) from exc
             raise
         self._cache.put(entry)
-        return (
-            self._apply(candidate, entry),
-            AlbumEvidence("fresh", entry.source, entry.fetched_at, entry.query_version),
-        )
+        return self._apply(candidate, entry)
 
     # -- internals -------------------------------------------------------------
     def _query_key(self, candidate: AlbumCandidate) -> str:
@@ -255,8 +237,11 @@ class MusicBrainzEnricher:
             # Ambiguity is never silently collapsed (SPEC §2.4): no canonical ID.
             return self._no_match_entry(key, now)
         match = matches[0]
-        if self._year_conflict(candidate, match):
-            # Corroboration (year) conflicts: refuse to install a destructive ID.
+        if not self._sufficient_evidence(candidate, match):
+            # G3-003: a destructive canonical identity needs corroborating
+            # evidence — a compatible first-release year (when the candidate
+            # year is known) AND a positive search score. Missing/malformed
+            # year or absent/zero score => explicit no-match, never "exact".
             return self._no_match_entry(key, now)
         return EnrichmentEntry(
             query_key=key,
@@ -299,7 +284,22 @@ class MusicBrainzEnricher:
         first_date = item.get("first-release-date")
         if isinstance(first_date, str) and len(first_date) >= 4 and first_date[:4].isdigit():
             year = int(first_date[:4])
-        return {"id": canonical_id, "title": title, "artist": " ".join(names), "year": year}
+        # G3-003: score shape is validated; missing or malformed score means the
+        # search confidence cannot corroborate the match.
+        score = item.get("score")
+        if score is not None and (
+            isinstance(score, bool) or not isinstance(score, (int, float))
+        ):
+            raise SourceUnavailableError(
+                "musicbrainz: release-group item has malformed 'score'"
+            )
+        return {
+            "id": canonical_id,
+            "title": title,
+            "artist": " ".join(names),
+            "year": year,
+            "score": score,
+        }
 
     def _matches(self, candidate: AlbumCandidate, item: dict) -> bool:
         """Strong match: normalized title AND complete artist-credit both equal."""
@@ -308,11 +308,19 @@ class MusicBrainzEnricher:
             and normalized_text(candidate.artist) == normalized_text(item["artist"])
         )
 
-    def _year_conflict(self, candidate: AlbumCandidate, item: dict) -> bool:
-        """Conflicting first-release year rejects exactness (reviewable corroboration)."""
-        if candidate.year is None or item["year"] is None:
+    def _sufficient_evidence(self, candidate: AlbumCandidate, item: dict) -> bool:
+        """Corroboration required before a destructive canonical ID is installed.
+
+        - When the candidate year is known, a valid, compatible first-release
+          year is REQUIRED (missing/malformed year is not treated as neutral).
+        - A positive search score is required; missing/zero/negative score means
+          the search confidence cannot corroborate the match.
+        """
+        if candidate.year is not None and (
+            item["year"] is None or item["year"] != candidate.year
+        ):
             return False
-        return candidate.year != item["year"]
+        return not (item["score"] is None or item["score"] <= 0)
 
     def _no_match_entry(self, key: str, now: str) -> EnrichmentEntry:
         return EnrichmentEntry(

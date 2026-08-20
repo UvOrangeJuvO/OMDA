@@ -64,22 +64,6 @@ class AlbumIdentity:
 
 
 @dataclass(frozen=True)
-class AlbumEvidence:
-    """Enrichment provenance for an album candidate (G3-004).
-
-    Carries freshness/source/fetched-at/query-version as a caller-visible value
-    so stale evidence can be distinguished from fresh evidence WITHOUT
-    overloading ``AlbumIdentity.identity_confidence``. Pure addition to the
-    domain value set; no existing type or Port signature changes.
-    """
-
-    cache_status: str  # "fresh" | "stale"
-    source: str
-    fetched_at: str
-    query_version: str
-
-
-@dataclass(frozen=True)
 class AlbumCandidate:
     """A candidate album offered to the selection layer."""
 
@@ -148,7 +132,6 @@ class DeliveryReceipt:
 
 __all__ = [
     "AlbumCandidate",
-    "AlbumEvidence",
     "AlbumIdentity",
     "DeliveryReceipt",
     "GenrePickRecord",

@@ -82,6 +82,7 @@ def _single_ok_response(
     title="Blue Train",
     artist="John Coltrane",
     first_release_date="1958-01-01",
+    score=100,
 ) -> MBHttpResponse:
     return MBHttpResponse(
         200,
@@ -93,6 +94,7 @@ def _single_ok_response(
                         "title": title,
                         "artist-credit": [{"name": artist}],
                         "first-release-date": first_release_date,
+                        "score": score,
                     }
                 ]
             }
@@ -417,74 +419,6 @@ def test_genuinely_exact_match_sets_exact() -> None:
     assert enriched.identity.identity_confidence == "exact"
 
 
-# --- G3-004 re-review: enrichment evidence is caller-visible -------------------
-
-
-def test_enrich_with_evidence_reports_fresh() -> None:
-    transport = ScriptedTransport([_single_ok_response("mb-fresh")])
-    cache = EnrichmentCache()
-    enricher = _enricher(transport, clock=AT0, cache=cache)
-    enriched, evidence = enricher.enrich_with_evidence(_candidate())
-    assert enriched.identity is not None
-    assert evidence.cache_status == "fresh"
-    assert evidence.source == "musicbrainz"
-    assert evidence.fetched_at == AT0
-    assert evidence.query_version == QUERY_VERSION
-
-
-def test_enrich_with_evidence_reports_fresh_from_cache() -> None:
-    transport = ScriptedTransport([_single_ok_response("mb-cached")])
-    cache = EnrichmentCache()
-    enricher = _enricher(transport, clock=AT0, cache=cache)
-    enricher.enrich_with_evidence(_candidate())
-    _, evidence = enricher.enrich_with_evidence(_candidate())  # served from cache
-    assert evidence.cache_status == "fresh"
-    assert evidence.fetched_at == AT0
-    assert transport.calls == 1
-
-
-def test_enrich_with_evidence_reports_fresh_after_stale_refresh() -> None:
-    cache = EnrichmentCache()
-    cache.put(
-        EnrichmentEntry(
-            query_key="v1|johncoltrane|bluetrain|1958",
-            canonical_id="mb-stale",
-            canonical_source="musicbrainz",
-            fetched_at=AT0,
-            query_version=QUERY_VERSION,
-            source="musicbrainz",
-        )
-    )
-    transport = ScriptedTransport([_single_ok_response("mb-new")])
-    enricher = _enricher(transport, clock=LATER, cache=cache)
-    enriched, evidence = enricher.enrich_with_evidence(_candidate())
-    assert enriched.identity is not None and enriched.identity.canonical_id == "mb-new"
-    assert evidence.cache_status == "fresh"  # refreshed data is fresh
-    assert evidence.fetched_at == LATER
-    assert transport.calls == 1
-
-
-def test_enrich_with_evidence_stale_refresh_failure_raises_with_evidence() -> None:
-    cache = EnrichmentCache()
-    cache.put(
-        EnrichmentEntry(
-            query_key="v1|johncoltrane|bluetrain|1958",
-            canonical_id="mb-stale",
-            canonical_source="musicbrainz",
-            fetched_at=AT0,
-            query_version=QUERY_VERSION,
-            source="musicbrainz",
-        )
-    )
-    transport = ScriptedTransport([TimeoutError("down")])
-    enricher = _enricher(transport, clock=LATER, cache=cache, max_retries=0)
-    with pytest.raises(SourceUnavailableError) as exc:
-        enricher.enrich_with_evidence(_candidate())
-    detail = exc.value.detail
-    assert detail["cache_status"] == "stale"
-    assert detail["fetched_at"] == AT0
-
-
 # --- G3-005/G3-006 re-review: pacing and bounded cache --------------------------
 
 
@@ -532,3 +466,75 @@ def test_enrichment_cache_evicts_oldest_entries() -> None:
     assert cache.get("k1") is None  # oldest evicted
     assert cache.get("k2") is not None
     assert cache.get("k3") is not None
+
+
+# --- G3-003 re-review 1: year/score corroboration before exact ------------------
+
+
+def test_missing_year_prevents_exact_when_candidate_year_known() -> None:
+    # Candidate year is known (1958); the item has NO first-release-date and a
+    # positive score — missing corroboration is NOT neutral, so no destructive ID.
+    transport = ScriptedTransport(
+        [_single_ok_response("mb-self", first_release_date=None)]
+    )
+    enriched = _enricher(transport).enrich(_candidate())
+    assert enriched.identity is None
+
+
+def test_malformed_year_prevents_exact() -> None:
+    # first-release-date="unknown" is unusable corroboration -> no exact.
+    transport = ScriptedTransport(
+        [_single_ok_response("mb-self", first_release_date="unknown")]
+    )
+    enriched = _enricher(transport).enrich(_candidate())
+    assert enriched.identity is None
+
+
+def test_missing_score_prevents_exact() -> None:
+    # Matching title/artist/year but NO search score: evidence insufficient.
+    transport = ScriptedTransport(
+        [_single_ok_response("mb-self", score=None)]
+    )
+    enriched = _enricher(transport).enrich(_candidate())
+    assert enriched.identity is None
+
+
+def test_zero_score_prevents_exact() -> None:
+    transport = ScriptedTransport([_single_ok_response("mb-self", score=0)])
+    enriched = _enricher(transport).enrich(_candidate())
+    assert enriched.identity is None
+
+
+def test_malformed_score_is_unavailable() -> None:
+    body = json.dumps(
+        {
+            "release-groups": [
+                {
+                    "id": "mb-x",
+                    "title": "Blue Train",
+                    "artist-credit": [{"name": "John Coltrane"}],
+                    "first-release-date": "1958-01-01",
+                    "score": "high",
+                }
+            ]
+        }
+    )
+    transport = ScriptedTransport([MBHttpResponse(200, body)])
+    with pytest.raises(SourceUnavailableError):
+        _enricher(transport).enrich(_candidate())
+
+
+def test_fully_corroborated_self_titled_exact() -> None:
+    # Self-titled album with matching year AND positive score: exact is safe.
+    transport = ScriptedTransport(
+        [
+            _single_ok_response(
+                "mb-weezer", title="Weezer", artist="Weezer", first_release_date="1994-01-01"
+            )
+        ]
+    )
+    candidate = _candidate(album_id="w1", title="Weezer", artist="Weezer", year=1994)
+    enriched = _enricher(transport).enrich(candidate)
+    assert enriched.identity is not None
+    assert enriched.identity.canonical_id == "mb-weezer"
+    assert enriched.identity.identity_confidence == "exact"
