@@ -950,3 +950,57 @@ Only G3-005's focused P2 remains; every P0/P1 and all other G3 findings are clos
 validation order and hostname predicate, rerun the Gate suite and resubmit. Candidate
 `360b2f428277922e4b0ea55f00c00e4aac62d915` must not be merged,
 `gate-g3-accepted` must not be created, and G4 must not begin.
+
+---
+
+## Re-review 6 — candidate `e30dd43479fe5821f7498ff29a14b5d07d2e427c`
+
+### Reviewed object and checks
+
+- Original G3 base: `f69c540ee8d98741b9a90f2175fdde012ea81c45`
+- Previous candidate: `360b2f428277922e4b0ea55f00c00e4aac62d915`
+- Previous Reviewer commit: `3b5a2c4d0e3d42deb909cddc3672d24ea1d50372`
+- New candidate: `e30dd43479fe5821f7498ff29a14b5d07d2e427c`
+- Repair commit: `ddb188b`; package commit: `e30dd43`
+- Branch: `exec/g3-adapters`; worktree at review start: clean
+- Exact merge base: `f69c540ee8d98741b9a90f2175fdde012ea81c45`
+- Independent suite: **491 passed in 3.20s**; Ruff and full-range `git diff --check`: **passed**
+- No production scope outside G3, merge, tag, push or G4 work observed
+
+The control-before-trim ordering and real-hostname predicate close all six Re-review 5 examples.
+One explicitly requested subcase remains: `_url_has_hostname()` says malformed port parsing is
+invalid, but never accesses `parsed.port`, which is where `urllib.parse` raises for nonnumeric or
+out-of-range ports.
+
+### [P2] G3-005 remains open — malformed and out-of-range contact ports are never evaluated
+
+- Location: `src/omda/adapters/musicbrainz.py:524-542`
+- Evidence: the function reads `parsed.hostname` and returns it, but does not read `parsed.port`.
+  Python defers port validation until the `port` property is accessed.
+- Independent reproduction: both of these values still construct successfully:
+  - `omda/1 (+https://example.org:notaport)`
+  - `omda/1 (+https://example.org:99999)`
+- Impact: the validator still accepts contact URLs that cannot be used as valid HTTP(S) contact
+  endpoints, contrary to its docstring and the prior acceptance requirement to treat malformed
+  hostname/port parsing as `False`.
+- Required acceptance: access `parsed.port` inside the guarded parse block (allowing `None` for
+  the normal default port), reject its `ValueError`, and add the two exact values above as negative
+  tests. Retain all earlier valid and invalid UA cases.
+
+### Finding status and matrix
+
+| Area | Result |
+|---|---|
+| G3-001 through G3-004 | **CLOSED / PASS** |
+| G3-005 numeric, pacing, URL, run ledger and contact header | **PARTIAL (P2: port only)** |
+| G3-006 through G3-009 | **CLOSED / PASS** |
+| CI fixtures, Core isolation, no-circumvention, G3 scope | **PASS** |
+| Open P0/P1 findings | **NONE** |
+
+### Verdict
+
+**CHANGES_REQUESTED**
+
+Only the two malformed-port cases remain in G3-005; all P0/P1 and every other G3 finding are
+closed. Candidate `e30dd43479fe5821f7498ff29a14b5d07d2e427c` must not be merged,
+`gate-g3-accepted` must not be created, and G4 must not begin.
