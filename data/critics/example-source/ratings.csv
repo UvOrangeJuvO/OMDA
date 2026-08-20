@@ -1,0 +1,4 @@
+source_id,album_id,rating,rating_max,review_url
+example-source,ambient-album-a,4,5,https://example.org/reviews/a
+example-source,bebop-album-b,3.5,5,https://example.org/reviews/b
+example-source,krautrock-album-c,5,5,https://example.org/reviews/c
