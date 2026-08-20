@@ -38,9 +38,11 @@ class FixtureFetcher:
     def __init__(self, name: str | None = None):
         self.name = name
         self.calls = 0
+        self.last_timeout = None
 
-    def fetch(self, url: str) -> str:
+    def fetch(self, url: str, timeout: float | None = None) -> str:
         self.calls += 1
+        self.last_timeout = timeout
         if self.name is None:
             raise SourceUnavailableError(f"rym: fetch failed for {url}")
         return _html(self.name)
@@ -202,4 +204,88 @@ def test_stale_cache_with_failed_refetch_is_explicit_unavailable() -> None:
     )
     with pytest.raises(SourceUnavailableError):
         source.fetch_genre_page(URL)  # stale + refetch failed -> explicit error
+    assert fetcher.calls == 1
+
+
+# --- G3-005/G3-006 re-review: bounds, budget, URL, snapshot safety ---------------
+
+
+def test_fetch_timeout_is_passed_to_fetcher() -> None:
+    fetcher = FixtureFetcher("genre_ok.html")
+    source = RymGenrePageSource(
+        fetcher=fetcher, clock=_clock(AT0), fetch_timeout=7.5
+    )
+    source.fetch_genre_page(URL)
+    assert fetcher.last_timeout == 7.5
+
+
+def test_fetcher_exception_maps_to_unavailable() -> None:
+    class ExplodingFetcher:
+        def fetch(self, url, timeout=None):
+            raise TimeoutError("bridge hung")
+
+    source = RymGenrePageSource(fetcher=ExplodingFetcher(), clock=_clock(AT0))
+    with pytest.raises(SourceUnavailableError):
+        source.fetch_genre_page(URL)
+
+
+def test_disallowed_url_scheme_rejected() -> None:
+    source = RymGenrePageSource(fetcher=FixtureFetcher("genre_ok.html"), clock=_clock(AT0))
+    with pytest.raises(SourceUnavailableError) as exc:
+        source.fetch_genre_page("http://rateyourmusic.com/genre/Ambient/")
+    assert "disallowed" in str(exc.value)
+
+
+def test_disallowed_url_host_rejected() -> None:
+    source = RymGenrePageSource(fetcher=FixtureFetcher("genre_ok.html"), clock=_clock(AT0))
+    with pytest.raises(SourceUnavailableError):
+        source.fetch_genre_page("https://example.org/genre/Ambient/")
+
+
+def test_disallowed_url_path_rejected() -> None:
+    source = RymGenrePageSource(fetcher=FixtureFetcher("genre_ok.html"), clock=_clock(AT0))
+    with pytest.raises(SourceUnavailableError) as exc:
+        source.fetch_genre_page("https://rateyourmusic.com/artist/foo/")
+    assert "path" in str(exc.value)
+
+
+def test_per_run_page_budget_is_enforced() -> None:
+    fetcher = FixtureFetcher("genre_ok.html")
+    source = RymGenrePageSource(
+        fetcher=fetcher, clock=_clock(AT0), max_pages_per_run=2
+    )
+    source.fetch_genre_page("https://rateyourmusic.com/genre/A/", run_id="r1")
+    source.fetch_genre_page("https://rateyourmusic.com/genre/B/", run_id="r1")
+    with pytest.raises(SourceUnavailableError) as exc:
+        source.fetch_genre_page("https://rateyourmusic.com/genre/C/", run_id="r1")
+    assert "budget exhausted" in str(exc.value)
+    # A different run keeps its own budget.
+    source.fetch_genre_page("https://rateyourmusic.com/genre/C/", run_id="r2")
+    assert source.budget_used("r1") == 2
+    assert source.budget_used("r2") == 1
+
+
+def test_page_cache_evicts_oldest_entries() -> None:
+    cache = PageCache(max_entries=2)
+    cache.put(
+        PageCacheEntry("https://rateyourmusic.com/genre/A/", {"page_url": "a"}, AT0)
+    )
+    cache.put(
+        PageCacheEntry("https://rateyourmusic.com/genre/B/", {"page_url": "b"}, AT0)
+    )
+    cache.put(
+        PageCacheEntry("https://rateyourmusic.com/genre/C/", {"page_url": "c"}, AT0)
+    )
+    assert cache.get("https://rateyourmusic.com/genre/A/") is None
+    assert cache.get("https://rateyourmusic.com/genre/B/") is not None
+    assert cache.get("https://rateyourmusic.com/genre/C/") is not None
+
+
+def test_cached_extract_mutation_does_not_corrupt_cache() -> None:
+    fetcher = FixtureFetcher("genre_ok.html")
+    source = RymGenrePageSource(fetcher=fetcher, clock=_clock(AT0))
+    first = source.fetch_genre_page(URL)
+    first["title"] = "MUTATED"  # caller mutates the returned copy
+    second = source.fetch_genre_page(URL)  # served from cache
+    assert second["title"] == "Ambient Music genre"  # snapshot intact
     assert fetcher.calls == 1

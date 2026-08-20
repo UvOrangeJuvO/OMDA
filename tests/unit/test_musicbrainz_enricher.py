@@ -210,7 +210,8 @@ def test_transient_429_then_success() -> None:
     )
     assert enriched.identity is not None and enriched.identity.canonical_id == "mb-ok"
     assert transport.calls == 2
-    assert sleeper.delays == [1.0]
+    # backoff after 429 + pacing after the successful call (G3-005)
+    assert sleeper.delays == [1.0, 1.0]
 
 
 def test_non_retryable_status_fails_immediately() -> None:
@@ -482,3 +483,52 @@ def test_enrich_with_evidence_stale_refresh_failure_raises_with_evidence() -> No
     detail = exc.value.detail
     assert detail["cache_status"] == "stale"
     assert detail["fetched_at"] == AT0
+
+
+# --- G3-005/G3-006 re-review: pacing and bounded cache --------------------------
+
+
+def test_consecutive_successful_calls_are_paced() -> None:
+    # G3-005: client-side pacing applies to EVERY successful call, not just
+    # retry backoff — consecutive lookups never exceed ~1 req/s.
+    sleeper = RecordingSleeper()
+    transport = ScriptedTransport([_single_ok_response("m1"), _single_ok_response("m2")])
+    enricher = MusicBrainzEnricher(
+        transport=transport,
+        clock=FixedClock(AT0),
+        sleeper=sleeper,
+        pacing_seconds=1.0,
+    )
+    enricher.enrich(_candidate(album_id="a", title="Blue Train"))
+    enricher.enrich(_candidate(album_id="b", title="Giant Steps"))
+    assert transport.calls == 2
+    assert sleeper.delays == [1.0, 1.0]  # one pacing sleep per successful call
+
+
+def test_pacing_can_be_disabled() -> None:
+    sleeper = RecordingSleeper()
+    transport = ScriptedTransport([_single_ok_response("m1")])
+    MusicBrainzEnricher(
+        transport=transport,
+        clock=FixedClock(AT0),
+        sleeper=sleeper,
+        pacing_seconds=0.0,
+    ).enrich(_candidate())
+    assert sleeper.delays == []
+
+
+def test_enrichment_cache_evicts_oldest_entries() -> None:
+    # G3-006: capacity is bounded with deterministic FIFO eviction.
+    cache = EnrichmentCache(max_entries=2)
+    cache.put(
+        EnrichmentEntry("k1", "mb-1", "musicbrainz", AT0, QUERY_VERSION, "musicbrainz")
+    )
+    cache.put(
+        EnrichmentEntry("k2", "mb-2", "musicbrainz", AT0, QUERY_VERSION, "musicbrainz")
+    )
+    cache.put(
+        EnrichmentEntry("k3", "mb-3", "musicbrainz", AT0, QUERY_VERSION, "musicbrainz")
+    )
+    assert cache.get("k1") is None  # oldest evicted
+    assert cache.get("k2") is not None
+    assert cache.get("k3") is not None

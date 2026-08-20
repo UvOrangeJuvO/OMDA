@@ -33,6 +33,10 @@ DEFAULT_READ_TIMEOUT = 10.0
 DEFAULT_BASE_DELAY = 1.0
 DEFAULT_MAX_BACKOFF = 30.0
 DEFAULT_FRESH_TTL = 7 * 24 * 3600  # 7 days
+# G3-005: client-side pacing across successful calls — MusicBrainz guidance
+# requires at most ~1 request/second; keep this >= 1.0 for live use.
+DEFAULT_PACING_SECONDS = 1.0
+DEFAULT_CACHE_MAX_ENTRIES = 256
 
 QUERY_VERSION = "v1"
 
@@ -83,19 +87,28 @@ class EnrichmentEntry:
 
 
 class EnrichmentCache:
-    """Bounded in-memory enrichment cache keyed by normalized query.
+    """Bounded in-memory enrichment cache keyed by normalized query (G3-006).
 
+    Capacity is capped at ``max_entries`` with deterministic FIFO eviction;
     ``get``/``put`` are overridable for a persistent (JSON file) backend; the
     adapter only ever sees provenance-carrying entries.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_entries: int = DEFAULT_CACHE_MAX_ENTRIES) -> None:
+        if max_entries <= 0:
+            raise ValueError("max_entries must be > 0")
+        self._max_entries = max_entries
         self._entries: dict[str, EnrichmentEntry] = {}
 
     def get(self, query_key: str) -> EnrichmentEntry | None:
         return self._entries.get(query_key)
 
     def put(self, entry: EnrichmentEntry) -> None:
+        # G3-006: bounded capacity with deterministic FIFO eviction — a
+        # long-lived process never grows memory without limit.
+        if entry.query_key not in self._entries and len(self._entries) >= self._max_entries:
+            oldest_key = next(iter(self._entries))
+            self._entries.pop(oldest_key)
         self._entries[entry.query_key] = entry
 
 
@@ -116,9 +129,12 @@ class MusicBrainzEnricher:
         base_delay: float = DEFAULT_BASE_DELAY,
         max_backoff: float = DEFAULT_MAX_BACKOFF,
         fresh_ttl_seconds: float = DEFAULT_FRESH_TTL,
+        pacing_seconds: float = DEFAULT_PACING_SECONDS,
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be >= 0")
+        if pacing_seconds < 0:
+            raise ValueError("pacing_seconds must be >= 0")
         self._transport = transport
         self._clock = clock
         self._sleeper = sleeper
@@ -130,6 +146,7 @@ class MusicBrainzEnricher:
         self._base_delay = base_delay
         self._max_backoff = max_backoff
         self._fresh_ttl = fresh_ttl_seconds
+        self._pacing = pacing_seconds
         self._url = "https://musicbrainz.org/ws/2/release-group/"
 
     # -- AlbumEnricher port ----------------------------------------------------
@@ -326,14 +343,21 @@ class MusicBrainzEnricher:
                 continue
             if response.status == 404:
                 # Explicit no-result is not an error: empty result path.
+                self._pace()  # G3-005: pace successful calls too
                 return response
             if response.status != 200:
                 raise SourceUnavailableError(f"musicbrainz: HTTP {response.status}")
+            self._pace()  # G3-005: client-side pacing across successful calls
             return response
         raise SourceUnavailableError(
             f"musicbrainz: request failed after {self._max_retries + 1} attempts"
             f" ({last_error})"
         )
+
+    def _pace(self) -> None:
+        """Sleep the configured pacing interval after a successful call (G3-005)."""
+        if self._pacing > 0:
+            self._sleeper(self._pacing)
 
     def _backoff(self, attempt: int) -> None:
         delay = min(self._base_delay * (2**attempt), self._max_backoff)
