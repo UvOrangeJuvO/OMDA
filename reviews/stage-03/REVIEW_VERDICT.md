@@ -867,3 +867,86 @@ anonymous and control-character contacts contrary to its declared contract. Comp
 focused P2 correction, rerun the Gate suite and resubmit. Candidate
 `f4ca34f168899d98f83fd23d2b081836e1cbd7f5` must not be merged,
 `gate-g3-accepted` must not be created, and G4 must not begin.
+
+---
+
+## Re-review 5 — candidate `360b2f428277922e4b0ea55f00c00e4aac62d915`
+
+### Re-review identity and checks
+
+- Original G3 base: `f69c540ee8d98741b9a90f2175fdde012ea81c45`
+- Previous repair candidate: `f4ca34f168899d98f83fd23d2b081836e1cbd7f5`
+- Previous Reviewer commit: `f4cf1999fed91f6601efd7f878c778c1fa4c15d7`
+- New repair candidate: `360b2f428277922e4b0ea55f00c00e4aac62d915`
+- Repair commit: `cf59cf1`; review-package commit: `360b2f4`
+- Candidate branch observed: `exec/g3-adapters`
+- Merge base: exact original base `f69c540ee8d98741b9a90f2175fdde012ea81c45`
+- Worktree at review start: clean
+- Independent full suite: **485 passed in 3.05s**
+- Ruff: **passed**; full-range `git diff --check`: **passed**
+- No G4 scope, merge, tag, live RYM dependency, anti-bot code or accepted G2 change observed
+
+All previous P0/P1 findings remain closed. The complete-value User-Agent rewrite closes the five
+literal examples from Re-review 4, but two ordering/parsing mistakes still violate the same P2
+contract: stripping happens before control-character inspection, and contact URLs are accepted on
+non-empty `netloc` even when `hostname` is empty.
+
+### Finding status
+
+| Finding | Re-review status |
+|---|---|
+| G3-001 through G3-004 | **CLOSED** |
+| G3-005 external-access identification | **PARTIAL / OPEN (P2)** |
+| G3-006 through G3-009 | **CLOSED** |
+| Open P0/P1 findings | **NONE** |
+
+### [P2] G3-005 remains open — trimming hides boundary controls and `netloc` is not a hostname
+
+- Location: `src/omda/adapters/musicbrainz.py:468-522`;
+  `tests/unit/test_musicbrainz_enricher.py:859-904`
+- Evidence:
+  - `_is_contactable_user_agent()` performs `value.strip()` before `_UA_CTRL.search()`. Therefore
+    leading/trailing CR, LF or Tab characters disappear before validation instead of being
+    rejected, despite the contract saying “no ASCII control characters anywhere”.
+  - `_url_has_hostname()` returns `bool(parsed.netloc)`, not `bool(parsed.hostname)`. A URL can
+    have a non-empty authority string containing only userinfo or a port while having no host.
+- Independent reproduction: all six malformed values construct successfully:
+  - `omda/1 (+https://example.org)\r\n`
+  - `\nomda/1 (+https://example.org)`
+  - `\tomda/1 (+https://example.org)\t`
+  - `omda/1 (+https://@)`
+  - `omda/1 (+https://user@)`
+  - `omda/1 (+https://:443)`
+- Impact: control characters and hostless “contact URLs” still cross the configuration boundary,
+  so the adapter cannot substantiate its claimed safe/contactable header contract.
+- Required acceptance:
+  - inspect the original untrimmed value for controls before any normalization; preferably reject
+    leading/trailing whitespace rather than silently rewriting a header value;
+  - require `parsed.hostname`, reject userinfo-only/port-only authorities, and handle malformed
+    hostname/port parsing as `False`;
+  - add all six exact counterexamples above as negative tests; retain the valid URL/mailto/email
+    cases and the earlier eleven negative cases.
+
+### Re-review 5 acceptance matrix
+
+| G3 criterion | Result |
+|---|---|
+| Data, provenance, canonical/cache, Browser Companion and critic contracts | **PASS** |
+| MusicBrainz full User-Agent contact validation | **PARTIAL (P2) — G3-005** |
+| Ordinary fixture-only CI / Core isolation / G3 scope | **PASS** |
+| Open P0/P1 findings | **NONE** |
+
+### Re-review 5 checks and limitations
+
+- Reviewed `f4cf199..360b2f4` plus necessary full-base regression and exact ancestry.
+- Re-ran 485 tests and Ruff; independently tested the six malformed values with a local fake.
+- No live external request, production-code edit by Reviewer, merge, tag, push or G4 work.
+
+### Re-review 5 verdict
+
+**CHANGES_REQUESTED**
+
+Only G3-005's focused P2 remains; every P0/P1 and all other G3 findings are closed. Correct the
+validation order and hostname predicate, rerun the Gate suite and resubmit. Candidate
+`360b2f428277922e4b0ea55f00c00e4aac62d915` must not be merged,
+`gate-g3-accepted` must not be created, and G4 must not begin.
