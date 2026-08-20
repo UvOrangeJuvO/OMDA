@@ -220,3 +220,34 @@
 | `git diff --check` | clean |
 | 既有测试未删除/弱化/skip | 确认（261 → 274 单调增长；原 active 上限测试升级为真激活断言，属修复而非弱化） |
 | 未 merge / 未 tag / 未 push / 未进入 G3 / 未改 verdict | 确认 |
+
+---
+
+# G2 Re-review 7 Repair（2026-08-20）
+
+对应 Reviewer commit：`d50722ac8b393b653b8d753831588d1b96a2f153`（`review(g2): require exact config null validation`）
+上一 candidate：`a9136bb25cd487f81255561a440fb5da1f424ad4`
+本轮修复 commit：`028b4ba`（G2-011）
+
+## G2-011 — `_normalise` 隐藏无效 null + 嵌套类型绕过受控校验 — CLOSED
+
+- **根因**：`Config.__post_init__` 用 `_normalise(config_to_dict(self))` 通用删除所有 None → `Config(daily_genre_count=None)` 构造成功（PLANNED 后 TypeError）；`Config(genre_parent_limits=None)` 渲染快照时抛裸 TypeError；`Config(delivery={"channel":...})` 抛裸 AttributeError；`DeliveryConfig(pushplus_token_env=123)` regex 抛裸 TypeError。
+- **修复**（`028b4ba`）：
+  1. **不再通用删除 None**——渲染精确生效快照后仅显式省略 optional 未设置字段（`seed`、`pushplus_token_env`）；非空字段的 None 原样进入 schema → 受控 `RecordValidationError`；
+  2. **字段级类型预检**（受控 ValueError，不复制规则）：`delivery` 非 DeliveryConfig、`genre_parent_limits` 非 Mapping → 构造前拒绝；
+  3. `config_to_dict` 防御性序列化——畸形容器/嵌套类型原样传给 schema（schema 拒绝），不抛 TypeError/AttributeError；
+  4. `DeliveryConfig.__post_init__` 先做类型预检（channel 字符串、env 字符串）再 pattern 校验 → 受控。
+- **测试**：4 个非空字段 None 受控拒绝；`genre_parent_limits=None` / `delivery=None` / `delivery={"channel":...}` 受控拒绝（ValueError，无裸异常）；`DeliveryConfig(pushplus_token_env=123)` 受控拒绝；合法 unset optionals（seed=None、env=None）round-trip。
+- **关闭证据**：任何直接 Config/DeliveryConfig 的 null 或畸形嵌套值都在 fingerprint 与 PLANNED 前进入统一受控验证错误；schema 保持唯一规则真源（无第二份字段规则副本）。
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **283 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 283 passed |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| 未修改求解器/推荐规则/收据逻辑 | 确认（仅 config.py + 其测试） |
+| 既有测试未删除/弱化/skip | 确认（274 → 283 单调增长） |
+| 未 merge / 未 tag / 未 push / 未进入 G3 / 未改 verdict | 确认 |

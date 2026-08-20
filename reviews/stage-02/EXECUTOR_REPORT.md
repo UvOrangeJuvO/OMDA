@@ -312,3 +312,34 @@
 ## Executor Conclusion（G2 Re-review 6 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G2 Re-review 7 Repair（2026-08-20）
+
+对应 Reviewer commit：`d50722ac8b393b653b8d753831588d1b96a2f153`（`review(g2): require exact config null validation`）
+上一 candidate：`a9136bb25cd487f81255561a440fb5da1f424ad4`
+本轮修复 commit：`028b4ba`（G2-011）
+详细逐项修复记录见 `reviews/stage-02/REPAIR_REPORT.md`。
+
+## Re-review 7 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G2-011 `_normalise` 隐藏无效 null + 嵌套类型绕过受控校验 | P1 | `028b4ba` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **283 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 283 passed |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| 未修改求解器/推荐规则/收据逻辑 | 确认 |
+| 既有测试未删除/弱化/skip | 确认（274 → 283 单调增长） |
+| 未 merge / 未 tag / 未 push / 未进入 G3 / 未改 verdict | 确认 |
+
+## Executor Conclusion（G2 Re-review 7 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
