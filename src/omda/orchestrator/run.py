@@ -505,8 +505,8 @@ class RunEngine:
             return RunOutcome(
                 run_id=run_id, state=RECOVERING, plan=plan, payload=payload, receipt=receipt
             )
-        if receipt.status != "ok":
-            # Correctly bound AND explicitly failed: a confirmed delivery failure
+        if receipt.status == "failed":
+            # Correctly bound AND exactly "failed": a confirmed delivery failure
             # for the CURRENT operation is an ordinary terminal failure.
             self._append(
                 run_id,
@@ -517,6 +517,22 @@ class RunEngine:
                 },
             )
             return RunOutcome(run_id=run_id, state=FAILED, payload=payload)
+        if receipt.status != "ok":
+            # G2-012: exactly three status classes — "ok" proceeds, "failed"
+            # (bound) confirms failure, and EVERY OTHER value (unknown/pending/
+            # empty/malformed) is ambiguous: the adapter never confirmed either
+            # success or failure, so preserve the anomaly and enter RECOVERING.
+            self._append(
+                run_id,
+                RECOVERING,
+                {
+                    "reason": "delivery receipt has unrecognized status",
+                    "receipt_status": receipt.status,
+                },
+            )
+            return RunOutcome(
+                run_id=run_id, state=RECOVERING, plan=plan, payload=payload, receipt=receipt
+            )
         try:
             self._history.save_delivery_receipt(receipt)  # durable evidence first
         except InvariantFailureError as exc:

@@ -866,3 +866,40 @@ def test_receipt_conflict_after_external_call_enters_recovery() -> None:
     assert ConflictingOkDelivery.calls == 1
     assert history.find_delivery_receipt("run-1:markdown") == existing
     assert history.latest_pick_index() == 0
+
+
+# --- G2-012 re-review 4: exactly three receipt status classes ------------------
+
+
+@pytest.mark.parametrize("status", ["unknown", "pending", ""], ids=["unknown", "pending", "empty"])
+def test_bound_malformed_status_enters_recovery_not_terminal(status) -> None:
+    # Only exactly "ok" may proceed and only exactly "failed" confirms failure;
+    # every other status is malformed/ambiguous evidence -> RECOVERING with the
+    # anomaly preserved, zero history, one delivery call.
+    history = InMemoryHistory()
+
+    class MalformedStatusDelivery:
+        calls = 0
+
+        def deliver(self, payload, idempotency_key, target=None):
+            MalformedStatusDelivery.calls += 1
+            run_id, _, channel = idempotency_key.partition(":")
+            return DeliveryReceipt(
+                run_id=run_id,
+                idempotency_key=idempotency_key,
+                delivered_at=AT,
+                channel=channel or "markdown",
+                status=status,
+            )
+
+    outcome = _engine(history, delivery=MalformedStatusDelivery()).run("run-1")
+    assert outcome.state == RECOVERING, f"bound status {status!r} must enter recovery"
+    assert MalformedStatusDelivery.calls == 1
+    assert history.latest_pick_index() == 0
+    tails = [e.transition for e in history.journal_after("run-1", 0)]
+    assert tails[-1] == RECOVERING
+    anomaly = next(
+        e for e in history.journal_after("run-1", 0) if e.transition == "RECOVERING"
+    )
+    assert anomaly.detail is not None
+    assert anomaly.detail.get("receipt_status") == status  # durable anomaly evidence
