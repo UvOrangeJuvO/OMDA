@@ -397,3 +397,215 @@ G3-001, G3-002 and the original G3-006 cache defects are closed. G3-003, G3-004 
 remain blocking P1 findings; G3-007 and G3-008 are P2 follow-ups to fix with the focused repair.
 Candidate `120eedd9c14b0b5014cc50a61c7e123abb4721db` must not be merged,
 `gate-g3-accepted` must not be created, and G4 must not begin.
+
+---
+
+## Re-review 2 — candidate `e8baf77787d552b086489f78850e71e1e363f0be`
+
+### Re-review identity and checks
+
+- Original G3 base: `f69c540ee8d98741b9a90f2175fdde012ea81c45`
+- Previous repair candidate: `120eedd9c14b0b5014cc50a61c7e123abb4721db`
+- Previous Reviewer commit: `443638e0c3807d49b1726060413d6c0cd985cacc`
+- New repair candidate: `e8baf77787d552b086489f78850e71e1e363f0be`
+- Repair commits: `981deab`, `10a1ef7`; review-package commit: `e8baf77`
+- Candidate branch observed: `exec/g3-adapters`
+- Merge base of original base and new candidate: exact original base
+  `f69c540ee8d98741b9a90f2175fdde012ea81c45`
+- Worktree at review start: clean
+- Independent full suite: **411 passed in 4.00s**
+- Ruff over `src`, `tests`, `browser_companion`: **passed**
+- `git diff --check` over original base to new candidate: **passed**
+- Tracked cookie/profile/database/`.env` filename scan: **no matches**
+- Scope audit: no G4 implementation, merge, tag, live RYM dependency, anti-bot code or accepted
+  G2 contract change observed
+
+The repairs correctly close the parallel concrete-only enrichment API and implement the critic
+package directory invariant. They also add positive-finite validation for the principal timeout,
+delay and TTL settings. The candidate nevertheless remains unsafe to accept: the MusicBrainz
+score parser rejects the provider's documented JSON representation while accepting non-finite or
+arbitrarily low numeric scores as exact evidence; Browser Companion run budgets can be reset by
+the new automatic ledger eviction; and several claimed external-access bounds remain bypassable.
+
+### Original finding status
+
+| Finding | Re-review status | Evidence |
+|---|---|---|
+| G3-001 Genre eligibility/provenance | **CLOSED** | No regression; ineligible records stay filtered and package/source/path containment remains enforced. |
+| G3-002 critic scale consistency | **CLOSED** | No runtime regression; declared denominator rules and Core normalization remain tested. |
+| G3-003 canonical exactness | **PARTIAL / OPEN (P1)** | Missing year/score now fails closed, but the real documented string score is rejected while low/non-finite numeric scores install `exact`. |
+| G3-004 stale evidence / Port parity | **CLOSED** | `enrich_with_evidence` and `AlbumEvidence` are removed; stale refresh failure remains observable through the accepted Port error path. |
+| G3-005 external-access bounds | **PARTIAL / OPEN (P1)** | Main time values are validated, but page/run counts and retry count are not bounded integer types; non-canonical URL variants and the placeholder User-Agent remain. |
+| G3-006 bounded immutable caches | **PARTIAL / OPEN (P2)** | Snapshot/FIFO behavior is intact, but non-integer/non-finite capacities can disable the capacity bound. |
+| G3-007 run-budget ledger lifecycle | **OPEN, raised to P1** | Capacity is bounded, but automatic eviction resets a still-active run and permits it to exceed its page budget. |
+| G3-008 critic documentation parity | **PARTIAL / OPEN (P2)** | Runtime directory invariant and rules are documented, but the advertised blank-denominator CSV example is not a valid working row. |
+
+### [P1] G3-003 remains open — the score contract rejects real responses and accepts unsafe confidence
+
+- Location: `src/omda/adapters/musicbrainz.py:243-267`, `:269-316`, `:325-337`;
+  `tests/unit/test_musicbrainz_enricher.py:85-101`, `:498-545`
+- Evidence:
+  - MusicBrainz's official search API documentation shows JSON search scores as strings such as
+    `"score": "100"`. `_parse_item()` accepts only Python `int`/`float`, so a provider-shaped
+    successful release-group result raises `SourceUnavailableError("... malformed 'score'")`.
+    All success fixtures use the non-provider shape `score=100`, so the test suite misses this.
+  - Conversely, numeric `0.01`, `NaN` and `Infinity` all pass `_sufficient_evidence()` and install
+    `identity_confidence="exact"`. `NaN <= 0` is false, so the current positivity check is not a
+    finiteness check. There is still no conservative, reviewable confidence threshold: any
+    positive value is treated as sufficient.
+- Independent reproduction: one otherwise fully matching `Blue Train / John Coltrane / 1958`
+  response produced these outcomes:
+  - `score="100"` -> typed source failure instead of enrichment;
+  - `score=0.01`, `score=NaN`, `score=Infinity` -> canonical ID `mb-id` installed as `exact`.
+- Impact: the live adapter can reject ordinary valid search results, while malformed or extremely
+  weak confidence can become the permanent Album exclusion key. This is both a production
+  compatibility defect and the canonical-misidentification risk R-004.
+- Violated contract: MP “Album canonical identity” forbids silent destructive fuzzy matching;
+  Implementation Plan I-4/T2.4 and T3.3 require predictable canonical identity and a working
+  MusicBrainz release-group adapter; the prior G3-003 correction explicitly required validated
+  score shape plus a conservative threshold.
+- Required acceptance:
+  - parse the provider's documented decimal-string score representation into one finite numeric
+    domain with an explicit valid range; reject booleans, non-finite values, malformed strings and
+    out-of-range values through the typed source boundary;
+  - define one named, documented, conservative minimum score for destructive `exact` identity;
+  - add provider-shaped `"100"`, below-threshold, boundary, `NaN`/`Infinity`, malformed and
+    fully corroborated self-titled fixtures; only sufficient title + full artist credit + required
+    year + threshold score may install a canonical ID.
+
+Official response-shape evidence: [MusicBrainz API search documentation](https://musicbrainz.org/doc/MusicBrainz_API/Search).
+
+### [P1] G3-005 remains open — page/retry bounds and live identification are not enforceable
+
+- Location: `browser_companion/source.py:48-56`, `:73-80`, `:112-145`, `:202-253`;
+  `src/omda/adapters/musicbrainz.py:29`, `:97-101`, `:118-163`, `:349-377`
+- Evidence:
+  - `max_pages_per_run` and `max_tracked_runs` only use `<= 0`. `NaN` and `Infinity` are accepted;
+    with `max_pages_per_run` set to either value, three distinct uncached pages for one run all
+    reached the fetcher and the promised budget never exhausted. Fractional and boolean counts
+    are also accepted despite the setting being an integer count.
+  - `max_retries` likewise lacks a non-negative integer check. `1.5`, `NaN` and `Infinity` pass
+    construction and later escape as raw `TypeError` from `range()`; a string fails as a raw
+    comparison `TypeError`, and `True` is silently treated as one retry.
+  - `_check_url()` still passes non-canonical variants including a backslash traversal target
+    `https://rateyourmusic.com/genre/..\\release/album/x/` and double-encoded separators/traversal
+    to the fetcher. A browser-facing boundary must reject these before downstream URL
+    normalization, not merely observe that a single `unquote()` still begins with `/genre/`.
+  - `DEFAULT_USER_AGENT` is still `omda/0.1 (+https://github.com/omda) enrichment`. This repository
+    has no remote or maintainer contact proving that generic URL is contactable for this project.
+    The constructor accepts and sends that default, while the repair report's statement that a
+    runtime layer supplies a live contact is not backed by a runtime composition in this Gate.
+- Impact: a configuration accepted as valid can disable the per-run external-access limit or fail
+  outside the adapter's typed boundary; a non-canonical target can reach the browser fetcher; and
+  the default live request does not satisfy the upstream identification contract.
+- Violated contract: Implementation Plan T3.3/T3.4 and OD-10 require bounded external behavior
+  and a per-run RYM budget; the prior G3-005 acceptance required every bound to have the
+  appropriate finite type, canonical targets, and an explicit meaningful contact User-Agent.
+- Required acceptance:
+  - validate page counts and retry counts as integers (excluding booleans), with a documented
+    finite upper bound where appropriate; invalid construction must fail deterministically before
+    any fetch;
+  - reject backslashes, residual/double percent encoding and every non-canonical target before the
+    `PageFetcher` boundary, with the exact counterexamples above as regression tests;
+  - require an explicit contactable User-Agent at construction until a real project contact
+    exists, or introduce a real verified project contact and use it as the default;
+  - keep the already-correct positive-finite timeout/delay/TTL checks.
+
+Official upstream policy requires at most one request per second and a User-Agent with enough
+information to contact maintainers:
+[MusicBrainz API rate limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting).
+
+### [P1] G3-007 remains open — FIFO eviction lets an active run reset and exceed its budget
+
+- Location: `browser_companion/source.py:145`, `:189-199`, `:241-253`;
+  `tests/unit/test_browser_companion.py:342-367`
+- Evidence: `_consume_budget()` evicts the oldest ledger entry whenever a new `run_id` arrives at
+  capacity, without knowing whether the evicted run is finished. With both limits set to one:
+  1. `r1` fetches page A (uses its only page);
+  2. `r2` fetches page B (silently evicts active `r1`);
+  3. `r1` fetches page C (silently evicts `r2` and succeeds again).
+  The fake fetcher receives all three requests, so `r1` has fetched two pages despite a declared
+  maximum of one. The new test explicitly expects `budget_used("r1") == 0` after eviction and
+  therefore codifies the reset instead of checking the “still-active run” requirement.
+- Impact: interleaved runs can repeatedly rotate IDs and bypass the RYM page ceiling. The ledger
+  is memory-bounded, but the externally important request budget is no longer a hard bound.
+- Violated contract: OD-10 requires a per-run bounded page budget; the previous G3-007 acceptance
+  explicitly stated that cleanup must not let a still-active run reset and exceed its limit.
+- Required acceptance: remove silent eviction of active ledgers. Use explicit lifecycle cleanup
+  (`finish_run`) plus fail-closed capacity handling, or track completion separately. Add the exact
+  `r1 -> r2 -> r1` interleaving test and prove the third request is rejected without reaching the
+  fetcher. A new run may reuse an identifier only after an explicit completed-run lifecycle rule.
+
+### [P2] G3-006 is partially reopened — cache capacity accepts values that disable the bound
+
+- Location: `browser_companion/source.py:73-101`;
+  `src/omda/adapters/musicbrainz.py:89-112`
+- Evidence: `PageCache(max_entries=NaN/Infinity/1.5/True)` and
+  `EnrichmentCache(max_entries=NaN/Infinity/1.5/True)` all construct successfully. For `NaN` or
+  `Infinity`, `len(entries) >= max_entries` never becomes true, making the supposedly bounded
+  cache unbounded.
+- Impact: a long-lived process can grow either cache without limit under accepted configuration.
+- Required acceptance: require `max_entries` to be a positive integer excluding booleans; add
+  constructor regression tests for non-finite, fractional, boolean, zero and negative inputs.
+
+### [P2] G3-008 remains partially open — the blank-denominator example is not a working CSV row
+
+- Location: `data/critics/README.md:61-70`
+- Evidence: the example row
+  `my-source,album-b,3,,            # blank -> rating_max = 5, stored as 3/5` has five cells, but
+  the fifth cell is a literal comment and is parsed as `review_url`. The runtime validator then
+  rejects it because it is not an HTTP(S) URL. CSV has no inline-comment syntax here.
+- Impact: a contributor following the advertised working example creates a rejected package.
+- Required acceptance: make the CSV code block itself valid (leave the fifth cell truly blank)
+  and put the explanation outside the row; add a docs/example smoke test or parse the example
+  shape through the adapter.
+
+### [P2] G3-009 — the MusicBrainz module contract still documents removed stale fallback behavior
+
+- Location: `src/omda/adapters/musicbrainz.py:9-13` versus `:167-201`
+- Evidence: the module docstring says refresh failure “falls back to the stale value” with a stale
+  marker. The repaired accepted-Port implementation intentionally does the opposite: it raises a
+  typed stale-refresh failure and does not return the stale candidate.
+- Impact: maintainers can implement Orchestrator recovery against behavior the adapter no longer
+  provides, obscuring the intentional G3-004 fail-closed decision.
+- Required acceptance: update the module-level contract to state that stale refresh failure is
+  observable as a typed error carrying stale provenance and that stale identity is not served.
+
+### Re-review 2 acceptance matrix
+
+| G3 criterion | Result |
+|---|---|
+| Genre eligibility and package provenance | **PASS** |
+| Critic numeric normalization/runtime invariants | **PASS** |
+| Critic contribution guide executable accuracy | **FAIL (P2) — G3-008** |
+| Canonical identity safety and live MusicBrainz response compatibility | **FAIL (P1) — G3-003** |
+| Stale-cache fail-closed behavior | **PASS** |
+| Single provider-neutral Port mapping | **PASS** |
+| Bounded/compliant external access | **FAIL (P1) — G3-005/G3-007** |
+| Cache capacity and immutable snapshots | **PARTIAL (P2) — G3-006** |
+| Browser Companion human-intervention/no-circumvention boundary | **PASS** |
+| Ordinary fixture-only CI and Core isolation | **PASS** |
+| G3 scope / no G4 implementation | **PASS** |
+| Open P0/P1 findings | **THREE P1** |
+
+### Re-review 2 checks and limitations
+
+- Reviewed the full original `base..new candidate` diff and the
+  `120eedd..e8baf77` repair increment; verified exact ancestry and commit chain.
+- Re-ran all 411 tests and Ruff using the WorkBuddy Python environment because the system and
+  bundled Codex Python runtimes do not include the repository's optional test tools.
+- Ran independent in-memory adversarial probes for provider-shaped/low/non-finite MusicBrainz
+  scores, invalid retry/page/cache bounds, interleaved run IDs and non-canonical RYM URLs.
+- Did not make live MusicBrainz or RYM requests; provider behavior was checked against official
+  MusicBrainz documentation and all runtime reproductions used local fakes.
+- Did not modify production code, merge, tag, push or enter G4.
+
+### Re-review 2 verdict
+
+**CHANGES_REQUESTED**
+
+G3-001, G3-002 and G3-004 are closed. G3-003 and G3-005 remain blocking P1 findings, and the
+G3-007 repair introduces a directly reproducible active-run budget bypass, also P1. G3-006,
+G3-008 and G3-009 are focused P2 corrections to include in the same repair. Candidate
+`e8baf77787d552b086489f78850e71e1e363f0be` must not be merged,
+`gate-g3-accepted` must not be created, and G4 must not begin.
