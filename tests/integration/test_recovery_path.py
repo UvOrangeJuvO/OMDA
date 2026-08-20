@@ -128,3 +128,89 @@ def test_recovery_never_blindly_redelivers() -> None:
     recovered = _engine(history, delivery).recover("run-1")
     assert recovered.state == COMPLETE
     assert delivery.calls == 1  # no second external delivery
+
+
+# --- G4-004 re-review: recovery requires bound durable evidence ----------------
+
+
+
+def _journal_after_delivery(history, run_id: str, at: str = "2026-08-21T00:00:00+00:00") -> None:
+    """Simulate a run whose journal shows it reached the post-delivery window."""
+    history.append_journal(run_id, "PLANNED", at)
+    history.append_journal(run_id, "SELECTED", at)
+    history.append_journal(run_id, "DELIVERING", at)
+    history.append_journal(run_id, "DELIVERED", at)
+
+
+def test_recovery_without_post_delivery_journal_is_require_human() -> None:
+    # Reviewer reproduction: a receipt exists (correct run id) but there is NO
+    # post-delivery journal tail -> the evidence does not durably show delivery;
+    # recovery must REQUIRE_HUMAN, never COMMIT_HISTORY.
+    history = InMemoryHistory()
+    history.save_delivery_receipt(
+        DeliveryReceipt(
+            run_id="run-1",
+            idempotency_key="run-1:markdown",
+            delivered_at=utc_now(),
+            channel="markdown",
+            status="ok",
+        )
+    )
+    decision = resolve_recovery_action(history, "run-1")
+    assert decision.action == REQUIRE_HUMAN
+    assert decision.reason != "delivered-but-not-committed"
+
+
+def test_recovery_with_mismatched_receipt_key_is_require_human() -> None:
+    # A returned receipt with the right run id but WRONG idempotency key/channel
+    # must not authorize COMMIT_HISTORY (the stored receipt is looked up by the
+    # expected key, so a corrupt entry with the correct key is the real probe).
+    history = InMemoryHistory()
+    history.append_journal("run-1", "DELIVERING", utc_now())
+    history.append_journal("run-1", "DELIVERED", utc_now())
+    history.save_delivery_receipt(
+        DeliveryReceipt(
+            run_id="run-1",
+            idempotency_key="run-1:markdown",  # expected key
+            delivered_at=utc_now(),
+            channel="pushplus",  # WRONG channel for the expected key
+            status="ok",
+        )
+    )
+    decision = resolve_recovery_action(history, "run-1")
+    assert decision.action == REQUIRE_HUMAN
+
+
+def test_recovery_with_failed_status_is_require_human() -> None:
+    history = InMemoryHistory()
+    _journal_after_delivery(history, "run-1")
+    history.save_delivery_receipt(
+        DeliveryReceipt(
+            run_id="run-1",
+            idempotency_key="run-1:markdown",
+            delivered_at=utc_now(),
+            channel="markdown",
+            status="failed",
+        )
+    )
+    decision = resolve_recovery_action(history, "run-1")
+    assert decision.action == REQUIRE_HUMAN
+
+
+def test_recovery_only_commits_on_bound_ok_receipt_plus_delivery_journal() -> None:
+    # The ONLY path to COMMIT_HISTORY: exact run/key/channel binding, status ok,
+    # AND a journal that durably reached the post-delivery window.
+    history = InMemoryHistory()
+    _journal_after_delivery(history, "run-1")
+    history.save_delivery_receipt(
+        DeliveryReceipt(
+            run_id="run-1",
+            idempotency_key="run-1:markdown",
+            delivered_at=utc_now(),
+            channel="markdown",
+            status="ok",
+        )
+    )
+    decision = resolve_recovery_action(history, "run-1")
+    assert decision.action == COMMIT_HISTORY
+    assert decision.reason == "delivered-but-not-committed"

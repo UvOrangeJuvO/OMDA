@@ -50,12 +50,17 @@ def resolve_recovery_action(
 ) -> RecoveryDecision:
     """Decide the recovery action for ``run_id`` from durable evidence only.
 
-    Order of checks:
+    Order of checks (G4-004 — every branch requires BOUND durable evidence):
     1. terminal tail (COMPLETE / HISTORY_COMMITTED) -> already complete;
-    2. a bound, "ok" receipt for the run's idempotency key -> delivered; commit
-       local history (delivered-but-not-committed) and NEVER re-deliver;
-    3. anything else (missing/failed/unbound evidence, or a tail before
-       delivery) -> REQUIRE_HUMAN; no guess, no re-push.
+    2. the run's journal must durably show it REACHED the post-delivery window
+       (a DELIVERING / DELIVERED / RECOVERING tail) — a receipt alone, without
+       a delivery journal tail, is not evidence that this run got to delivery;
+    3. the stored receipt must bind EXACTLY to run id, idempotency key and
+       channel, and have status "ok" — then the run is delivered-but-not-
+       committed and the ONLY safe action is to commit local history
+       (no re-push);
+    4. anything else (missing journal, missing/failed/mismatched receipt, or a
+       tail before delivery) -> REQUIRE_HUMAN; no guess, no re-push.
     """
     entries = history.journal_after(run_id, 0)
     tail = entries[-1].transition if entries else None
@@ -64,10 +69,25 @@ def resolve_recovery_action(
         return RecoveryDecision(
             action=COMPLETE_ALREADY, reason="run already completed", journal_tail=tail
         )
+    if tail not in _AFTER_DELIVER_TRANSITIONS:
+        # G4-004: no durable post-delivery journal evidence -> ambiguous; the
+        # run never durably reached delivery, so COMMIT_HISTORY is forbidden.
+        return RecoveryDecision(
+            action=REQUIRE_HUMAN,
+            reason="no post-delivery journal evidence; cannot confirm delivery",
+            journal_tail=tail,
+        )
 
     key = idempotency_key or f"{run_id}:markdown"
+    expected_channel = key.partition(":")[2]
     receipt = history.find_delivery_receipt(key)
-    if receipt is not None and receipt.status == "ok" and receipt.run_id == run_id:
+    if (
+        receipt is not None
+        and receipt.status == "ok"
+        and receipt.run_id == run_id
+        and receipt.idempotency_key == key
+        and receipt.channel == expected_channel
+    ):
         return RecoveryDecision(
             action=COMMIT_HISTORY,
             reason="delivered-but-not-committed",
