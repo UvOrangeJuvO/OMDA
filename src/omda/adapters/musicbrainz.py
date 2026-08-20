@@ -526,19 +526,20 @@ def _url_has_hostname(url: str) -> bool:
 
     ``parsed.netloc`` alone is not enough — an authority of only userinfo
     (``https://user@``) or only a port (``https://:443``) has no host. We
-    require ``parsed.hostname`` and treat malformed host/port parsing as
-    invalid (``False``).
+    require ``parsed.hostname``, and also touch ``parsed.port`` (inside the
+    same guarded parse block) because ``urllib.parse`` defers port validation
+    to that property: a non-numeric port (``:notaport``) or a port outside
+    1–65535 (``:99999``) raises ``ValueError`` there and is treated as
+    invalid (``False``). ``None``/default ports are fine.
     """
     try:
         parsed = urlparse(url)
+        hostname = parsed.hostname
+        _ = parsed.port  # validates non-numeric / out-of-range ports
     except ValueError:
-        return False
+        return False  # malformed IPv6, port, or out-of-range port
     if parsed.scheme not in ("http", "https"):
         return False
-    try:
-        hostname = parsed.hostname
-    except ValueError:
-        return False  # malformed IPv6 / port
     return bool(hostname)
 
 

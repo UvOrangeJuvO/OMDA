@@ -936,3 +936,47 @@ def test_untrimmed_controls_and_hostless_url_rejected(bad) -> None:
             sleeper=RecordingSleeper(),
             user_agent=bad,
         )
+
+
+# --- G3-005 re-review 6: contact URL port validation ---------------------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "omda/1 (+https://example.org:notaport)",  # non-numeric port
+        "omda/1 (+https://example.org:99999)",  # port above 65535
+    ],
+    ids=["non-numeric-port", "out-of-range-port"],
+)
+def test_contact_url_with_invalid_port_rejected(bad) -> None:
+    # G3-005: urllib.parse defers port validation until ``parsed.port`` is
+    # accessed — a contact URL with a non-numeric or out-of-range port cannot
+    # be a valid HTTP(S) endpoint and must be rejected.
+    with pytest.raises(ValueError):
+        MusicBrainzEnricher(
+            transport=ScriptedTransport([]),
+            clock=FixedClock(AT0),
+            sleeper=RecordingSleeper(),
+            user_agent=bad,
+        )
+
+
+@pytest.mark.parametrize(
+    "good",
+    [
+        "omda/1 (+https://example.org)",  # no explicit port -> None
+        "omda/1 (+https://example.org:443)",  # default https port is fine
+        "omda/1 (+https://example.org:8080)",  # valid non-default port
+        "omda/1 (+http://example.org:80)",  # default http port is fine
+    ],
+    ids=["no-port", "default-https-port", "valid-custom-port", "default-http-port"],
+)
+def test_contact_url_with_valid_port_accepted(good) -> None:
+    # None/default/custom in-range ports are all valid HTTP(S) endpoints.
+    MusicBrainzEnricher(
+        transport=ScriptedTransport([_single_ok_response()]),
+        clock=FixedClock(AT0),
+        sleeper=RecordingSleeper(),
+        user_agent=good,
+    ).enrich(_candidate())
