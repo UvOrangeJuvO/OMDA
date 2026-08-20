@@ -56,6 +56,21 @@ def _is_finite_positive(value: float) -> bool:
     )
 
 
+def _is_positive_int(value: int) -> bool:
+    """True when ``value`` is a positive INTEGER (booleans excluded) (G3-005)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _has_residual_encoding(path: str) -> bool:
+    """True when ``path`` still contains a percent-escape (G3-005).
+
+    RYM genre URLs are expected to be fully canonical plain paths; any
+    percent-encoding (single or double) is a normalization vector and is
+    rejected before it reaches the fetcher.
+    """
+    return "%" in path
+
+
 class PageFetcher(Protocol):
     """Injectable fetch boundary with a REQUIRED finite deadline (G3-005)."""
 
@@ -74,8 +89,16 @@ class PageCache:
     """Capacity-bounded in-memory page cache with FIFO eviction (G3-006)."""
 
     def __init__(self, max_entries: int = DEFAULT_CACHE_MAX_ENTRIES) -> None:
-        if max_entries <= 0:
-            raise ValueError("max_entries must be > 0")
+        # G3-006: capacity is a positive INTEGER — booleans, fractions and
+        # non-finite values would silently disable the eviction bound.
+        if (
+            not isinstance(max_entries, int)
+            or isinstance(max_entries, bool)
+            or max_entries <= 0
+        ):
+            raise ValueError(
+                f"max_entries must be a positive integer, got {max_entries!r}"
+            )
         self._max_entries = max_entries
         self._entries: dict[str, PageCacheEntry] = {}
 
@@ -120,10 +143,14 @@ class RymGenrePageSource:
         max_pages_per_run: int = DEFAULT_MAX_PAGES_PER_RUN,
         max_tracked_runs: int = DEFAULT_MAX_TRACKED_RUNS,
     ) -> None:
-        if max_pages_per_run <= 0:
-            raise ValueError("max_pages_per_run must be > 0")
-        if max_tracked_runs <= 0:
-            raise ValueError("max_tracked_runs must be > 0")
+        if not _is_positive_int(max_pages_per_run):
+            raise ValueError(
+                f"max_pages_per_run must be a positive integer, got {max_pages_per_run!r}"
+            )
+        if not _is_positive_int(max_tracked_runs):
+            raise ValueError(
+                f"max_tracked_runs must be a positive integer, got {max_tracked_runs!r}"
+            )
         # G3-005: the fetch deadline must be finite and positive — None/zero/
         # negative/NaN/infinity would defeat the promised bounded access.
         if not _is_finite_positive(fetch_timeout):
@@ -202,8 +229,9 @@ class RymGenrePageSource:
     def _check_url(self, page_url: str) -> None:
         """G3-005: allow only the canonical HTTPS RYM genre origin/path.
 
-        Rejects dot segments, percent-encoded separators/traversal, userinfo
-        and ports so browser/HTTP normalization cannot escape ``/genre/``.
+        Rejects dot segments, percent-encoded separators/traversal (single AND
+        residual/double-encoded), backslashes, userinfo and ports so browser/HTTP
+        normalization cannot escape ``/genre/``.
         """
         try:
             parsed = urlparse(page_url)
@@ -224,26 +252,51 @@ class RymGenrePageSource:
                 f"rym: disallowed page path {raw_path!r} — only the "
                 f"{RYM_GENRE_PATH_PREFIX}... path is permitted"
             )
-        # Reject dot segments and percent-encoded traversal (raw and decoded).
-        decoded = unquote(raw_path)
-        for candidate in (raw_path, decoded):
-            segments = candidate.split("/")
-            if any(segment in (".", "..") for segment in segments):
-                raise SourceUnavailableError(
-                    f"rym: disallowed dot segment in page URL {page_url!r}"
-                )
-        if not decoded.startswith(RYM_GENRE_PATH_PREFIX):
+        # G3-005: backslashes are never valid path separators here and are the
+        # classic non-canonical traversal vector (..\release/...).
+        if "\\" in raw_path:
             raise SourceUnavailableError(
-                f"rym: decoded path {decoded!r} escapes the {RYM_GENRE_PATH_PREFIX}... "
-                "boundary"
+                f"rym: disallowed backslash in page URL {page_url!r}"
             )
+        # Reject residual/double percent-encoding AND every decoded form: decode
+        # repeatedly (browsers/HTTP stacks may decode more than once) and require
+        # every layer to stay inside /genre/ with no dot segments or separators.
+        layer = raw_path
+        for _ in range(3):
+            if _has_residual_encoding(layer):
+                raise SourceUnavailableError(
+                    f"rym: disallowed percent-encoding in page URL {page_url!r}"
+                )
+            for candidate in (layer, unquote(layer)):
+                if any(segment in (".", "..") for segment in candidate.split("/")):
+                    raise SourceUnavailableError(
+                        f"rym: disallowed dot segment in page URL {page_url!r}"
+                    )
+                if "\\" in candidate:
+                    raise SourceUnavailableError(
+                        f"rym: disallowed backslash in page URL {page_url!r}"
+                    )
+            if not layer.startswith(RYM_GENRE_PATH_PREFIX):
+                raise SourceUnavailableError(
+                    f"rym: decoded path {layer!r} escapes the {RYM_GENRE_PATH_PREFIX}... "
+                    "boundary"
+                )
+            next_layer = unquote(layer)
+            if next_layer == layer:
+                break
+            layer = next_layer
 
     def _consume_budget(self, run_id: str, page_url: str) -> None:
-        # G3-007: the ledger is bounded — the oldest tracked run is evicted
-        # when capacity is reached, so a long-lived object cannot grow forever.
+        # G3-007: the ledger is a HARD per-run bound. Capacity is enforced
+        # fail-closed — a NEW run id arriving at full capacity is REJECTED
+        # rather than evicting a still-active run (silent eviction would reset
+        # an active run's counter and let it exceed its page budget). Entries
+        # are released only by the explicit finish_run() lifecycle operation.
         if run_id not in self._budget_used and len(self._budget_used) >= self._max_tracked_runs:
-            oldest_run = next(iter(self._budget_used))
-            self._budget_used.pop(oldest_run)
+            raise SourceUnavailableError(
+                f"rym: run ledger capacity exhausted for run {run_id!r} "
+                f"(max {self._max_tracked_runs} tracked runs); finish a run first"
+            )
         used = self._budget_used.get(run_id, 0)
         if used >= self._max_pages_per_run:
             raise SourceUnavailableError(

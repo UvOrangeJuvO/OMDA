@@ -61,13 +61,17 @@ source_id,album_id,rating,rating_max,review_url
 ### Normalization rule (one unambiguous rule)
 
 Every row is stored as `rating / rating_max`, where `rating_max` is the declared
-`rating_scale_max` (inherited when blank). Example under a declared 1–5 scale:
+`rating_scale_max` (inherited when blank). Example under a declared 1–5 scale
+(note: CSV has no inline comments — keep the fifth cell truly empty):
 
 ```
 source_id,album_id,rating,rating_max,review_url
 my-source,album-a,4,5,https://example.org/reviews/a
-my-source,album-b,3,,            # blank -> rating_max = 5, stored as 3/5
+my-source,album-b,3,,https://example.org/reviews/b
 ```
+
+Row `album-b` has a blank `rating_max`, so it inherits `rating_scale_max = 5`
+and is stored as `3/5` (not `3.0`). Both rows are accepted by the adapter.
 
 ## Adding a new source (no code required)
 

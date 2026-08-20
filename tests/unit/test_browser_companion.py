@@ -339,18 +339,28 @@ def test_canonical_genre_url_still_accepted() -> None:
 # --- G3-007 re-review 1: budget ledger lifecycle ---------------------------------
 
 
-def test_budget_ledger_is_bounded_by_tracked_runs() -> None:
+def test_budget_ledger_capacity_is_fail_closed() -> None:
+    # G3-007: capacity is bounded WITHOUT silently resetting active runs — when
+    # the ledger is full and a NEW run id arrives, the request is REJECTED
+    # (fail-closed) instead of evicting a still-active run's counter.
     fetcher = FixtureFetcher("genre_ok.html")
     source = RymGenrePageSource(
         fetcher=fetcher, clock=_clock(AT0), max_tracked_runs=2
     )
     source.fetch_genre_page("https://rateyourmusic.com/genre/A/", run_id="r1")
     source.fetch_genre_page("https://rateyourmusic.com/genre/B/", run_id="r2")
-    source.fetch_genre_page("https://rateyourmusic.com/genre/C/", run_id="r3")
-    # Oldest tracked run evicted; newer runs keep their budgets.
-    assert source.budget_used("r1") == 0
+    with pytest.raises(SourceUnavailableError) as exc:
+        source.fetch_genre_page("https://rateyourmusic.com/genre/C/", run_id="r3")
+    assert "ledger" in str(exc.value) or "run" in str(exc.value)
+    assert fetcher.calls == 2  # the rejected run never reached the fetcher
+    # Active runs keep their counters intact.
+    assert source.budget_used("r1") == 1
     assert source.budget_used("r2") == 1
+    # Explicit lifecycle cleanup frees capacity for new runs.
+    source.finish_run("r2")
+    source.fetch_genre_page("https://rateyourmusic.com/genre/C/", run_id="r3")
     assert source.budget_used("r3") == 1
+    assert fetcher.calls == 3
 
 
 def test_finish_run_releases_budget_ledger() -> None:
@@ -365,3 +375,145 @@ def test_finish_run_releases_budget_ledger() -> None:
     # the fresh page cache does not skip the budget consumption).
     source.fetch_genre_page("https://rateyourmusic.com/genre/B/", run_id="run-2")
     assert source.budget_used("run-2") == 1
+
+
+# --- G3-005 re-review 2: integer counts, canonical URLs, contact UA -------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [True, 1.5, float("nan"), float("inf")],
+    ids=["bool", "fractional", "nan", "inf"],
+)
+def test_max_pages_per_run_must_be_positive_integer(bad) -> None:
+    # G3-005: page counts are INTEGER bounds; NaN/Infinity/booleans/fractions
+    # must fail deterministically at construction, before any fetch.
+    with pytest.raises(ValueError):
+        RymGenrePageSource(
+            fetcher=FixtureFetcher("genre_ok.html"),
+            clock=_clock(AT0),
+            max_pages_per_run=bad,
+        )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [True, 1.5, float("nan"), float("inf")],
+    ids=["bool", "fractional", "nan", "inf"],
+)
+def test_max_tracked_runs_must_be_positive_integer(bad) -> None:
+    with pytest.raises(ValueError):
+        RymGenrePageSource(
+            fetcher=FixtureFetcher("genre_ok.html"),
+            clock=_clock(AT0),
+            max_tracked_runs=bad,
+        )
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "https://rateyourmusic.com/genre/..\\release/album/x/",  # backslash traversal
+        "https://rateyourmusic.com/genre/..%5crelease/album/x/",  # encoded backslash
+        "https://rateyourmusic.com/genre/%252e%252e/release/",  # double-encoded ..
+        "https://rateyourmusic.com/genre/%252Frelease/",  # double-encoded slash
+        "https://rateyourmusic.com/genre/A/%2e%2e/release/",  # encoded dot segment
+    ],
+    ids=["backslash", "encoded-backslash", "double-dotdot", "double-slash", "encoded-dot-segment"],
+)
+def test_non_canonical_url_bypasses_are_rejected(bad_url: str) -> None:
+    # G3-005: backslashes, residual/double percent-encoding and any non-canonical
+    # target must be rejected BEFORE the PageFetcher boundary.
+    fetcher = FixtureFetcher("genre_ok.html")
+    source = RymGenrePageSource(fetcher=fetcher, clock=_clock(AT0))
+    with pytest.raises(SourceUnavailableError):
+        source.fetch_genre_page(bad_url)
+    assert fetcher.calls == 0  # never reached the fetcher
+
+
+# --- G3-007 re-review 2: active run budget is a HARD bound ---------------------
+
+
+def test_interleaved_runs_cannot_reset_active_budget() -> None:
+    # Reviewer counter-example: with max_pages_per_run == 1, r1 fetches A (its
+    # only page), r2 fetches B (must NOT silently evict active r1), then r1's
+    # SECOND fetch must be REJECTED without reaching the fetcher — the active
+    # run's counter was never reset by r2's arrival.
+    fetcher = FixtureFetcher("genre_ok.html")
+    source = RymGenrePageSource(
+        fetcher=fetcher,
+        clock=_clock(AT0),
+        max_pages_per_run=1,
+        max_tracked_runs=2,
+    )
+    source.fetch_genre_page("https://rateyourmusic.com/genre/A/", run_id="r1")
+    source.fetch_genre_page("https://rateyourmusic.com/genre/B/", run_id="r2")
+    with pytest.raises(SourceUnavailableError) as exc:
+        source.fetch_genre_page("https://rateyourmusic.com/genre/C/", run_id="r1")
+    assert "budget exhausted" in str(exc.value)
+    assert fetcher.calls == 2  # the third request never reached the fetcher
+    # r1's own budget stays consumed — the second fetch did not reset it.
+    assert source.budget_used("r1") == 1
+    # r2's arrival did not steal r1's ledger slot either.
+    assert source.budget_used("r2") == 1
+
+
+def test_active_run_budget_survives_ledger_capacity() -> None:
+    # A run that has already consumed pages must NOT lose its counter when the
+    # ledger reaches capacity; its hard limit remains in force until finish_run.
+    fetcher = FixtureFetcher("genre_ok.html")
+    source = RymGenrePageSource(
+        fetcher=fetcher,
+        clock=_clock(AT0),
+        max_pages_per_run=1,
+        max_tracked_runs=2,
+    )
+    source.fetch_genre_page("https://rateyourmusic.com/genre/A/", run_id="r1")
+    source.fetch_genre_page("https://rateyourmusic.com/genre/B/", run_id="r2")
+    # r3 arriving at full capacity is REJECTED fail-closed (never evicts r1).
+    with pytest.raises(SourceUnavailableError) as exc:
+        source.fetch_genre_page("https://rateyourmusic.com/genre/C/", run_id="r3")
+    assert "ledger" in str(exc.value)
+    assert fetcher.calls == 2
+    # r1's counter is intact and its own hard limit still applies.
+    assert source.budget_used("r1") == 1
+    with pytest.raises(SourceUnavailableError):
+        source.fetch_genre_page("https://rateyourmusic.com/genre/D/", run_id="r1")
+    assert fetcher.calls == 2
+    # finish_run frees r1's slot; a NEW run with that identifier is legal.
+    source.finish_run("r1")
+    source.fetch_genre_page("https://rateyourmusic.com/genre/E/", run_id="r1")
+    assert source.budget_used("r1") == 1
+    assert fetcher.calls == 3
+
+
+def test_finished_run_identifier_is_reusable() -> None:
+    # After finish_run(r1), the identifier is free again for a NEW run — the
+    # explicit completed-run lifecycle rule makes reuse legal.
+    fetcher = FixtureFetcher("genre_ok.html")
+    source = RymGenrePageSource(
+        fetcher=fetcher,
+        clock=_clock(AT0),
+        max_pages_per_run=1,
+        max_tracked_runs=1,
+    )
+    source.fetch_genre_page("https://rateyourmusic.com/genre/A/", run_id="r1")
+    source.finish_run("r1")
+    source.fetch_genre_page("https://rateyourmusic.com/genre/B/", run_id="r1")  # new run
+    assert source.budget_used("r1") == 1
+    with pytest.raises(SourceUnavailableError):
+        source.fetch_genre_page("https://rateyourmusic.com/genre/C/", run_id="r1")
+
+
+# --- G3-006 re-review 2: cache capacity must be a positive integer -------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [True, 1.5, float("nan"), float("inf"), 0, -1],
+    ids=["bool", "fractional", "nan", "inf", "zero", "negative"],
+)
+def test_page_cache_max_entries_must_be_positive_integer(bad) -> None:
+    # G3-006: NaN/Infinity/fractions/booleans would disable the capacity bound.
+    with pytest.raises(ValueError):
+        PageCache(max_entries=bad)

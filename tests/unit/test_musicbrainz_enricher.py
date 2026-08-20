@@ -13,7 +13,6 @@ import json
 import pytest
 
 from omda.adapters.musicbrainz import (
-    DEFAULT_USER_AGENT,
     QUERY_VERSION,
     EnrichmentCache,
     EnrichmentEntry,
@@ -26,6 +25,9 @@ from omda.ports.errors import SourceUnavailableError
 AT0 = "2026-08-20T00:00:00+00:00"
 AT1 = "2026-08-21T00:00:00+00:00"
 LATER = "2026-09-01T00:00:00+00:00"  # > 7 days after AT0
+
+# G3-005: a contactable test User-Agent (MusicBrainz policy requires one).
+TEST_USER_AGENT = "omda-test/0.1 (+https://example.invalid/omda-test; testing only)"
 
 
 def _candidate(album_id="a-1", title="Blue Train", artist="John Coltrane", year=1958):
@@ -68,6 +70,7 @@ class RecordingSleeper:
 
 
 def _enricher(transport, clock=AT0, sleeper=None, cache=None, **kw):
+    kw.setdefault("user_agent", TEST_USER_AGENT)
     return MusicBrainzEnricher(
         transport=transport,
         clock=FixedClock(clock),
@@ -231,11 +234,23 @@ def test_404_is_empty_result_not_error() -> None:
 
 def test_user_agent_is_configured_and_secret_free() -> None:
     transport = ScriptedTransport([_single_ok_response()])
-    enricher = _enricher(transport, user_agent=DEFAULT_USER_AGENT)
+    enricher = _enricher(transport, user_agent=TEST_USER_AGENT)
     enricher.enrich(_candidate())
     ua = transport.last_headers["User-Agent"]
-    assert DEFAULT_USER_AGENT in ua
+    assert TEST_USER_AGENT in ua
     assert "token" not in ua.lower() and "secret" not in ua.lower()
+
+
+def test_placeholder_user_agent_is_rejected() -> None:
+    # G3-005: no placeholder default is offered — a live adapter MUST be given
+    # an explicit contactable User-Agent at construction.
+    with pytest.raises(ValueError):
+        MusicBrainzEnricher(
+            transport=ScriptedTransport([]),
+            clock=FixedClock(AT0),
+            sleeper=RecordingSleeper(),
+            user_agent=None,
+        )
 
 
 def test_timeout_tuple_is_bounded() -> None:
@@ -431,6 +446,7 @@ def test_consecutive_successful_calls_are_paced() -> None:
         transport=transport,
         clock=FixedClock(AT0),
         sleeper=sleeper,
+        user_agent=TEST_USER_AGENT,
         pacing_seconds=1.0,
     )
     enricher.enrich(_candidate(album_id="a", title="Blue Train"))
@@ -452,6 +468,7 @@ def test_non_finite_or_zero_pacing_rejected(bad) -> None:
             transport=ScriptedTransport([_single_ok_response("m1")]),
             clock=FixedClock(AT0),
             sleeper=RecordingSleeper(),
+            user_agent=TEST_USER_AGENT,
             pacing_seconds=bad,
         )
 
@@ -558,5 +575,172 @@ def test_non_finite_timeout_rejected(bad) -> None:
             transport=ScriptedTransport([]),
             clock=FixedClock(AT0),
             sleeper=RecordingSleeper(),
+            user_agent=TEST_USER_AGENT,
             connect_timeout=bad,
         )
+
+
+# --- G3-003 re-review 2: provider-shaped string score + conservative threshold --
+
+
+def test_provider_shaped_string_score_is_accepted() -> None:
+    # MusicBrainz documents search score as a DECIMAL STRING ("100"). A real
+    # provider-shaped result must enrich, not fail as "malformed score".
+    body = json.dumps(
+        {
+            "release-groups": [
+                {
+                    "id": "mb-100",
+                    "title": "Blue Train",
+                    "artist-credit": [{"name": "John Coltrane"}],
+                    "first-release-date": "1958-01-01",
+                    "score": "100",
+                }
+            ]
+        }
+    )
+    enriched = _enricher(ScriptedTransport([MBHttpResponse(200, body)])).enrich(
+        _candidate()
+    )
+    assert enriched.identity is not None
+    assert enriched.identity.canonical_id == "mb-100"
+    assert enriched.identity.identity_confidence == "exact"
+
+
+@pytest.mark.parametrize(
+    "low",
+    ["10", 0.01, 89],
+    ids=["string-10", "tiny-numeric", "below-threshold"],
+)
+def test_low_score_never_installs_exact(low) -> None:
+    # Conservative threshold: a destructive canonical ID requires a STRONG search
+    # match; weak confidence must never become the permanent exclusion key.
+    body = json.dumps(
+        {
+            "release-groups": [
+                {
+                    "id": "mb-low",
+                    "title": "Blue Train",
+                    "artist-credit": [{"name": "John Coltrane"}],
+                    "first-release-date": "1958-01-01",
+                    "score": low,
+                }
+            ]
+        }
+    )
+    enriched = _enricher(ScriptedTransport([MBHttpResponse(200, body)])).enrich(
+        _candidate()
+    )
+    assert enriched.identity is None
+
+
+def test_boundary_score_exactly_at_threshold_is_accepted() -> None:
+    from omda.adapters.musicbrainz import MIN_EXACT_SCORE
+
+    body = json.dumps(
+        {
+            "release-groups": [
+                {
+                    "id": "mb-boundary",
+                    "title": "Blue Train",
+                    "artist-credit": [{"name": "John Coltrane"}],
+                    "first-release-date": "1958-01-01",
+                    "score": str(MIN_EXACT_SCORE),
+                }
+            ]
+        }
+    )
+    enriched = _enricher(ScriptedTransport([MBHttpResponse(200, body)])).enrich(
+        _candidate()
+    )
+    assert enriched.identity is not None
+    assert enriched.identity.canonical_id == "mb-boundary"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [float("nan"), float("inf"), float("-inf")],
+    ids=["nan", "inf", "neg-inf"],
+)
+def test_non_finite_score_is_rejected(bad) -> None:
+    # NaN/Infinity must fail through the typed source boundary, never pass a
+    # positivity check (NaN <= 0 is False in Python).
+    body = json.dumps(
+        {
+            "release-groups": [
+                {
+                    "id": "mb-nf",
+                    "title": "Blue Train",
+                    "artist-credit": [{"name": "John Coltrane"}],
+                    "first-release-date": "1958-01-01",
+                    "score": bad,
+                }
+            ]
+        }
+    )
+    with pytest.raises(SourceUnavailableError):
+        _enricher(ScriptedTransport([MBHttpResponse(200, body)])).enrich(_candidate())
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [True, False, "high", "1O0", "-5", "101", "abc", []],
+    ids=[
+        "bool-true",
+        "bool-false",
+        "word",
+        "letter-o",
+        "negative-string",
+        "over-100",
+        "word2",
+        "list",
+    ],
+)
+def test_malformed_or_out_of_range_score_rejected(bad) -> None:
+    # Booleans, non-numeric strings, out-of-range values and wrong types are
+    # malformed confidence evidence -> typed source failure (never "exact").
+    body = json.dumps(
+        {
+            "release-groups": [
+                {
+                    "id": "mb-bad",
+                    "title": "Blue Train",
+                    "artist-credit": [{"name": "John Coltrane"}],
+                    "first-release-date": "1958-01-01",
+                    "score": bad,
+                }
+            ]
+        }
+    )
+    with pytest.raises(SourceUnavailableError):
+        _enricher(ScriptedTransport([MBHttpResponse(200, body)])).enrich(_candidate())
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [True, 1.5, float("nan"), float("inf"), -1, "3"],
+    ids=["bool", "fractional", "nan", "inf", "negative", "string"],
+)
+def test_max_retries_must_be_non_negative_integer(bad) -> None:
+    # G3-005: max_retries is an INTEGER count — booleans, fractions, non-finite
+    # values, strings and negatives must fail at construction, never leak a raw
+    # TypeError from range()/comparisons later.
+    with pytest.raises(ValueError):
+        MusicBrainzEnricher(
+            transport=ScriptedTransport([]),
+            clock=FixedClock(AT0),
+            sleeper=RecordingSleeper(),
+            user_agent="omda-test/0.1 (+https://example.invalid/contact)",
+            max_retries=bad,
+        )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [True, 1.5, float("nan"), float("inf"), 0, -1],
+    ids=["bool", "fractional", "nan", "inf", "zero", "negative"],
+)
+def test_enrichment_cache_max_entries_must_be_positive_integer(bad) -> None:
+    # G3-006: NaN/Infinity/fractions/booleans would disable the capacity bound.
+    with pytest.raises(ValueError):
+        EnrichmentCache(max_entries=bad)

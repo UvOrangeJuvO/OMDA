@@ -739,3 +739,38 @@ rating_scale_max: 5
         with pytest.raises(InvalidInputError) as exc:
             CriticDatasetAdapter(pkg).all_ratings()
         assert "directory" in str(exc.value) or "source_id" in str(exc.value)
+
+
+# --- G3-008 re-review 2: README example must be a working CSV shape ------------
+
+
+def test_readme_blank_denominator_example_is_parseable() -> None:
+    # The contribution guide's normalization example must be a REAL working CSV
+    # shape: extract the code block from data/critics/README.md, build a package
+    # with it and prove the adapter accepts it (blank rating_max inherits scale).
+    import tempfile
+
+    readme = Path("data/critics/README.md").read_text(encoding="utf-8")
+    # The ratings.csv normalization example block (second CSV code block).
+    block = readme.split("```")[7]
+    lines = [ln for ln in block.strip().splitlines() if ln.strip()]
+    assert lines[0] == "source_id,album_id,rating,rating_max,review_url"
+    with tempfile.TemporaryDirectory() as d:
+        pkg = Path(d) / "critics" / "my-source"
+        pkg.mkdir(parents=True)
+        (pkg / "source.yaml").write_text(
+            "source_id: my-source\n"
+            "display_name: My Source\n"
+            "license: CC0-1.0\n"
+            "origin_url: https://example.org\n"
+            "scrape_date: 2026-08-20\n"
+            "rating_scale_min: 1\n"
+            "rating_scale_max: 5\n",
+            encoding="utf-8",
+        )
+        (pkg / "ratings.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        rows = CriticDatasetAdapter(pkg).all_ratings()
+        by_album = {r.album_id: r for r in rows}
+        assert by_album["album-a"].rating_max == 5.0
+        assert by_album["album-b"].rating_max == 5.0  # blank inherits scale_max
+        assert by_album["album-b"].rating == 3.0

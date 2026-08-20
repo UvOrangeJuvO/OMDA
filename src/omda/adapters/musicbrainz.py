@@ -7,10 +7,13 @@ with backoff) and fully injectable (transport/clock/sleeper), so ordinary tests
 use fakes/fixtures and never touch a live network (SPEC §3.2, §7-12).
 
 Caching is explicit: every entry records source, fetched_at, query version and
-provenance; fresh entries short-circuit, stale entries refresh, and a refresh
-failure falls back to the stale value with an explicit ``cache_status="stale"``
-marker instead of silently hiding source age. Ambiguity (multiple results) is
-never collapsed: the adapter returns no canonical identity rather than guessing.
+provenance; fresh entries short-circuit and stale entries refresh. A refresh
+failure is observable as a TYPED ``SourceUnavailableError`` whose detail carries
+the stale provenance (cache_status/source/fetched_at/query_version); the stale
+identity is NEVER served because the accepted ``AlbumEnricher`` Port return
+value cannot label it — the run fails clearly and can decide recovery. Ambiguity
+(multiple results) is never collapsed: the adapter returns no canonical identity
+rather than guessing.
 """
 
 from __future__ import annotations
@@ -26,7 +29,6 @@ from omda.core.album import normalized_text
 from omda.ports.domain import AlbumCandidate, AlbumIdentity
 from omda.ports.errors import SourceUnavailableError
 
-DEFAULT_USER_AGENT = "omda/0.1 (+https://github.com/omda) enrichment"
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_CONNECT_TIMEOUT = 5.0
 DEFAULT_READ_TIMEOUT = 10.0
@@ -37,6 +39,19 @@ DEFAULT_FRESH_TTL = 7 * 24 * 3600  # 7 days
 # requires at most ~1 request/second; keep this >= 1.0 for live use.
 DEFAULT_PACING_SECONDS = 1.0
 DEFAULT_CACHE_MAX_ENTRIES = 256
+
+# G3-005: MusicBrainz requires a MEANINGFUL, contactable User-Agent for live
+# API use. No verified project contact exists in this repository, so the
+# constructor REQUIRES an explicit User-Agent and no placeholder default is
+# offered. Live deployments must supply a contactable value.
+DEFAULT_USER_AGENT: str | None = None
+
+# G3-003: MusicBrainz search score is a 0..100 confidence value. A destructive
+# canonical identity requires a STRONG search match; anything below this named,
+# documented threshold is treated as insufficient corroboration (no exact).
+MIN_EXACT_SCORE = 90.0
+_SCORE_MIN = 0.0
+_SCORE_MAX = 100.0
 
 QUERY_VERSION = "v1"
 
@@ -95,8 +110,16 @@ class EnrichmentCache:
     """
 
     def __init__(self, max_entries: int = DEFAULT_CACHE_MAX_ENTRIES) -> None:
-        if max_entries <= 0:
-            raise ValueError("max_entries must be > 0")
+        # G3-006: capacity is a positive INTEGER — booleans, fractions and
+        # non-finite values would silently disable the eviction bound.
+        if (
+            not isinstance(max_entries, int)
+            or isinstance(max_entries, bool)
+            or max_entries <= 0
+        ):
+            raise ValueError(
+                f"max_entries must be a positive integer, got {max_entries!r}"
+            )
         self._max_entries = max_entries
         self._entries: dict[str, EnrichmentEntry] = {}
 
@@ -122,7 +145,7 @@ class MusicBrainzEnricher:
         clock: Callable[[], str],
         sleeper: Callable[[float], None] = _time.sleep,
         cache: EnrichmentCache | None = None,
-        user_agent: str = DEFAULT_USER_AGENT,
+        user_agent: str | None = DEFAULT_USER_AGENT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
         read_timeout: float = DEFAULT_READ_TIMEOUT,
@@ -131,10 +154,22 @@ class MusicBrainzEnricher:
         fresh_ttl_seconds: float = DEFAULT_FRESH_TTL,
         pacing_seconds: float = DEFAULT_PACING_SECONDS,
     ) -> None:
-        if max_retries < 0:
-            raise ValueError("max_retries must be >= 0")
+        # G3-005: retries are an INTEGER count — booleans, fractions, non-finite
+        # values, strings and negatives fail deterministically at construction.
+        if (
+            not isinstance(max_retries, int)
+            or isinstance(max_retries, bool)
+            or max_retries < 0
+        ):
+            raise ValueError(
+                f"max_retries must be a non-negative integer, got {max_retries!r}"
+            )
+        # G3-005: a meaningful, contactable User-Agent is REQUIRED for live use
+        # (MusicBrainz policy); no placeholder default is offered.
         if not isinstance(user_agent, str) or not user_agent.strip():
-            raise ValueError("user_agent must be a non-empty string")
+            raise ValueError(
+                "user_agent is required: provide a contactable User-Agent string"
+            )
         # G3-005: every time/delay/pacing value must be finite and positive —
         # zero/negative/NaN/infinity would defeat the promised bounded access.
         for name, value in (
@@ -298,12 +333,22 @@ class MusicBrainzEnricher:
         first_date = item.get("first-release-date")
         if isinstance(first_date, str) and len(first_date) >= 4 and first_date[:4].isdigit():
             year = int(first_date[:4])
-        # G3-003: score shape is validated; missing or malformed score means the
-        # search confidence cannot corroborate the match.
+        # G3-003: the search confidence is parsed from the provider's documented
+        # representation (a decimal string such as "100", or a JSON number) into
+        # ONE finite numeric domain [0, 100]. Booleans, non-finite values,
+        # malformed strings and out-of-range values are malformed evidence and
+        # fail through the typed source boundary — never "exact".
         score = item.get("score")
-        if score is not None and (
-            isinstance(score, bool) or not isinstance(score, (int, float))
-        ):
+        if score is None:
+            return {
+                "id": canonical_id,
+                "title": title,
+                "artist": " ".join(names),
+                "year": year,
+                "score": None,
+            }
+        parsed = _parse_score(score)
+        if parsed is None:
             raise SourceUnavailableError(
                 "musicbrainz: release-group item has malformed 'score'"
             )
@@ -312,7 +357,7 @@ class MusicBrainzEnricher:
             "title": title,
             "artist": " ".join(names),
             "year": year,
-            "score": score,
+            "score": parsed,
         }
 
     def _matches(self, candidate: AlbumCandidate, item: dict) -> bool:
@@ -327,14 +372,15 @@ class MusicBrainzEnricher:
 
         - When the candidate year is known, a valid, compatible first-release
           year is REQUIRED (missing/malformed year is not treated as neutral).
-        - A positive search score is required; missing/zero/negative score means
-          the search confidence cannot corroborate the match.
+        - The search score must reach the named conservative threshold
+          ``MIN_EXACT_SCORE`` — a strong match; weaker confidence (including
+          missing/zero) never installs a canonical identity.
         """
         if candidate.year is not None and (
             item["year"] is None or item["year"] != candidate.year
         ):
             return False
-        return not (item["score"] is None or item["score"] <= 0)
+        return item["score"] is not None and item["score"] >= MIN_EXACT_SCORE
 
     def _no_match_entry(self, key: str, now: str) -> EnrichmentEntry:
         return EnrichmentEntry(
@@ -402,6 +448,32 @@ class MusicBrainzEnricher:
         )
 
 
+def _parse_score(value) -> float | None:
+    """Parse a MusicBrainz search score into a finite ``[0, 100]`` float.
+
+    Accepts the provider's documented decimal-string form (``"100"``) and JSON
+    numbers; rejects booleans, non-finite values, malformed strings and
+    out-of-range values. Returns ``None`` for anything unusable so callers can
+    fail through the typed source boundary.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        try:
+            numeric = float(value)
+        except ValueError:
+            return None
+    elif isinstance(value, (int, float)):
+        numeric = float(value)
+    else:
+        return None
+    if numeric != numeric or numeric in (float("inf"), float("-inf")):  # NaN/±Inf
+        return None
+    if not (_SCORE_MIN <= numeric <= _SCORE_MAX):
+        return None
+    return numeric
+
+
 def _to_epoch(value: str) -> float:
     """Parse an ISO 8601 timestamp (with timezone) into epoch seconds."""
     return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
@@ -424,6 +496,7 @@ __all__ = [
     "EnrichmentCache",
     "EnrichmentEntry",
     "MBHttpResponse",
+    "MIN_EXACT_SCORE",
     "MusicBrainzEnricher",
     "QUERY_VERSION",
     "Transport",
