@@ -1,3 +1,4 @@
+
 """T2.1 equal-opportunity statistical test (SPEC §7-2, D.3; repaired G2-002).
 
 The planner samples uniformly from the VALID solution space (cooldown + family
@@ -9,6 +10,8 @@ selector; the only signals are eligibility, cooldown and family limits.
 """
 
 from __future__ import annotations
+
+import pytest
 
 from omda.core.genre import build_unbiased_sampler, enumerate_valid_selections, select_daily_genres
 from omda.ports.domain import GenreRef
@@ -267,3 +270,86 @@ def test_active_constraint_upper_bound_stays_bounded() -> None:
     assert sum(1 for x in chosen if x.family == "Regional") <= 1
     # Repeated draws from the same memo are deterministic and fast.
     assert sampler(make_rng("active-constraint")) == chosen
+
+
+# --- G2-013/G2-010 re-review 4: explicit parent map + stale history ------------
+
+
+def test_explicit_parents_by_genre_constraint_is_never_dropped() -> None:
+    # Reviewer counter-example: GenreRefs carry NO embedded parents, but the
+    # documented public `parents_by_genre` input maps two Genres to `electronic`
+    # with limit 1. The normalization must NOT discard this real constraint.
+    from omda.ports.errors import InsufficientCandidatesError
+
+    genres = [
+        GenreRef("g1", "G1", "Electronic"),
+        GenreRef("g2", "G2", "Electronic"),
+        GenreRef("g3", "G3", "Jazz"),
+        GenreRef("g4", "G4", "Rock"),
+    ]
+    parents_by_genre = {"g1": ("electronic",), "g2": ("electronic",)}
+    parent_limits = {"electronic": 1}
+    for seed in [f"p-{i}" for i in range(40)]:
+        chosen = select_daily_genres(
+            genres,
+            3,
+            make_rng(seed),
+            parent_limits=parent_limits,
+            parents_by_genre=parents_by_genre,
+        )
+        picked = {g.genre_id for g in chosen}
+        assert not ({"g1", "g2"} <= picked), f"seed {seed} violated parent limit"
+    # Unsatisfiable explicit-parent case still fails explicitly.
+    with pytest.raises(InsufficientCandidatesError):
+        select_daily_genres(
+            genres[:3],
+            3,
+            make_rng("unsat"),
+            parent_limits=parent_limits,
+            parents_by_genre=parents_by_genre,
+        )
+
+
+def test_stale_nonempty_cooldown_history_uses_fast_path() -> None:
+    # Every historical pick (1) is far older than the next-pick window for
+    # global starts 1000+ (1 + 30 < 1000): semantically unconstrained, so the
+    # fast path must run with zero DP construction.
+    from omda.core import genre as g
+    from omda.core.diversity import DEFAULT_FAMILY_LIMITS
+
+    g._counts_cached.cache_clear()
+    before = g._counts_cached.cache_info().currsize
+    pool = _big_pool(size=200)
+    pick_history = {x.genre_id: (1,) for x in pool}
+    sampler, total = build_unbiased_sampler(
+        pool,
+        3,
+        pick_history=pick_history,
+        global_start_index=1000,
+        family_limits=DEFAULT_FAMILY_LIMITS,
+    )
+    assert total > 0
+    assert g._counts_cached.cache_info().currsize == before  # fast path: no DP
+    assert len(sampler(make_rng("stale"))) == 3
+
+
+def test_limits_that_cannot_bind_are_dropped() -> None:
+    # A family limit with min(members, count) <= limit can never be violated,
+    # so the constrained path is not entered. Same for parent limits.
+    from omda.core import genre as g
+
+    g._counts_cached.cache_clear()
+    before = g._counts_cached.cache_info().currsize
+    # One Regional member, limit 1: cannot bind for any run size.
+    pool = _big_pool(size=100) + [GenreRef("r1", "R1", "Regional")]
+    build_unbiased_sampler(pool, 3, family_limits={"Regional": 1})
+    assert g._counts_cached.cache_info().currsize == before  # dropped -> fast path
+    # Two members sharing a parent, limit 2: cannot bind.
+    pool2 = [GenreRef("g1", "G1", "Electronic"), GenreRef("g2", "G2", "Electronic")]
+    build_unbiased_sampler(
+        pool2,
+        2,
+        parent_limits={"electronic": 2},
+        parents_by_genre={"g1": ("electronic",), "g2": ("electronic",)},
+    )
+    assert g._counts_cached.cache_info().currsize == before

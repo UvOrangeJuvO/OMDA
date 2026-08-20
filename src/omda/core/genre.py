@@ -262,24 +262,50 @@ def build_unbiased_sampler(
 
     by_id = {g.genre_id: g for g in eligible}
     candidate_ids = tuple(sorted(by_id))
-    pool_families = {g.family for g in eligible}
-    pool_parents = {p for g in eligible for p in g.parents}
 
-    # G2-013: normalize semantically empty inputs BEFORE fast-path selection.
-    # - RunEngine records a per-Genre cooldown key (possibly an empty tuple) for
-    #   every eligible Genre, so a first-ever run has many keys but NO active
-    #   cooldown; drop entries with empty cooldown lists.
-    # - A configured family/parent limit that no eligible Genre belongs to can
-    #   never constrain selection; drop such limits.
-    # These normalizations do not change the valid solution space (an empty
-    # cooldown list or an inapplicable limit is a no-op), so exact unbiasedness
-    # is preserved.
-    active_pick_history = {k: v for k, v in pick_history.items() if v}
+    # G2-010: the authoritative parent memberships come from the documented
+    # public `parents_by_genre` mapping; GenreRef.parents is a supplementary
+    # embedded view. Merge both so an explicit parent map is never dropped.
+    effective_parents_by_genre: dict[str, tuple[str, ...]] = {
+        gid: tuple(sorted(set(parents))) for gid, parents in parents_by_genre.items()
+    }
+    for genre in eligible:
+        if genre.parents:
+            merged = set(effective_parents_by_genre.get(genre.genre_id, ()))
+            merged.update(genre.parents)
+            effective_parents_by_genre[genre.genre_id] = tuple(sorted(merged))
+    parent_member_counts = Counter(
+        parent
+        for parents in effective_parents_by_genre.values()
+        for parent in parents
+    )
+    family_member_counts = Counter(g.family for g in eligible)
+
+    # G2-013: normalize semantically inactive inputs BEFORE fast-path selection.
+    # - A cooldown entry is kept only when it can block at least one of the next
+    #   `count` global positions; stale histories (e.g. {gid: (1,)} with a far
+    #   global start) are no-ops and are dropped.
+    # - A family/parent limit is kept only when it can actually bind for this
+    #   pool and run size: min(eligible members, count) > limit. Otherwise it can
+    #   never be violated and is dropped.
+    # These normalizations do not change the valid solution space, so exact
+    # unbiasedness is preserved.
+    next_positions = range(start, start + count)
+    active_pick_history = {
+        gid: indices
+        for gid, indices in pick_history.items()
+        if indices
+        and any(not is_available(indices, pos, cooldown_picks) for pos in next_positions)
+    }
     active_family_limits = {
-        f: limit for f, limit in family_limits.items() if f in pool_families
+        fam: limit
+        for fam, limit in family_limits.items()
+        if min(family_member_counts.get(fam, 0), count) > limit
     }
     active_parent_limits = {
-        p: limit for p, limit in parent_limits.items() if p in pool_parents
+        parent: limit
+        for parent, limit in parent_limits.items()
+        if min(parent_member_counts.get(parent, 0), count) > limit
     }
 
     if not active_pick_history and not active_family_limits and not active_parent_limits:
@@ -306,13 +332,14 @@ def build_unbiased_sampler(
         cooldown_picks,
         frozenset(active_family_limits.items()),
         frozenset(active_parent_limits.items()),
-        frozenset((k, tuple(v)) for k, v in parents_by_genre.items()),
+        frozenset((k, tuple(v)) for k, v in effective_parents_by_genre.items()),
     )
     candidate_ids, memo = _counts_cached(*key)
     families = {g.genre_id: g.family for g in eligible}
     pick_history = active_pick_history
     family_limits = active_family_limits
     parent_limits = active_parent_limits
+    parents_by_genre = effective_parents_by_genre
 
     def sampler(rng: random.Random) -> list[GenreRef]:
         fam_map: dict[str, int] = {}
