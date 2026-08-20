@@ -265,3 +265,33 @@
 ## Executor Conclusion（G3 Re-review 5 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G3 Re-review 6 Repair（2026-08-20）
+
+对应 Reviewer commit：`3b5a2c4d0e3d42deb909cddc3672d24ea1d50372`
+上一 candidate：`360b2f428277922e4b0ea55f00c00e4aac62d915`
+本轮修复 commit：`ddb188b`（G3-005）
+详细逐项修复记录见 `reviews/stage-03/REPAIR_REPORT.md`。
+
+## Re-review 6 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G3-005 strip 隐藏边界控制字符 + netloc 非 hostname | P2 | `ddb188b` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **491 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 491 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（485 → 491 单调增长） |
+| 未 merge / 未 tag / 未进入 G4 / 未改 verdict | 确认 |
+
+## Executor Conclusion（G3 Re-review 6 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）

@@ -279,3 +279,36 @@ Browser Companion URL 校验使用标准库 `urllib.parse`（惰性 URL 解析�
 | G2 verdict 未改；G2 Core/Orchestrator/Ports/storage/config 零改动 | 确认（`git diff f4cf199` 该目录树 0 文件） |
 | 无 G4 scope creep；无 live RYM 依赖；无反爬绕过 | 确认 |
 | 未 merge / 未 tag / 未进入 G4 | 确认 |
+
+---
+
+# G3 Re-review 6 Repair（2026-08-20）
+
+对应 Reviewer commit：`3b5a2c4d0e3d42deb909cddc3672d24ea1d50372`（`review(g3): require exact header boundary validation`）
+上一 candidate：`360b2f428277922e4b0ea55f00c00e4aac62d915`
+本轮修复 commit：`ddb188b`（G3-005）
+先加失败测试复现 Reviewer 六个精确反例、再做最小修复；未弱化既有测试。
+
+## G3-005（P2）— strip 隐藏边界控制字符 + netloc 非 hostname — CLOSED
+
+- **根因**：`_is_contactable_user_agent` 先 `value.strip()` 再查控制字符 → 前导/尾随 CR/LF/Tab 先消失，绕过"无控制字符"契约（静默重写 header 值）；`_url_has_hostname` 返回 `bool(parsed.netloc)` → `https://@`、`https://user@`、`https://:443`（authority 仅 userinfo 或仅 port、无 host）被判为有 host。
+- **修复**（`ddb188b`）：
+  1. **原始未 strip 值先查控制字符**（`_UA_CTRL.search(value)`）——任何规范化之前；
+  2. **拒绝前导/尾随空白**：`value != value.strip()` 直接 `False`，绝不静默重写 header（不再 strip 后使用）；
+  3. **hostname 谓词**：`_url_has_hostname` 改为要求 `parsed.hostname` 非空（而非 netloc）；scheme 限 http/https；`hostname`/port 解析异常（如畸形 IPv6）捕获 `ValueError` → `False`。
+- **测试**：verdict 六个精确反例（尾随 CRLF、前导 LF、前导/尾随 Tab、`https://@`、`https://user@`、`https://:443`）拒绝；既有 3 类合法形状（URL/mailto/尖括号 email）+ 上轮 11 项反例全部保留通过。
+- **关闭证据**：Reviewer 反例全部关闭——控制字符在任何规范化前被拒、首尾空白不静默重写、contact URL 必须真实 hostname；合法联系形状可构造。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **491 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 491 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（485 → 491 单调增长） |
+| tracked 敏感文件 | 无 |
+| G2 verdict 未改；G2 Core/Orchestrator/Ports/storage/config 零改动 | 确认（`git diff 3b5a2c4` 该目录树 0 文件） |
+| 无 G4 scope creep；无 live RYM 依赖；无反爬绕过 | 确认 |
+| 未 merge / 未 tag / 未进入 G4 | 确认 |
