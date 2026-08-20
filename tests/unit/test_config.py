@@ -140,3 +140,47 @@ def test_fingerprint_matches_exact_config_snapshot_used_for_selection() -> None:
         seed="fp-check",
     )
     assert engine._config_version == _config_fingerprint(cfg)
+
+
+# --- G2-011 re-review: EVERY Config construction path is immutable -------------
+
+
+def test_direct_config_default_is_immutable() -> None:
+    cfg = Config()
+    with pytest.raises(TypeError):
+        cfg.genre_parent_limits["p"] = 2  # MappingProxyType is read-only
+
+
+def test_direct_config_with_caller_dict_is_immutable_and_detached() -> None:
+    caller_dict = {"electronic": 1}
+    cfg = Config(genre_parent_limits=caller_dict)
+    # Mutating the caller-owned dict must NOT change Config.
+    caller_dict["electronic"] = 9
+    assert cfg.genre_parent_limits["electronic"] == 1
+    # Mutating the exposed mapping must be impossible.
+    with pytest.raises(TypeError):
+        cfg.genre_parent_limits["electronic"] = 5
+
+
+def test_direct_config_runengine_fingerprint_matches_selection_rules() -> None:
+    from tests.fakes import FakeAlbumSource, FakeDelivery, FakeGenreSource, FakeLLM, InMemoryHistory
+
+    from omda.orchestrator.run import RunEngine, _config_fingerprint
+    from omda.ports.domain import GenreRef
+
+    caller_dict = {"electronic": 1}
+    cfg = Config(genre_parent_limits=caller_dict)
+    # Caller mutates AFTER engine construction: effective rules must not change.
+    caller_dict["electronic"] = 9
+    genres = [GenreRef("g1", "G1", "Electronic", parents=("electronic",))]
+    engine = RunEngine(
+        config=cfg,
+        history=InMemoryHistory(),
+        genre_source=FakeGenreSource(genres),
+        album_source=FakeAlbumSource({}),
+        llm=FakeLLM("x"),
+        delivery=FakeDelivery(),
+        seed="direct-config",
+    )
+    assert cfg.genre_parent_limits["electronic"] == 1  # snapshot frozen
+    assert engine._config_version == _config_fingerprint(cfg)

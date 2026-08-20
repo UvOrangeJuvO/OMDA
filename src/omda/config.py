@@ -50,10 +50,22 @@ class Config:
     modern_album_year: int = DEFAULT_MODERN_ALBUM_YEAR
     seed: str | None = None
     # G2-010/G2-011: per-parent per-run set limits (parent -> max selections).
-    # Immutable mapping (MappingProxyType): values are constraints for the Core,
-    # never popularity weights, and can never be mutated after loading.
+    # The value is ALWAYS frozen defensively in __post_init__, so every supported
+    # construction path (including direct Config(...)) yields an immutable
+    # snapshot; a caller-owned mapping never stays attached to Config.
     genre_parent_limits: Mapping[str, int] = field(default_factory=dict)
     delivery: DeliveryConfig = field(default_factory=DeliveryConfig)
+
+    def __post_init__(self) -> None:
+        # G2-011: normalize and freeze the parent map on EVERY construction path.
+        # MappingProxyType wraps a defensive copy, so neither caller mutation of
+        # the original dict nor any mutation attempt on the exposed mapping can
+        # change the effective constraints after engine construction.
+        object.__setattr__(
+            self,
+            "genre_parent_limits",
+            MappingProxyType(dict(self.genre_parent_limits)),
+        )
 
 
 def config_to_dict(config: Config) -> dict[str, Any]:
