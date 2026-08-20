@@ -71,3 +71,63 @@ Browser Companion URL 校验使用标准库 `urllib.parse`（惰性 URL 解析�
 | G2 verdict 未改；G2 Core/Orchestrator/Ports（除 domain.py 纯新增 AlbumEvidence）/storage/config 未改 | 确认 |
 | 无 G4 scope creep；无 live RYM 依赖；无反爬绕过 | 确认 |
 | 未 merge / 未 tag / 未进入 G4 | 确认 |
+
+---
+
+# G3 Re-review 2 Repair（2026-08-20）
+
+对应 Reviewer commit：`443638e0c3807d49b1726060413d6c0cd985cacc`（`review(g3): keep adapter boundary findings open`）
+上一 candidate：`120eedd9c14b0b5014cc50a61c7e123abb4721db`
+本轮修复 commits：`981deab`（G3-003/G3-004）、`10a1ef7`（G3-005/G3-007/G3-008）
+每项先加失败测试复现 Reviewer 反例、再做最小修复；未弱化既有测试（详见各节）。
+
+## G3-003（P1，仍开放）— 缺 year/score 仍装 exact — CLOSED
+
+- **根因**：`_year_conflict` 在任一年份缺失时返回 False；score 未校验/未用——自名专辑同 title/artist、无 year、score 缺失/0 → exact。
+- **修复**（`981deab`）：`_sufficient_evidence` 取代 `_year_conflict`——
+  1. 候选 year 已知时，必须存在**有效兼容** first-release year（缺失/畸形 "unknown" 视为证据不足，不是中性）；
+  2. score 形状校验（畸形 → `SourceUnavailableError`）；score 缺失/<=0 → 证据不足，不装 destructive canonical ID；
+  3. title/artist 单匹配不再仅凭"唯一返回项"即 exact。
+- **测试**：缺 year、畸形 year、缺 score、score=0、畸形 score（6 类）+ 完全佐证自名专辑 exact（fixture 增强含 score）。
+
+## G3-004（P1，仍开放）— 平行 adapter API — CLOSED（最小方案，未改 Port）
+
+- **根因**：上一修复在具体 adapter 上新增 `enrich_with_evidence()`/`AlbumEvidence`，绕过已接受 one-adapter-one-Port 映射。
+- **修复**（`981deab`）：按 Reviewer 指定最小方案——**删除 `enrich_with_evidence()`/`AlbumEvidence`**（domain.py 完全回退到已接受 G2 状态）；`enrich()`（Port 签名不变）保留 stale 刷新失败 fail-clearly（detail 携带 stale 证据）；docstrings 更新。**未修改任何已接受 Port/domain 契约 → 未触发 BLOCKED_ARCHITECTURE**。
+- **测试**：删除 4 个 `enrich_with_evidence` 测试（属修复）；保留 fail-clearly 断言测试。
+
+## G3-005（P1，仍开放）— 边界可禁用/URL 可绕过 — CLOSED
+
+- **根因**：timeout/pacing 接受 0/负/inf/nan/None；PageFetcher 默认 None timeout；`_check_url` 只查原始 path 前缀（dot-segment/编码/userinfo/port 可逃逸）；UA 占位符。
+- **修复**（`10a1ef7`）：
+  1. MB 构造校验 connect/read timeout、base_delay、max_backoff、fresh_ttl、pacing 全为**有限正数**（拒绝 0/负/inf/nan/None/字符串/bool）；UA 非空字符串；
+  2. `PageFetcher.fetch(url, timeout)` timeout **必填**（无 None 默认）；companion `fetch_timeout`/`fresh_ttl` 有限正数校验；
+  3. `_check_url` 规范化：拒绝 userinfo（@）、端口（:）、dot-segments（原始与 `unquote` 解码后）、编码分隔符；解码后 path 必须仍以 `/genre/` 开头；
+  4. UA：构造时校验非空（live 联系 UA 由运行层提供，文档注明）。
+- **测试**：MB pacing 0/-1/inf/nan/None/string 拒绝、timeout 非有限拒绝；companion fetch_timeout 非有限拒绝、6 种 URL 绕过拒绝（dot-segment/编码 ../%2e%2e/userinfo/port/编码斜杠）、规范 URL 仍接受。
+
+## G3-007（P2）— per-run 预算 ledger 无生命周期边界 — CLOSED
+
+- **根因**：`_budget_used` 对每个 run id 永久保留条目。
+- **修复**（`10a1ef7`）：ledger 容量上限 `max_tracked_runs`（默认 64）+ FIFO 驱逐最旧 run；新增 `finish_run(run_id)` 显式 run 完成清理（per-run，非全局重置，活跃 run 不会因此绕过限额）。
+- **测试**：ledger 超容量驱逐最旧 run；`finish_run` 释放条目且新 run 正常计数。
+
+## G3-008（P2）— critic 文档与运行时检查分歧 — CLOSED
+
+- **根因**：指南承诺 source_id==目录名但 adapter 未校验；归一化/校验规则未文档化。
+- **修复**（`10a1ef7`）：`CriticDatasetAdapter._source_meta` 强制 `source_id == 包目录名`；`data/critics/README.md` 更新——目录/source 不变量、blank `rating_max` 继承 `rating_scale_max`、提供须等于声明 scale、scale 严格递增且分母为正、blank-denominator 示例。
+- **测试**：critic source_id≠目录名拒绝。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **411 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 411 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（382 → 411 单调增长；G3-004 的 4 个平行-API 测试删除属修复；pacing 禁用测试改造为断言拒绝） |
+| tracked 敏感文件 | 无 |
+| G2 verdict 未改；G2 Core/Orchestrator/Ports/storage/config 未改（domain.py 完全回退） | 确认 |
+| 无 G4 scope creep；无 live RYM 依赖；无反爬绕过 | 确认 |
+| 未 merge / 未 tag / 未进入 G4 | 确认 |

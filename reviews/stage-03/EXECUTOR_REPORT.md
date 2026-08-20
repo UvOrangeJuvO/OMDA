@@ -134,3 +134,37 @@
 ## Executor Conclusion（G3 Re-review 1 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G3 Re-review 2 Repair（2026-08-20）
+
+对应 Reviewer commit：`443638e0c3807d49b1726060413d6c0cd985cacc`
+上一 candidate：`120eedd9c14b0b5014cc50a61c7e123abb4721db`
+本轮修复 commits：`981deab`（G3-003/G3-004）、`10a1ef7`（G3-005/G3-007/G3-008）
+详细逐项修复记录见 `reviews/stage-03/REPAIR_REPORT.md`。
+
+## Re-review 2 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G3-003 缺 year/score 仍装 exact | P1 | `981deab` | CLOSED |
+| G3-004 平行 enrichment API | P1 | `981deab` | CLOSED（最小方案：删除平行接口，未改已接受契约） |
+| G3-005 边界可禁用/URL 可绕过 | P1 | `10a1ef7` | CLOSED |
+| G3-007 预算 ledger 无生命周期边界 | P2 | `10a1ef7` | CLOSED |
+| G3-008 critic 文档/运行时分歧 | P2 | `10a1ef7` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **411 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 411 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（382 → 411；G3-004 平行-API 测试删除属修复，已披露） |
+| 未 merge / 未 tag / 未进入 G4 / 未改 verdict | 确认 |
+
+## Executor Conclusion（G3 Re-review 2 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
