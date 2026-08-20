@@ -141,3 +141,46 @@
 | `git diff --check` | clean |
 | 既有测试未删除/弱化/skip | 确认（239 → 248 单调增长；G2-012 failed-receipt 测试按新验收语义升级为 bound/misbound 两例，属修复而非弱化） |
 | 未 merge / 未 tag / 未进入 G3 / 未改 verdict | 确认 |
+
+---
+
+# G2 Re-review 5 Repair（2026-08-20）
+
+对应 Reviewer commit：`3fd88ad71491353ac6228a01dc45f43b439587e1`（`review(g2): request exact boundary and normalization repairs`）
+上一 candidate：`bf62ca658a1cbb10d5bbc8b2bae4f2b4a7c87305`
+本轮修复 commits：`a3680a9`（G2-011）、`df6a22b`（G2-012）、`7f089d0`（G2-013/G2-010）
+
+## G2-011 — 直接 Config(...) 非法值绕过校验 — CLOSED
+
+- **根因**：`Config.__post_init__` 只冻结映射不校验值 → `Config(genre_parent_limits={"p": "one"})` 构造成功，RunEngine 接受后在 PLANNED 后抛未捕获 TypeError。
+- **修复**（`a3680a9`）：`Config.__post_init__` 对**每一条构造路径**校验值——parent key 非空字符串、limit 为 int（非 bool）、1..10 安全范围；非法 → 受控 `ValueError`（带 `genre_parent_limits.<parent>` 精确路径），配置无法构造 → 任何 run 都不可能以未校验配置写 PLANNED。
+- **测试**：直接 `Config(...)` 的 string/bool/float/zero/negative/out-of-range 六类值均受控拒绝；非法值无法构造 Config（引擎无从产生，PLANNED 不可能写入）。
+- **关闭证据**：直接构造非法值在 PLANNED 前受控拒绝，无未捕获内建异常。
+
+## G2-012 — 未知/畸形收据状态被当确认失败 — CLOSED
+
+- **根因**：绑定通过后 `status != "ok"` 全判 FAILED → bound `"unknown"`/`"pending"`/`""` 被终结为确认失败。
+- **修复**（`df6a22b`）：**严格三分**——`status == "ok"` 成功路径；绑定正确且 `status == "failed"` 确认失败 → FAILED；**其余所有状态**（unknown/pending/空/畸形）→ RECOVERING，journal 持久化 `receipt_status` 异常证据，零历史、不重投。
+- **测试**：`test_bound_malformed_status_enters_recovery_not_terminal`（unknown/pending/empty × 1 次投递、RECOVERING、零历史、anomaly detail 保留 receipt_status）。
+- **关闭证据**：仅恰好 "ok"/"failed" 被解释；任何其他状态进入 recovery 且证据可审计。
+
+## G2-013/G2-010 — 规范化丢弃真实 parent 约束 + stale 历史仍建 DP — CLOSED
+
+- **根因**：`pool_parents` 只从 GenreRef.parents 派生 → 显式 `parents_by_genre` 映射（GenreRef 无 parents）时 parent_limits 被丢弃进快路径，违反约束；cooldown 只丢弃空 tuple → `{gid:(1,)}` + 远端 start 仍建 DP（200 Genre 4s）；limit 只要池中有成员就保留（成员 ≤ limit 不可能 bind 也激活 DP）。
+- **修复**（`7f089d0`）：
+  1. **authoritative parents**：合并 `parents_by_genre` 与 GenreRef.parents 为 `effective_parents_by_genre`（显式映射永不被丢弃），约束路径与 DP 均用该映射；
+  2. **stale cooldown**：条目仅当能阻断 next `count` 个全局位置之一时保留（对每个 `start+i` 用 `is_available` 判定）——全可用则丢弃；
+  3. **不 bind 的 limit**：`min(成员数, count) > limit` 才保留 family/parent 限制。
+- **测试**：`test_explicit_parents_by_genre_constraint_is_never_dropped`（4 Genre 显式映射 40 seeds 从不同选 + 不可满足显式失败）、`test_stale_nonempty_cooldown_history_uses_fast_path`（200 Genre `{gid:(1,)}` + start=1000 → 零 DP）、`test_limits_that_cannot_bind_are_dropped`（1 Regional/limit 1、2 成员/limit 2 → 快路径）。
+- **关闭证据**：显式 parent 约束在公共 selector 生效（Reviewer seed-0 反例关闭）；stale 历史零 DP；不可能 bind 的限制被丢弃；等权与显式不足保持。
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **261 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 261 passed |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（248 → 261 单调增长） |
+| 未 merge / 未 tag / 未进入 G3 / 未改 verdict | 确认 |

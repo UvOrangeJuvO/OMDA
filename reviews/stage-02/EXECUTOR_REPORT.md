@@ -249,3 +249,35 @@
 ## Executor Conclusion（G2 Re-review 4 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G2 Re-review 5 Repair（2026-08-20）
+
+对应 Reviewer commit：`3fd88ad71491353ac6228a01dc45f43b439587e1`（`review(g2): request exact boundary and normalization repairs`）
+上一 candidate：`bf62ca658a1cbb10d5bbc8b2bae4f2b4a7c87305`
+本轮修复 commits：`a3680a9`（G2-011）、`df6a22b`（G2-012）、`7f089d0`（G2-013/G2-010）
+详细逐项修复记录见 `reviews/stage-02/REPAIR_REPORT.md`。
+
+## Re-review 5 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G2-011 直接 Config(...) 非法值绕过校验 | P1 | `a3680a9` | CLOSED |
+| G2-012 未知/畸形收据状态被当确认失败 | P1 | `df6a22b` | CLOSED |
+| G2-013/G2-010 规范化丢弃真实 parent 约束 + stale 历史仍建 DP | P1 | `7f089d0` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **261 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 261 passed |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（248 → 261 单调增长） |
+| 未 merge / 未 tag / 未进入 G3 / 未改 verdict | 确认 |
+
+## Executor Conclusion（G2 Re-review 5 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
