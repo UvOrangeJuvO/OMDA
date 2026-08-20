@@ -8,6 +8,8 @@ fresh / stale / refresh-failure cache semantics, provenance, User-Agent.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from omda.adapters.musicbrainz import (
@@ -75,10 +77,26 @@ def _enricher(transport, clock=AT0, sleeper=None, cache=None, **kw):
     )
 
 
-def _single_ok_response(canonical_id="mb-release-1") -> MBHttpResponse:
+def _single_ok_response(
+    canonical_id="mb-release-1",
+    title="Blue Train",
+    artist="John Coltrane",
+    first_release_date="1958-01-01",
+) -> MBHttpResponse:
     return MBHttpResponse(
         200,
-        f'{{"release-groups": [{{"id": "{canonical_id}", "title": "Blue Train"}}]}}',
+        json.dumps(
+            {
+                "release-groups": [
+                    {
+                        "id": canonical_id,
+                        "title": title,
+                        "artist-credit": [{"name": artist}],
+                        "first-release-date": first_release_date,
+                    }
+                ]
+            }
+        ),
     )
 
 
@@ -87,8 +105,26 @@ def _empty_ok_response() -> MBHttpResponse:
 
 
 def _multi_ok_response() -> MBHttpResponse:
+    # Two results that BOTH strongly match the candidate (e.g. reissues): true
+    # ambiguity that must never be collapsed into one canonical ID.
     return MBHttpResponse(
-        200, '{"release-groups": [{"id": "mb-1"}, {"id": "mb-2"}]}'
+        200,
+        json.dumps(
+            {
+                "release-groups": [
+                    {
+                        "id": "mb-1",
+                        "title": "Blue Train",
+                        "artist-credit": [{"name": "John Coltrane"}],
+                    },
+                    {
+                        "id": "mb-2",
+                        "title": "Blue Train",
+                        "artist-credit": [{"name": "John Coltrane"}],
+                    },
+                ]
+            }
+        ),
     )
 
 
@@ -247,7 +283,10 @@ def test_stale_cache_refreshes_with_new_data() -> None:
     assert cache.get("v1|johncoltrane|bluetrain|1958").canonical_id == "mb-fresh"
 
 
-def test_stale_cache_refresh_failure_degrades_explicitly() -> None:
+def test_stale_cache_refresh_failure_fails_clearly_with_evidence() -> None:
+    # G3-004: the Port return value cannot carry cache evidence, so a stale
+    # refresh failure FAILS CLEARLY with the stale evidence in the error detail
+    # instead of silently serving unlabelled old data.
     cache = EnrichmentCache()
     cache.put(
         EnrichmentEntry(
@@ -260,11 +299,13 @@ def test_stale_cache_refresh_failure_degrades_explicitly() -> None:
         )
     )
     transport = ScriptedTransport([TimeoutError("down")])
-    # Refresh fails -> explicit stale degradation (no blind re-query, no error).
-    enriched = _enricher(transport, clock=LATER, cache=cache, max_retries=0).enrich(
-        _candidate()
-    )
-    assert enriched.identity is not None and enriched.identity.canonical_id == "mb-stale"
+    with pytest.raises(SourceUnavailableError) as exc:
+        _enricher(transport, clock=LATER, cache=cache, max_retries=0).enrich(_candidate())
+    detail = exc.value.detail
+    assert detail["kind"] == "stale-refresh-failure"
+    assert detail["cache_status"] == "stale"
+    assert detail["fetched_at"] == AT0
+    assert detail["source"] == "musicbrainz"
     assert transport.calls == 1
 
 
@@ -294,3 +335,150 @@ def test_enrichment_is_per_candidate_not_batch() -> None:
     enricher.enrich(_candidate(album_id="x", title="Blue Train"))
     enricher.enrich(_candidate(album_id="y", title="Giant Steps"))
     assert transport.calls == 2  # exactly one query per candidate
+
+
+# --- G3-003 re-review: exact identity requires real matching evidence ----------
+
+
+def test_unrelated_single_result_is_not_exact() -> None:
+    # Reviewer counter-example: one fabricated result for a DIFFERENT album must
+    # never install a canonical identity with confidence "exact".
+    transport = ScriptedTransport(
+        [_single_ok_response("WRONG", title="Unrelated Album", artist="Other Artist")]
+    )
+    enriched = _enricher(transport).enrich(_candidate())
+    assert enriched.identity is None  # no-match: no canonical ID installed
+
+
+def test_same_title_different_artist_is_not_exact() -> None:
+    transport = ScriptedTransport(
+        [_single_ok_response("mb-x", title="Blue Train", artist="Someone Else")]
+    )
+    enriched = _enricher(transport).enrich(_candidate())
+    assert enriched.identity is None
+
+
+def test_conflicting_year_prevents_exact() -> None:
+    # Same title+artist but conflicting first-release year: corroboration fails,
+    # so no destructive canonical identity may be installed.
+    transport = ScriptedTransport(
+        [
+            _single_ok_response(
+                "mb-x",
+                title="Blue Train",
+                artist="John Coltrane",
+                first_release_date="1999-01-01",
+            )
+        ]
+    )
+    enriched = _enricher(transport).enrich(_candidate())  # candidate year 1958
+    assert enriched.identity is None
+
+
+def test_malformed_list_item_is_unavailable() -> None:
+    # A response item without title/artist evidence is malformed -> domain error.
+    transport = ScriptedTransport(
+        [MBHttpResponse(200, json.dumps({"release-groups": [{"id": "mb-no-title"}]}))]
+    )
+    with pytest.raises(SourceUnavailableError):
+        _enricher(transport).enrich(_candidate())
+
+
+def test_multiple_plausible_matches_are_ambiguous() -> None:
+    # Two results that both match title+artist (e.g. reissues) -> ambiguity is
+    # never silently collapsed into one canonical ID.
+    body = json.dumps(
+        {
+            "release-groups": [
+                {
+                    "id": "mb-1",
+                    "title": "Blue Train",
+                    "artist-credit": [{"name": "John Coltrane"}],
+                },
+                {
+                    "id": "mb-2",
+                    "title": "Blue Train",
+                    "artist-credit": [{"name": "John Coltrane"}],
+                },
+            ]
+        }
+    )
+    transport = ScriptedTransport([MBHttpResponse(200, body)])
+    enriched = _enricher(transport).enrich(_candidate())
+    assert enriched.identity is None
+
+
+def test_genuinely_exact_match_sets_exact() -> None:
+    transport = ScriptedTransport([_single_ok_response("mb-release-1")])
+    enriched = _enricher(transport).enrich(_candidate())
+    assert enriched.identity is not None
+    assert enriched.identity.canonical_id == "mb-release-1"
+    assert enriched.identity.identity_confidence == "exact"
+
+
+# --- G3-004 re-review: enrichment evidence is caller-visible -------------------
+
+
+def test_enrich_with_evidence_reports_fresh() -> None:
+    transport = ScriptedTransport([_single_ok_response("mb-fresh")])
+    cache = EnrichmentCache()
+    enricher = _enricher(transport, clock=AT0, cache=cache)
+    enriched, evidence = enricher.enrich_with_evidence(_candidate())
+    assert enriched.identity is not None
+    assert evidence.cache_status == "fresh"
+    assert evidence.source == "musicbrainz"
+    assert evidence.fetched_at == AT0
+    assert evidence.query_version == QUERY_VERSION
+
+
+def test_enrich_with_evidence_reports_fresh_from_cache() -> None:
+    transport = ScriptedTransport([_single_ok_response("mb-cached")])
+    cache = EnrichmentCache()
+    enricher = _enricher(transport, clock=AT0, cache=cache)
+    enricher.enrich_with_evidence(_candidate())
+    _, evidence = enricher.enrich_with_evidence(_candidate())  # served from cache
+    assert evidence.cache_status == "fresh"
+    assert evidence.fetched_at == AT0
+    assert transport.calls == 1
+
+
+def test_enrich_with_evidence_reports_fresh_after_stale_refresh() -> None:
+    cache = EnrichmentCache()
+    cache.put(
+        EnrichmentEntry(
+            query_key="v1|johncoltrane|bluetrain|1958",
+            canonical_id="mb-stale",
+            canonical_source="musicbrainz",
+            fetched_at=AT0,
+            query_version=QUERY_VERSION,
+            source="musicbrainz",
+        )
+    )
+    transport = ScriptedTransport([_single_ok_response("mb-new")])
+    enricher = _enricher(transport, clock=LATER, cache=cache)
+    enriched, evidence = enricher.enrich_with_evidence(_candidate())
+    assert enriched.identity is not None and enriched.identity.canonical_id == "mb-new"
+    assert evidence.cache_status == "fresh"  # refreshed data is fresh
+    assert evidence.fetched_at == LATER
+    assert transport.calls == 1
+
+
+def test_enrich_with_evidence_stale_refresh_failure_raises_with_evidence() -> None:
+    cache = EnrichmentCache()
+    cache.put(
+        EnrichmentEntry(
+            query_key="v1|johncoltrane|bluetrain|1958",
+            canonical_id="mb-stale",
+            canonical_source="musicbrainz",
+            fetched_at=AT0,
+            query_version=QUERY_VERSION,
+            source="musicbrainz",
+        )
+    )
+    transport = ScriptedTransport([TimeoutError("down")])
+    enricher = _enricher(transport, clock=LATER, cache=cache, max_retries=0)
+    with pytest.raises(SourceUnavailableError) as exc:
+        enricher.enrich_with_evidence(_candidate())
+    detail = exc.value.detail
+    assert detail["cache_status"] == "stale"
+    assert detail["fetched_at"] == AT0

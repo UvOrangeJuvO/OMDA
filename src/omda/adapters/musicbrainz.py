@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import Protocol
 
 from omda.core.album import normalized_text
-from omda.ports.domain import AlbumCandidate, AlbumIdentity
+from omda.ports.domain import AlbumCandidate, AlbumEvidence, AlbumIdentity
 from omda.ports.errors import SourceUnavailableError
 
 DEFAULT_USER_AGENT = "omda/0.1 (+https://github.com/omda) enrichment"
@@ -137,22 +137,55 @@ class MusicBrainzEnricher:
         """Return an enriched copy (canonical identity) for ONE candidate.
 
         Driven only by this candidate (finite, per-run): no bulk/batch lookup.
+        G3-004: the Port signature is unchanged, so a stale-refresh failure
+        cannot carry evidence through the return value — it therefore FAILS
+        CLEARLY with the stale evidence in the error detail instead of silently
+        serving unlabelled old data. Callers that need observable freshness use
+        :meth:`enrich_with_evidence`.
+        """
+        enriched, _ = self.enrich_with_evidence(candidate)
+        return enriched
+
+    def enrich_with_evidence(
+        self, candidate: AlbumCandidate
+    ) -> tuple[AlbumCandidate, AlbumEvidence]:
+        """Enrich one candidate and return its caller-visible evidence.
+
+        ``AlbumEvidence`` carries cache_status ("fresh"|"stale"), source,
+        fetched_at and query_version so downstream code can report source age or
+        decide whether stale evidence is acceptable (MP §6).
         """
         key = self._query_key(candidate)
         cached = self._cache.get(key)
         now = self._clock()
         if cached is not None and self._is_fresh(cached, now):
-            return self._apply(candidate, cached, cache_status="fresh")
-        # Query path (with retry/backoff); stale cache is the fallback on failure.
+            return (
+                self._apply(candidate, cached),
+                AlbumEvidence("fresh", cached.source, cached.fetched_at, cached.query_version),
+            )
         try:
             entry = self._lookup(candidate, key, now)
-        except SourceUnavailableError:
+        except SourceUnavailableError as exc:
             if cached is not None:
-                # Explicit degradation: refresh failed, serve stale with marker.
-                return self._apply(candidate, cached, cache_status="stale")
+                # G3-004: fail clearly — the stale evidence is preserved and
+                # exposed through the error detail; never silently relabel it.
+                raise SourceUnavailableError(
+                    "musicbrainz: refresh failed; stale evidence from "
+                    f"{cached.fetched_at} is not served without an observable marker",
+                    detail={
+                        "kind": "stale-refresh-failure",
+                        "cache_status": "stale",
+                        "source": cached.source,
+                        "fetched_at": cached.fetched_at,
+                        "query_version": cached.query_version,
+                    },
+                ) from exc
             raise
         self._cache.put(entry)
-        return self._apply(candidate, entry, cache_status="fresh")
+        return (
+            self._apply(candidate, entry),
+            AlbumEvidence("fresh", entry.source, entry.fetched_at, entry.query_version),
+        )
 
     # -- internals -------------------------------------------------------------
     def _query_key(self, candidate: AlbumCandidate) -> str:
@@ -194,37 +227,81 @@ class MusicBrainzEnricher:
         release_groups = data.get("release-groups")
         if not isinstance(release_groups, list):
             raise SourceUnavailableError("musicbrainz: response missing 'release-groups'")
-        if not release_groups:
-            # No match: record an explicit empty result (no canonical identity).
-            return EnrichmentEntry(
-                query_key=key,
-                canonical_id=None,
-                canonical_source=None,
-                fetched_at=now,
-                query_version=QUERY_VERSION,
-                source="musicbrainz",
-            )
-        if len(release_groups) > 1:
-            # Ambiguity is never silently collapsed: return NO canonical identity
-            # rather than guessing (SPEC §2.4). Still cache the ambiguity result.
-            return EnrichmentEntry(
-                query_key=key,
-                canonical_id=None,
-                canonical_source=None,
-                fetched_at=now,
-                query_version=QUERY_VERSION,
-                source="musicbrainz",
-            )
-        group = release_groups[0]
-        canonical_id = group.get("id")
-        if not isinstance(canonical_id, str) or not canonical_id:
-            raise SourceUnavailableError(
-                "musicbrainz: release-group entry missing canonical 'id'"
-            )
+        # G3-003: validate every item shape BEFORE any matching, translating
+        # malformed items into the domain error taxonomy.
+        items = [self._parse_item(item) for item in release_groups]
+        matches = [item for item in items if self._matches(candidate, item)]
+        if not matches:
+            # No plausible match: explicit no-match (no canonical identity).
+            return self._no_match_entry(key, now)
+        if len(matches) > 1:
+            # Ambiguity is never silently collapsed (SPEC §2.4): no canonical ID.
+            return self._no_match_entry(key, now)
+        match = matches[0]
+        if self._year_conflict(candidate, match):
+            # Corroboration (year) conflicts: refuse to install a destructive ID.
+            return self._no_match_entry(key, now)
         return EnrichmentEntry(
             query_key=key,
-            canonical_id=canonical_id,
+            canonical_id=match["id"],
             canonical_source="musicbrainz",
+            fetched_at=now,
+            query_version=QUERY_VERSION,
+            source="musicbrainz",
+        )
+
+    def _parse_item(self, item) -> dict:
+        """Validate one release-group item; malformed items raise the domain error."""
+        if not isinstance(item, dict):
+            raise SourceUnavailableError(
+                "musicbrainz: release-group item must be a JSON object"
+            )
+        canonical_id = item.get("id")
+        if not isinstance(canonical_id, str) or not canonical_id:
+            raise SourceUnavailableError(
+                "musicbrainz: release-group item missing canonical 'id'"
+            )
+        title = item.get("title")
+        if not isinstance(title, str) or not title:
+            raise SourceUnavailableError(
+                "musicbrainz: release-group item missing 'title'"
+            )
+        artist_credit = item.get("artist-credit")
+        if not isinstance(artist_credit, list) or not artist_credit:
+            raise SourceUnavailableError(
+                "musicbrainz: release-group item missing 'artist-credit'"
+            )
+        names: list[str] = []
+        for credit in artist_credit:
+            if not isinstance(credit, dict) or not isinstance(credit.get("name"), str):
+                raise SourceUnavailableError(
+                    "musicbrainz: malformed artist-credit entry"
+                )
+            names.append(credit["name"])
+        year = None
+        first_date = item.get("first-release-date")
+        if isinstance(first_date, str) and len(first_date) >= 4 and first_date[:4].isdigit():
+            year = int(first_date[:4])
+        return {"id": canonical_id, "title": title, "artist": " ".join(names), "year": year}
+
+    def _matches(self, candidate: AlbumCandidate, item: dict) -> bool:
+        """Strong match: normalized title AND complete artist-credit both equal."""
+        return (
+            normalized_text(candidate.title) == normalized_text(item["title"])
+            and normalized_text(candidate.artist) == normalized_text(item["artist"])
+        )
+
+    def _year_conflict(self, candidate: AlbumCandidate, item: dict) -> bool:
+        """Conflicting first-release year rejects exactness (reviewable corroboration)."""
+        if candidate.year is None or item["year"] is None:
+            return False
+        return candidate.year != item["year"]
+
+    def _no_match_entry(self, key: str, now: str) -> EnrichmentEntry:
+        return EnrichmentEntry(
+            query_key=key,
+            canonical_id=None,
+            canonical_source=None,
             fetched_at=now,
             query_version=QUERY_VERSION,
             source="musicbrainz",
@@ -263,10 +340,7 @@ class MusicBrainzEnricher:
         self._sleeper(delay)
 
     def _apply(
-        self,
-        candidate: AlbumCandidate,
-        entry: EnrichmentEntry,
-        cache_status: str,
+        self, candidate: AlbumCandidate, entry: EnrichmentEntry
     ) -> AlbumCandidate:
         identity = None
         if entry.canonical_id and entry.canonical_source:
