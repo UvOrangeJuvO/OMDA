@@ -901,3 +901,38 @@ def test_incomplete_or_unsafe_user_agent_rejected(bad) -> None:
             sleeper=RecordingSleeper(),
             user_agent=bad,
         )
+
+
+# --- G3-005 re-review 5: untrimmed controls + hostname-only URL validation -------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "omda/1 (+https://example.org)\r\n",  # trailing CRLF
+        "\nomda/1 (+https://example.org)",  # leading LF
+        "\tomda/1 (+https://example.org)\t",  # leading/trailing tab
+        "omda/1 (+https://@)",  # userinfo-only authority, no host
+        "omda/1 (+https://user@)",  # userinfo-only authority, no host
+        "omda/1 (+https://:443)",  # port-only authority, no host
+    ],
+    ids=[
+        "trailing-crlf",
+        "leading-lf",
+        "leading-trailing-tab",
+        "userinfo-only",
+        "userinfo-only-named",
+        "port-only",
+    ],
+)
+def test_untrimmed_controls_and_hostless_url_rejected(bad) -> None:
+    # G3-005: control characters are checked on the ORIGINAL untrimmed value
+    # (no silent header rewriting), and a contact URL needs a real hostname —
+    # userinfo-only/port-only authorities are NOT a host.
+    with pytest.raises(ValueError):
+        MusicBrainzEnricher(
+            transport=ScriptedTransport([]),
+            clock=FixedClock(AT0),
+            sleeper=RecordingSleeper(),
+            user_agent=bad,
+        )

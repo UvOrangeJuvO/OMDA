@@ -479,21 +479,29 @@ def _is_contactable_user_agent(value) -> bool:
     MusicBrainz requires ``Application/version (contact URL or email)``. The
     ENTIRE value is validated:
 
-    - no ASCII control characters anywhere (CR/LF injection is rejected);
+    - control characters are inspected on the ORIGINAL value BEFORE any
+      normalization (leading/trailing whitespace is REJECTED, never silently
+      trimmed/rewritten — CR/LF/Tab cannot hide from the header boundary);
     - a real application token ``name/version`` (``anonymous`` and friends are
       not accepted as the application identity);
     - exactly one contact field, one of:
       ``(+https://host/...)`` / ``(+http://host/...)`` with a NON-EMPTY
-      hostname, ``(+mailto:user@host)`` / ``(mailto:user@host)`` or
+      ``hostname`` (userinfo-only/port-only authorities are not a host),
+      ``(+mailto:user@host)`` / ``(mailto:user@host)`` or
       ``<user@host>`` with non-empty local and domain parts;
     - no trailing content after the contact field.
     """
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not value:
         return False
-    stripped = value.strip()
-    if _UA_CTRL.search(stripped):
-        return False  # control characters / CRLF injection
-    parts = stripped.split(" ", 1)
+    # 1) Control characters / CRLF injection on the ORIGINAL value, before any
+    #    trimming — a header value is never silently rewritten.
+    if _UA_CTRL.search(value):
+        return False
+    # 2) Leading/trailing whitespace is rejected outright (no silent rewrite);
+    #    the UA must be an exact, tight "app/version contact" string.
+    if value != value.strip():
+        return False
+    parts = value.split(" ", 1)
     if len(parts) != 2:
         return False  # must be "app/version contact"
     app_version, contact = parts
@@ -514,12 +522,24 @@ def _is_contactable_user_agent(value) -> bool:
 
 
 def _url_has_hostname(url: str) -> bool:
-    """True when an http(s) contact URL carries a non-empty hostname."""
+    """True when an http(s) contact URL carries a real, non-empty hostname.
+
+    ``parsed.netloc`` alone is not enough — an authority of only userinfo
+    (``https://user@``) or only a port (``https://:443``) has no host. We
+    require ``parsed.hostname`` and treat malformed host/port parsing as
+    invalid (``False``).
+    """
     try:
         parsed = urlparse(url)
     except ValueError:
         return False
-    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    try:
+        hostname = parsed.hostname
+    except ValueError:
+        return False  # malformed IPv6 / port
+    return bool(hostname)
 
 
 def _parse_score(value) -> float | None:
