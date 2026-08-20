@@ -12,6 +12,7 @@ were changed so governance/tests can enforce the ADR rule.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,11 +36,31 @@ _SEMANTIC_FIELDS = frozenset(
     }
 )
 
+# Mirrors data/schemas/config.schema.json delivery constraints (single source of
+# truth is the schema; these mirrors keep a directly constructed DeliveryConfig
+# from ever carrying a value the schema would reject).
+_CHANNELS = ("markdown", "pushplus")
+_ENV_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
 
 @dataclass(frozen=True)
 class DeliveryConfig:
     channel: str = "markdown"  # "markdown" | "pushplus" (schema enum)
     pushplus_token_env: str | None = None
+
+    def __post_init__(self) -> None:
+        # G2-011: direct DeliveryConfig(...) must reject values the committed
+        # config schema would reject.
+        if self.channel not in _CHANNELS:
+            raise ValueError(
+                f"delivery.channel: must be one of {list(_CHANNELS)}, got {self.channel!r}"
+            )
+        if self.pushplus_token_env is not None and not _ENV_PATTERN.fullmatch(
+            self.pushplus_token_env
+        ):
+            raise ValueError(
+                f"delivery.pushplus_token_env: invalid pattern {self.pushplus_token_env!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -57,27 +78,22 @@ class Config:
     delivery: DeliveryConfig = field(default_factory=DeliveryConfig)
 
     def __post_init__(self) -> None:
-        # G2-011: normalize, validate and freeze the parent map on EVERY
-        # construction path (including direct Config(...)). Invalid values are
-        # rejected HERE with a controlled ValueError — never stored, so a run can
-        # never journal PLANNED with an effective configuration that was not
-        # validated. MappingProxyType wraps a defensive copy, so neither caller
-        # mutation of the original dict nor any mutation attempt on the exposed
-        # mapping can change the effective constraints.
+        # G2-011: ONE complete validation boundary for EVERY construction path
+        # (including direct Config(...)): the exact immutable snapshot rendered
+        # by config_to_dict is validated against the committed config schema.
+        # Invalid fields are rejected HERE with a controlled ValueError, so a run
+        # can never journal PLANNED with an effective configuration that was not
+        # validated. This is the single source of truth — no second partial copy
+        # of schema rules is maintained. The parent map is then frozen so neither
+        # caller mutation nor any later mutation attempt can change it.
+        validate_record(get_schema("config"), _normalise(config_to_dict(self)))
         raw = dict(self.genre_parent_limits)
-        for parent, limit in raw.items():
+        for parent in raw:
+            # The schema validates values but not object keys; empty keys would
+            # silently become inert constraints, so they are rejected here.
             if not isinstance(parent, str) or not parent:
                 raise ValueError(
                     f"genre_parent_limits: parent key {parent!r} must be a non-empty string"
-                )
-            if isinstance(limit, bool) or not isinstance(limit, int):
-                raise ValueError(
-                    f"genre_parent_limits.{parent}: must be an integer, got "
-                    f"{type(limit).__name__}"
-                )
-            if limit < 1 or limit > 10:
-                raise ValueError(
-                    f"genre_parent_limits.{parent}: must be within 1..10, got {limit}"
                 )
         object.__setattr__(
             self,

@@ -12,6 +12,7 @@ from omda.config import (
     DEFAULT_GENRE_COOLDOWN_PICKS,
     DEFAULT_MODERN_ALBUM_YEAR,
     Config,
+    DeliveryConfig,
     config_to_dict,
     load_config,
     semantic_overrides,
@@ -216,3 +217,66 @@ def test_invalid_direct_config_never_reaches_planned() -> None:
     with pytest.raises(ValueError):
         Config(genre_parent_limits={"electronic": "one"})
     # The invalid value cannot construct a Config at all, so no engine exists.
+
+
+# --- G2-011 re-review 5: complete Config validation boundary -------------------
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"daily_genre_count": "three"},  # string for integer
+        {"daily_genre_count": True},     # bool-as-int
+        {"albums_per_genre": 0},         # below min
+        {"albums_per_genre": 11},        # above max
+        {"genre_cooldown_picks": False},  # bool-as-int
+        {"modern_album_year": "new"},    # string for integer
+        {"modern_album_year": 1800},     # below min
+        {"seed": ""},                    # below min_length
+    ],
+    ids=[
+        "daily-count-string",
+        "daily-count-bool",
+        "albums-zero",
+        "albums-over-max",
+        "cooldown-bool",
+        "year-string",
+        "year-below-min",
+        "seed-empty",
+    ],
+)
+def test_direct_config_rejects_invalid_schema_fields(kwargs) -> None:
+    # EVERY direct Config(...) field must cross the committed config schema
+    # boundary: controlled rejection before any run journal (G2-011).
+    with pytest.raises(ValueError) as exc:
+        Config(**kwargs)
+    assert "config" in str(exc.value)  # RecordValidationError message carries schema name
+
+
+def test_direct_config_rejects_invalid_delivery_channel() -> None:
+    with pytest.raises(ValueError):
+        Config(delivery=DeliveryConfig(channel="bogus"))
+
+
+def test_direct_delivery_config_rejects_invalid_channel() -> None:
+    from omda.config import DeliveryConfig
+
+    with pytest.raises(ValueError):
+        DeliveryConfig(channel="bogus")
+
+
+def test_direct_config_valid_round_trip() -> None:
+    cfg = Config(
+        daily_genre_count=4,
+        albums_per_genre=5,
+        genre_cooldown_picks=40,
+        modern_album_year=2015,
+        seed="s",
+        genre_parent_limits={"electronic": 2},
+        delivery=DeliveryConfig(channel="pushplus", pushplus_token_env="PUSHPLUS_TOKEN"),
+    )
+    mapping = config_to_dict(cfg)
+    assert mapping["daily_genre_count"] == 4
+    assert mapping["delivery"]["channel"] == "pushplus"
+    # A direct valid Config reproduces exactly through the factory.
+    assert load_config(overrides=mapping) == cfg
