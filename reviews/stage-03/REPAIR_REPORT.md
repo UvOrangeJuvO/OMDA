@@ -245,3 +245,37 @@ Browser Companion URL 校验使用标准库 `urllib.parse`（惰性 URL 解析�
 | G2 verdict 未改；G2 Core/Orchestrator/Ports/storage/config 零改动 | 确认（`git diff 068b49d` 该目录树 0 文件） |
 | 无 G4 scope creep；无 live RYM 依赖；无反爬绕过 | 确认 |
 | 未 merge / 未 tag / 未进入 G4 | 确认 |
+
+---
+
+# G3 Re-review 5 Repair（2026-08-20）
+
+对应 Reviewer commit：`f4cf1999fed91f6601efd7f878c778c1fa4c15d7`（`review(g3): require complete contact validation`）
+上一 candidate：`f4ca34f168899d98f83fd23d2b081836e1cbd7f5`
+本轮修复 commit：`cf59cf1`（G3-005）
+先加失败测试复现 Reviewer 五个精确反例、再做最小修复；未弱化既有测试。
+
+## G3-005（P2）— UA 校验器接受空/匿名/控制字符联系 — CLOSED
+
+- **根因**：`_is_contactable_user_agent` 只查首字符字母数字 + 少量 marker 子串——`x(+https://)`（无 app/version 分隔、空 URL）、`x <@>`（空 local/domain）、`anonymous/1.0 (+https://)`、`app (+mailto:)`（无版本空邮箱）、`app/1 (+https://example.org)\r\nX-Test: injected`（尾随 CRLF）全部构造成功；控制字符可在 adapter 配置边界外逃逸为传输失败或不安全 header。
+- **修复**（`cf59cf1`）：`_is_contactable_user_agent` 重写为**完整值校验**：
+  1. 整个值无 ASCII 控制字符（`[\x00-\x1f\x7f]`，含 CR/LF → 拒绝 header 注入）；
+  2. 必须 `Application/version`——`^[A-Za-z0-9][\w._-]*/\d[\w.+-]*$`（真实 app token + `/version`，缺一不可）；
+  3. `anonymous`/`anon`/`bot`/`app` 不得作为应用标识；
+  4. contact 严格三选一且**全串匹配**（无尾随内容）：`(+http(s)://...` 用 `urlparse` 验证非空 hostname；`(+mailto:local@domain)` / `(mailto:...)` 与 `<local@domain>` 由正则强制非空 local/domain。
+- **测试**：verdict 五个精确反例 + 扩展 6 类（LF/CRLF 前移、https 无 host、mailto/尖括号空 local/domain）共 11 项拒绝；既有 3 类合法形状（URL/mailto/尖括号 email）接受（TEST_USER_AGENT 同步为严格合法格式）。
+- **关闭证据**：Reviewer 反例全部关闭——空、匿名、无版本、控制字符、尾随内容 UA 一律在配置边界受控 `ValueError` 拒绝；合法联系形状可构造。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **485 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 485 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（474 → 485 单调增长；TEST_USER_AGENT 格式同步为严格合法值，非弱化） |
+| tracked 敏感文件 | 无 |
+| G2 verdict 未改；G2 Core/Orchestrator/Ports/storage/config 零改动 | 确认（`git diff f4cf199` 该目录树 0 文件） |
+| 无 G4 scope creep；无 live RYM 依赖；无反爬绕过 | 确认 |
+| 未 merge / 未 tag / 未进入 G4 | 确认 |
