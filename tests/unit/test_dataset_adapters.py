@@ -455,3 +455,257 @@ def test_adapter_implements_existing_ports_structural() -> None:
     assert list(genre_sig.parameters) == []
     critic_sig = inspect.signature(critic_adapter.ratings_for)
     assert list(critic_sig.parameters) == ["album"]
+
+
+# --- G3-001 re-review: genre package eligibility and provenance boundary --------
+
+
+def _ineligible_genre_pkg(tmp_path: Path, extra: dict | None = None) -> Path:
+    pkg = tmp_path / "genres" / "bad"
+    pkg.mkdir(parents=True)
+    (pkg / "source.yaml").write_text(
+        """source_id: bad
+display_name: Bad
+license: CC0-1.0
+origin_url: https://example.org
+retrieved_at: 2026-08-20T00:00:00+00:00
+dataset_version: v1
+data_scope: test
+records_file: genres.jsonl
+""",
+        encoding="utf-8",
+    )
+    record = {
+        "genre_id": "g1",
+        "name": "G1",
+        "url": "https://e.org/g1",
+        "family": "Rock",
+        "parents": [],
+        "eligible": False,
+        "source": "bad",
+    }
+    if extra:
+        record.update(extra)
+    (pkg / "genres.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    return pkg
+
+
+def test_ineligible_genre_record_is_never_returned() -> None:
+    # The accepted GenreSource port returns only valid, ELIGIBLE genres; an
+    # `eligible: false` record must never enter the selection lottery.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        pkg = _ineligible_genre_pkg(Path(d))
+        genres = GenreDatasetAdapter(pkg).list_eligible_genres()
+        assert genres == [], f"ineligible record leaked into results: {genres}"
+
+
+def test_ineligible_genre_never_selected_at_orchestrator_level() -> None:
+    # Orchestrator-level: an eligible:false record can never be selected.
+    import tempfile
+
+    from tests.fakes import FakeAlbumSource, FakeDelivery, FakeGenreSource, FakeLLM, InMemoryHistory
+
+    from omda.config import load_config
+    from omda.orchestrator.run import RunEngine
+    from omda.ports.domain import AlbumCandidate, GenreRef
+
+    with tempfile.TemporaryDirectory() as d:
+        pkg = _ineligible_genre_pkg(Path(d))
+        adapter = GenreDatasetAdapter(pkg)
+        genres = adapter.list_eligible_genres()
+        assert genres == []
+        # Pool of eligible genres only; the ineligible record is absent by contract.
+        pool = [GenreRef("a", "A", "Rock"), GenreRef("b", "B", "Jazz"), GenreRef("c", "C", "Rock")]
+        albums = {
+            g.genre_id: [
+                AlbumCandidate(f"{g.genre_id}-1", f"{g.genre_id} One", "Artist", 2015),
+                AlbumCandidate(f"{g.genre_id}-2", f"{g.genre_id} Two", "Artist", 2000),
+                AlbumCandidate(f"{g.genre_id}-3", f"{g.genre_id} Three", "Artist", 1990),
+            ]
+            for g in pool
+        }
+        engine = RunEngine(
+            config=load_config(),
+            history=InMemoryHistory(),
+            genre_source=FakeGenreSource(pool),
+            album_source=FakeAlbumSource(albums),
+            llm=FakeLLM("x"),
+            delivery=FakeDelivery(),
+            seed="eligibility",
+        )
+        outcome = engine.run("run-1")
+        assert outcome.state == "COMPLETE"
+        assert "g1" not in {g.genre_id for g in outcome.plan.genres}
+
+
+def test_genre_source_id_must_match_directory_name() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        pkg = _ineligible_genre_pkg(Path(d))
+        # rewrite source.yaml with a mismatched source_id
+        (pkg / "source.yaml").write_text(
+            """source_id: other-source
+display_name: Bad
+license: CC0-1.0
+origin_url: https://example.org
+retrieved_at: 2026-08-20T00:00:00+00:00
+dataset_version: v1
+data_scope: test
+records_file: genres.jsonl
+""",
+            encoding="utf-8",
+        )
+        with pytest.raises(InvalidInputError) as exc:
+            GenreDatasetAdapter(pkg).list_eligible_genres()
+        assert "directory" in str(exc.value) or "source_id" in str(exc.value)
+
+
+def test_genre_record_source_must_match_source_id() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        pkg = _ineligible_genre_pkg(Path(d), extra={"source": "wrong-source"})
+        with pytest.raises(InvalidInputError) as exc:
+            GenreDatasetAdapter(pkg).list_eligible_genres()
+        assert "source" in str(exc.value)
+
+
+def test_genre_records_file_cannot_escape_package() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        pkg = root / "genres" / "bad"
+        pkg.mkdir(parents=True)
+        (root / "outside.jsonl").write_text(
+            json.dumps(
+                {
+                    "genre_id": "ext",
+                    "name": "External",
+                    "url": "https://e.org/ext",
+                    "family": "Rock",
+                    "parents": [],
+                    "eligible": True,
+                    "source": "bad",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (pkg / "source.yaml").write_text(
+            """source_id: bad
+display_name: Bad
+license: CC0-1.0
+origin_url: https://example.org
+retrieved_at: 2026-08-20T00:00:00+00:00
+dataset_version: v1
+data_scope: test
+records_file: ../../outside.jsonl
+""",
+            encoding="utf-8",
+        )
+        with pytest.raises(InvalidInputError) as exc:
+            GenreDatasetAdapter(pkg).list_eligible_genres()
+        assert (
+            "escape" in str(exc.value)
+            or "outside" in str(exc.value)
+            or "package" in str(exc.value)
+        )
+
+
+# --- G3-002 re-review: critic row scale consistency ----------------------------
+
+
+def _critic_pkg(
+    tmp_path: Path, rows: list[list[str]], scale_min: float = 1, scale_max: float = 5
+) -> Path:
+    pkg = tmp_path / "critics" / "bad"
+    pkg.mkdir(parents=True)
+    (pkg / "source.yaml").write_text(
+        f"""source_id: bad
+display_name: Bad
+license: CC0-1.0
+origin_url: https://example.org
+scrape_date: 2026-08-20
+rating_scale_min: {scale_min}
+rating_scale_max: {scale_max}
+""",
+        encoding="utf-8",
+    )
+    (pkg / "ratings.csv").write_text(
+        "source_id,album_id,rating,rating_max,review_url\n"
+        + "\n".join(",".join(row) for row in rows)
+        + "\n",
+        encoding="utf-8",
+    )
+    return pkg
+
+
+def test_critic_blank_rating_max_fills_declared_scale() -> None:
+    # Under a declared 1..5 scale, `rating=4` with blank max must be stored as
+    # 4/5 = 0.8 after composition — never treated as an already-normalized 4.0.
+    import tempfile
+
+    from omda.core.rating import compose_rating
+    from omda.ports.domain import AlbumCandidate
+
+    with tempfile.TemporaryDirectory() as d:
+        pkg = _critic_pkg(Path(d), [["bad", "album-1", "4", "", ""]])
+        adapter = CriticDatasetAdapter(pkg)
+        rows = adapter.all_ratings()
+        assert rows[0].rating_max == 5.0  # filled from source.yaml scale_max
+        album = AlbumCandidate(album_id="album-1", title="A", artist="X")
+        score = compose_rating(adapter.ratings_for(album), {"bad": 1.0})
+        assert score == 4.0 / 5.0
+
+
+def test_critic_mismatched_rating_max_rejected() -> None:
+    # A supplied rating_max must equal the declared scale_max (1..5 -> max 5).
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        pkg = _critic_pkg(Path(d), [["bad", "album-1", "4", "1", ""]])
+        with pytest.raises(InvalidInputError) as exc:
+            CriticDatasetAdapter(pkg).all_ratings()
+        assert "rating_max" in str(exc.value)
+
+
+def test_critic_zero_rating_max_rejected() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        pkg = _critic_pkg(Path(d), [["bad", "album-1", "4", "0", ""]])
+        with pytest.raises(InvalidInputError) as exc:
+            CriticDatasetAdapter(pkg).all_ratings()
+        assert "rating_max" in str(exc.value)
+
+
+def test_critic_negative_rating_max_rejected() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        pkg = _critic_pkg(Path(d), [["bad", "album-1", "4", "-5", ""]])
+        with pytest.raises(InvalidInputError):
+            CriticDatasetAdapter(pkg).all_ratings()
+
+
+def test_critic_invalid_scale_bounds_rejected() -> None:
+    # rating_scale_min must be strictly below rating_scale_max.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        pkg = _critic_pkg(Path(d), [["bad", "album-1", "4", "5", ""]], scale_min=5, scale_max=5)
+        with pytest.raises(InvalidInputError):
+            CriticDatasetAdapter(pkg).all_ratings()
+
+
+def test_critic_rating_outside_effective_scale_rejected() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        pkg = _critic_pkg(Path(d), [["bad", "album-1", "0", "5", ""]])
+        with pytest.raises(InvalidInputError):
+            CriticDatasetAdapter(pkg).all_ratings()

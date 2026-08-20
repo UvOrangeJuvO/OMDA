@@ -93,13 +93,16 @@ class GenreDatasetAdapter:
 
         Validation errors name the file, the record line and the offending
         field. Duplicate genre_ids are rejected (records must be reviewable and
-        unique). ``eligible`` only reflects data validity, never popularity.
+        unique). G3-001: only records whose validated ``eligible`` is true are
+        returned — ``eligible`` only reflects data validity, never popularity,
+        and an ineligible record can never enter the selection lottery.
         """
-        meta = self._source_meta()
         records = self._records()
+        if not records:
+            raise InvalidInputError(f"{self._records_path()}: no genre records found")
         seen: dict[str, int] = {}
         genres: list[GenreRef] = []
-        records_file = self._source_dir / meta["records_file"]
+        records_file = self._records_path()
         for line_no, record in enumerate(records, start=1):
             if record["genre_id"] in seen:
                 raise InvalidInputError(
@@ -107,6 +110,8 @@ class GenreDatasetAdapter:
                     f"{record['genre_id']!r} (first at line {seen[record['genre_id']]})"
                 )
             seen[record["genre_id"]] = line_no
+            if not record["eligible"]:
+                continue  # G3-001: ineligible records never leave the adapter
             genres.append(
                 GenreRef(
                     genre_id=record["genre_id"],
@@ -116,8 +121,8 @@ class GenreDatasetAdapter:
                     parents=tuple(record["parents"]),
                 )
             )
-        if not genres:
-            raise InvalidInputError(f"{records_file}: no genre records found")
+        # Records exist but none are eligible: a legitimate empty result (the
+        # source is valid but currently offers no selectable Genre).
         return genres
 
     def provenance(self) -> DatasetProvenance:
@@ -127,13 +132,38 @@ class GenreDatasetAdapter:
     def _source_meta(self) -> dict:
         if self._meta is None:
             self._meta = _load_source_meta(self._source_dir, "genre_source")
+            # G3-001: the package directory must match the declared source_id so
+            # provenance can never be relabelled across packages.
+            if self._meta["source_id"] != self._source_dir.name:
+                raise InvalidInputError(
+                    f"{self._source_dir}: source.yaml source_id "
+                    f"{self._meta['source_id']!r} does not match package directory "
+                    f"{self._source_dir.name!r}"
+                )
         return self._meta
+
+    def _records_path(self) -> Path:
+        meta = self._source_meta()
+        raw = meta["records_file"]
+        candidate = Path(raw)
+        if candidate.is_absolute():
+            raise InvalidInputError(
+                f"{self._source_dir}: records_file must be relative, got {raw!r}"
+            )
+        base = self._source_dir.resolve()
+        resolved = (self._source_dir / raw).resolve()
+        if resolved != base and base not in resolved.parents:
+            # Path traversal / symlink escape outside the package directory.
+            raise InvalidInputError(
+                f"{self._source_dir}: records_file {raw!r} escapes the package directory"
+            )
+        return resolved
 
     def _records(self) -> list[dict]:
         if self._records_cache is not None:
             return self._records_cache
         meta = self._source_meta()
-        records_file = self._source_dir / meta["records_file"]
+        records_file = self._records_path()
         if not records_file.exists():
             raise InvalidInputError(f"{records_file}: records file missing")
         records: list[dict] = []
@@ -150,6 +180,13 @@ class GenreDatasetAdapter:
             if not isinstance(record, dict):
                 raise InvalidInputError(f"{records_file}:{line_no}: record must be a JSON object")
             _validate_record("genre", record, f"{records_file}:{line_no}")
+            # G3-001: every record must declare the package's source_id so data
+            # can never be relabelled with another package's provenance.
+            if record["source"] != meta["source_id"]:
+                raise InvalidInputError(
+                    f"{records_file}:{line_no}: record source {record['source']!r} does "
+                    f"not match source.yaml source_id {meta['source_id']!r}"
+                )
             records.append(record)
         self._records_cache = records
         return records
@@ -185,6 +222,20 @@ class CriticDatasetAdapter:
     def _source_meta(self) -> dict:
         if self._meta is None:
             self._meta = _load_source_meta(self._source_dir, "critic_source")
+            # G3-002: the declared scale must be well-formed — a positive
+            # denominator and a strictly increasing range.
+            scale_min = self._meta["rating_scale_min"]
+            scale_max = self._meta["rating_scale_max"]
+            if scale_min >= scale_max:
+                raise InvalidInputError(
+                    f"{self._source_dir}: rating_scale_min ({scale_min}) must be strictly "
+                    f"below rating_scale_max ({scale_max})"
+                )
+            if scale_max <= 0:
+                raise InvalidInputError(
+                    f"{self._source_dir}: rating_scale_max must be a positive denominator, "
+                    f"got {scale_max}"
+                )
         return self._meta
 
     def _rows(self) -> list[CriticRatingRow]:
@@ -237,12 +288,24 @@ class CriticDatasetAdapter:
                 }
                 if rating_max_cell:
                     try:
-                        record["rating_max"] = float(rating_max_cell)
+                        row_max = float(rating_max_cell)
                     except ValueError as exc:
                         raise InvalidInputError(
                             f"{csv_path}:{row_no}: rating_max {rating_max_cell!r} "
                             "must be a number"
                         ) from exc
+                    # G3-002: a supplied denominator must match the declared
+                    # scale_max so cross-source normalization cannot be skewed.
+                    if row_max != scale_max:
+                        raise InvalidInputError(
+                            f"{csv_path}:{row_no}: rating_max {row_max} does not match "
+                            f"declared scale_max {scale_max}"
+                        )
+                    record["rating_max"] = row_max
+                else:
+                    # G3-002: a blank denominator is filled from the declared
+                    # scale_max; the row is stored normalized against it.
+                    record["rating_max"] = scale_max
                 if review_url_cell:
                     record["review_url"] = review_url_cell
                 _validate_record("critic_rating", record, f"{csv_path}:{row_no}")
