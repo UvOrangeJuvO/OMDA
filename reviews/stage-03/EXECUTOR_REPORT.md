@@ -99,3 +99,38 @@
 ## 8. Executor Conclusion
 
 **READY_FOR_REVIEW**（等待 GPT-5.6 Sol 对本 candidate SHA 独立复审并出具唯一 verdict；Executor 未写 ACCEPTED、未合并、未打 gate-g3-accepted 标签、未进入 G4）。
+
+---
+
+# G3 Re-review 1 Repair（2026-08-20）
+
+对应 Reviewer commit：`9178f145ed7c0210f5dd94af4c49b1d7a659f515`
+上一 candidate：`eaeacb7a6bb77e87cb3af62b41a053a3d60270fc`
+本轮修复 commits：`de30dd7`（G3-001/G3-002）、`ab3e1b8`（G3-003/G3-004）、`df989cd`（G3-005/G3-006）、`ad26c2f`（合规判据修正）
+详细逐项修复记录见 `reviews/stage-03/REPAIR_REPORT.md`。
+
+## Re-review 1 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G3-001 Genre 包 eligibility/provenance 边界 | P1 | `de30dd7` | CLOSED |
+| G3-002 critic scale 一致性 | P1 | `de30dd7` | CLOSED |
+| G3-003 MB 匹配验证（exact 需强证据） | P1 | `ab3e1b8` | CLOSED |
+| G3-004 stale evidence 可观察（fail-clearly + AlbumEvidence，未改已接受契约） | P1 | `ab3e1b8` | CLOSED |
+| G3-005 外部访问边界（pacing/timeout/budget/URL） | P1 | `df989cd` | CLOSED |
+| G3-006 缓存有界与快照安全 | P2 | `df989cd` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **382 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 382 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（350 → 382；G3-004 一处按新验收升级并披露） |
+| 未 merge / 未 tag / 未进入 G4 / 未改 verdict | 确认 |
+
+## Executor Conclusion（G3 Re-review 1 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
