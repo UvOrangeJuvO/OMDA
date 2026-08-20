@@ -262,8 +262,27 @@ def build_unbiased_sampler(
 
     by_id = {g.genre_id: g for g in eligible}
     candidate_ids = tuple(sorted(by_id))
+    pool_families = {g.family for g in eligible}
+    pool_parents = {p for g in eligible for p in g.parents}
 
-    if not pick_history and not family_limits and not parent_limits:
+    # G2-013: normalize semantically empty inputs BEFORE fast-path selection.
+    # - RunEngine records a per-Genre cooldown key (possibly an empty tuple) for
+    #   every eligible Genre, so a first-ever run has many keys but NO active
+    #   cooldown; drop entries with empty cooldown lists.
+    # - A configured family/parent limit that no eligible Genre belongs to can
+    #   never constrain selection; drop such limits.
+    # These normalizations do not change the valid solution space (an empty
+    # cooldown list or an inapplicable limit is a no-op), so exact unbiasedness
+    # is preserved.
+    active_pick_history = {k: v for k, v in pick_history.items() if v}
+    active_family_limits = {
+        f: limit for f, limit in family_limits.items() if f in pool_families
+    }
+    active_parent_limits = {
+        p: limit for p, limit in parent_limits.items() if p in pool_parents
+    }
+
+    if not active_pick_history and not active_family_limits and not active_parent_limits:
         # G2-013 fast path: uniform sampling over all ordered selections is
         # exactly rng.sample — no DP, no combinatorial memory (G2-007 unbiased).
         from math import perm
@@ -271,6 +290,10 @@ def build_unbiased_sampler(
         total = perm(len(candidate_ids), count) if len(candidate_ids) >= count else 0
 
         def fast_sampler(rng: random.Random) -> list[GenreRef]:
+            if count > len(candidate_ids):
+                raise InsufficientCandidatesError(
+                    f"need {count} genres, only {len(candidate_ids)} available"
+                )
             return [by_id[gid] for gid in rng.sample(candidate_ids, count)]
 
         return fast_sampler, total
@@ -278,15 +301,18 @@ def build_unbiased_sampler(
     key = (
         tuple(sorted((g.genre_id, g.family) for g in eligible)),
         count,
-        frozenset((k, tuple(v)) for k, v in pick_history.items()),
+        frozenset((k, tuple(v)) for k, v in active_pick_history.items()),
         start,
         cooldown_picks,
-        frozenset(family_limits.items()),
-        frozenset(parent_limits.items()),
+        frozenset(active_family_limits.items()),
+        frozenset(active_parent_limits.items()),
         frozenset((k, tuple(v)) for k, v in parents_by_genre.items()),
     )
     candidate_ids, memo = _counts_cached(*key)
     families = {g.genre_id: g.family for g in eligible}
+    pick_history = active_pick_history
+    family_limits = active_family_limits
+    parent_limits = active_parent_limits
 
     def sampler(rng: random.Random) -> list[GenreRef]:
         fam_map: dict[str, int] = {}

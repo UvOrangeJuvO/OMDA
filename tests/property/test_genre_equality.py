@@ -192,3 +192,78 @@ def test_constrained_memo_never_stores_terminal_states() -> None:
     _, memo = g._counts_cached(*key)
     full_combinations = 30 * 29 * 28
     assert len(memo) < full_combinations
+
+
+# --- G2-013 re-review: RunEngine-shaped inputs reach the fast path -------------
+
+
+def test_runengine_shaped_empty_cooldown_map_uses_fast_path() -> None:
+    # RunEngine records a per-Genre cooldown key for EVERY eligible Genre, even
+    # on the first-ever run (all values empty tuples); the default family limits
+    # are non-empty but none apply to this pool. Semantically nothing constrains
+    # selection -> the fast path must be reached with zero DP construction.
+    from omda.core import genre as g
+    from omda.core.diversity import DEFAULT_FAMILY_LIMITS
+
+    g._counts_cached.cache_clear()
+    before = g._counts_cached.cache_info().currsize
+    pool = _big_pool(size=200)  # families F0..F4: Regional/Traditional absent
+    pick_history = {x.genre_id: () for x in pool}
+    sampler, total = build_unbiased_sampler(
+        pool, 3, pick_history=pick_history, family_limits=DEFAULT_FAMILY_LIMITS
+    )
+    assert total > 0
+    assert g._counts_cached.cache_info().currsize == before  # fast path: no DP
+    chosen = sampler(make_rng("run-shaped"))
+    assert len(chosen) == 3
+
+
+def test_orchestrated_first_run_large_pool_has_no_dp_construction() -> None:
+    # A real orchestrated first run over a 200-Genre pool must not build DP
+    # state (the exact mapping shape RunEngine produces, no active constraints).
+    from tests.fakes import FakeAlbumSource, FakeDelivery, FakeGenreSource, FakeLLM, InMemoryHistory
+
+    from omda.config import load_config
+    from omda.core import genre as g
+    from omda.orchestrator.run import RunEngine
+    from omda.ports.domain import AlbumCandidate, GenreRef
+
+    g._counts_cached.cache_clear()
+    before = g._counts_cached.cache_info().currsize
+    genres = [GenreRef(f"g{i:03d}", f"Genre {i}", f"F{i % 5}") for i in range(200)]
+    albums = {
+        x.genre_id: [
+            AlbumCandidate(f"{x.genre_id}-a", f"{x.genre_id} A", "Artist", 2015),
+            AlbumCandidate(f"{x.genre_id}-b", f"{x.genre_id} B", "Artist", 2000),
+            AlbumCandidate(f"{x.genre_id}-c", f"{x.genre_id} C", "Artist", 1990),
+        ]
+        for x in genres
+    }
+    engine = RunEngine(
+        config=load_config(),
+        history=InMemoryHistory(),
+        genre_source=FakeGenreSource(genres),
+        album_source=FakeAlbumSource(albums),
+        llm=FakeLLM("Explanatory text."),
+        delivery=FakeDelivery(),
+        seed="large-first-run",
+    )
+    outcome = engine.run("run-1")
+    assert outcome.state == "COMPLETE"
+    assert g._counts_cached.cache_info().currsize == before  # zero DP on first run
+
+
+def test_active_constraint_upper_bound_stays_bounded() -> None:
+    # When a family/parent limit genuinely applies, the constrained path builds
+    # a compact memo and sampling stays exact, bounded and deterministic.
+    from omda.core import genre as g
+
+    g._counts_cached.cache_clear()
+    pool = _big_pool(size=60) + [GenreRef("r1", "R1", "Regional")]
+    sampler, total = build_unbiased_sampler(pool, 3)  # Regional limit active
+    assert total > 0
+    chosen = sampler(make_rng("active-constraint"))
+    assert len(chosen) == 3
+    assert sum(1 for x in chosen if x.family == "Regional") <= 1
+    # Repeated draws from the same memo are deterministic and fast.
+    assert sampler(make_rng("active-constraint")) == chosen
