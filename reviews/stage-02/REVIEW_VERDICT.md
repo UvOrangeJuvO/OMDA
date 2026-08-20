@@ -1,194 +1,205 @@
-# Gate G2 Independent Re-review 2 Verdict
+# Gate G2 Independent Re-review 3 Verdict
 
 ## Reviewed object
 
 - Reviewer: GPT-5.6 Sol in Codex
-- Review date: 2026-08-19
+- Review date: 2026-08-20
 - Gate: G2 — Recommendation Core and recoverable transaction model
 - Original base SHA: `731e0498fecdb0a28c84cf57d55c89569895a5bf`
-- Previous candidate SHA: `284fea8e08370ffe0a31cc1ad5f661eaa6bf314d`
-- Previous Reviewer commit: `4953297a268a16696752ab3b3400734674dfbc19`
-- New candidate SHA: `c0bf31d974a85499082a2e3e6eeb24e66fea1ed9`
+- Previous candidate SHA: `c0bf31d974a85499082a2e3e6eeb24e66fea1ed9`
+- Previous Reviewer commit: `266ccdc1c69b5b90d76366af125b3009f688c19d`
+- New candidate SHA: `061e1d11fe703a4ee3036dc5d4bad5d847a2ef99`
 - Candidate branch observed: `exec/g2-core`
 - Executor report: `reviews/stage-02/EXECUTOR_REPORT.md`
 - Repair report: `reviews/stage-02/REPAIR_REPORT.md`
 - Test evidence: `reviews/stage-02/TEST_RESULTS.txt`
 
-The candidate is a clean descendant of the exact accepted G1 base and contains the previous
-Reviewer commit, four focused repair commits and one handoff commit. The merge-base is the
-stated base, the worktree was clean at review start, `git diff --check` passed, and the repair
-delta remains within G2 code, tests, schemas and governance artifacts.
+The candidate is a clean descendant of the exact G1 base and contains the previous Reviewer
+commit, three focused repair commits, and one handoff commit. The merge-base and branch are
+correct, the worktree was clean at review start, `git diff --check` passed, and no G3/G4
+implementation was introduced.
 
-The Reviewer independently ran the complete suite with cache disabled: **225 passed**. Ruff
-also passed. Independent small-space brute-force checks found the new count/unranking solver's
-solution totals correct in 100 randomized cases, and the previous lexical-ID bias, mutable
-engine RNG, unbound-history commit, and unreachable parent path are materially repaired.
+The Reviewer independently ran the complete suite with cache disabled: **239 passed**. Ruff
+also passed. The new schema value-spec support correctly rejects the six reported malformed
+loaded-config values, loaded parent maps are frozen, `ok` misbound receipts no longer become
+terminal failures, and terminal DP states are no longer retained.
 
-The Gate still cannot be accepted. The repair introduces an unvalidated mutable configuration
-map that can break both execution and provenance; an ambiguous post-delivery receipt is placed
-in terminal `FAILED` rather than recovery; and the new unbiased solver constructs and retains
-combinatorial state before its claimed fast path can run.
+The three open findings are only partially closed because their new tests use narrower call
+shapes than the application actually permits or produces. Direct `Config(...)` construction
+still creates mutable maps; receipt binding is checked after status and identical recovery
+calls append without a bound; and RunEngine-shaped empty cooldown histories bypass the new
+solver fast path.
 
-## Previous findings — closure status
+## Finding status summary
 
 | Finding | Severity | Re-review status | Evidence |
 |---|---:|---|---|
-| G2-001 global pick indices | P0 | **CLOSED** | Exact ordered global records remain preserved through plan, commit and recovery. |
-| G2-002 position cooldown / diversity solver | P1 | **PARTIAL** | Position correctness and unbiased feasibility are repaired; bounded resource behavior remains open under G2-013. |
-| G2-003 Album identity safety | P0 | **CLOSED** | Exact, namespaced canonical, ambiguity and Unicode cases remain repaired. |
-| G2-004 year fallback observability | P1 | **CLOSED** | Structured durable fallback evidence and cap behavior remain correct. |
-| G2-005 crash/idempotency | P1 | **CLOSED** | Existing crash and repeated-run tests remain passing. |
-| G2-006/G2-008 durable randomness provenance | P1 | **PARTIAL** | Per-run RNG derivation fixes process-lifetime divergence, but mutable effective config can disagree with its journaled fingerprint (G2-011). |
-| G2-007 lexical-ID selection bias | P0 | **PARTIAL** | Count/unranking removes the 100,000-prefix bias; its unbounded state construction/cache is a new operational blocker (G2-013). |
-| G2-009 receipt binding | P0 | **PARTIAL** | Wrong run/key/channel no longer commits history, but an `ok` receipt after an external call is classified as terminal failure rather than delivery ambiguity (G2-012). |
-| G2-010 parent path unreachable | P1 | **PARTIAL** | Parents and limits now reach the Core through the normal path; the new limit configuration is neither value-validated nor immutable (G2-011). |
+| G2-001 global ordered picks | P0 | **CLOSED** | Exact global records remain correct through commit and recovery. |
+| G2-002 cooldown/diversity semantics | P1 | **PARTIAL** | Semantic correctness remains; application-scale bounded behavior is still open under G2-013. |
+| G2-003 Album identity | P0 | **CLOSED** | Prior exact/canonical/ambiguity/Unicode fixes remain passing. |
+| G2-004 year fallback | P1 | **CLOSED** | Durable structured fallback evidence remains passing. |
+| G2-005 crash/idempotency | P1 | **PARTIAL** | Delivery calls are idempotent, but unresolved recovery appends unbounded duplicate journal entries under G2-012. |
+| G2-006/G2-008 randomness provenance | P1 | **PARTIAL** | Per-run RNG is correct; direct mutable Config still permits behavior/fingerprint divergence under G2-011. |
+| G2-007 equal-opportunity solver | P0 | **PARTIAL** | Complete-space probability is unbiased; formal bounded behavior remains open under G2-013. |
+| G2-009 receipt binding | P0 | **PARTIAL** | `ok` mismatches enter recovery, but binding is not validated before failed-status classification under G2-012. |
+| G2-010 parent plumbing | P1 | **PARTIAL** | Normal parent data path works; not every public Config construction path is immutable under G2-011. |
+| G2-011 parent config validation/immutability | P1 | **PARTIAL / OPEN** | `load_config()` is safe, but public direct construction remains mutable. |
+| G2-012 delivery ambiguity recovery | P1 | **PARTIAL / OPEN** | `ok` mismatch is recoverable, but misbound failed receipts terminalize and repeated recovery grows the journal. |
+| G2-013 solver resource bounds | P1 | **PARTIAL / OPEN** | Terminal memo/cache improvements work, but the fast path does not match RunEngine input shape. |
 
 ## Open blocking findings
 
-### [P1] G2-011 — `genre_parent_limits` bypasses configuration validation and breaks immutable provenance
+### [P1] G2-011 — Public `Config(...)` construction still bypasses the immutable snapshot
 
-- Location: `data/schemas/config.schema.json:10-15`; `src/omda/config.py:43-64` and
-  `:98-107`; `src/omda/orchestrator/run.py:256-268` and `:345-359`
-- Evidence:
-  - The schema declares an object with `additional_fields="allow"` and no value schema, so
-    every dynamic value bypasses type and range validation.
-  - Independent probes showed `load_config()` accepts values such as `"one"`, `-1`, `0`,
-    `1.5`, `true`, and nested objects as parent limits.
-  - With a Genre that carries the affected parent, the string value reaches the Core and
-    raises an uncaught `TypeError` after only `PLANNED` has been journaled. The invalid config
-    is not rejected at startup and the run does not reach an explicit domain failure.
-  - `Config` is declared frozen but stores a mutable `dict`. After constructing a
-    `RunEngine`, mutating `config.genre_parent_limits["p"]` changed the constraints used by
-    selection while the PLANNED journal retained the old config fingerprint. In the probe,
-    the recorded fingerprint was `57c2441f6a46`, while the actually used mutated config
-    fingerprint was `a3b71fdc9a65`.
-- Impact: malformed operator input can crash a run outside the error taxonomy, and a valid
-  run can no longer be reproduced from its recorded effective configuration. This reopens
-  the G2-008 provenance contract and leaves G2-010 unsafe at the application boundary.
-- Violated contract: Handoff Spec §5-§6 and §8; Implementation Plan T1.2/T1.3 acceptance,
-  I-3, R-010 and T2.6; the accepted G1 strict-validation/immutable-input boundary.
+- Location: `src/omda/config.py:43-53` and `:98-110`; `src/omda/orchestrator/run.py:241-268`;
+  `tests/unit/test_config.py`
+- What is repaired:
+  - `load_config()` validates dynamic parent values with precise paths;
+  - config schema version is now 2;
+  - `_from_dict()` makes a defensive `MappingProxyType` snapshot.
+- Remaining evidence:
+  - `Config.genre_parent_limits` still uses `field(default_factory=dict)` and the frozen
+    dataclass has no `__post_init__` normalization.
+  - `Config(genre_parent_limits={"p": 1}).genre_parent_limits["p"] = 2` succeeds.
+  - Even `Config().genre_parent_limits["p"] = 2` succeeds.
+  - `RunEngine` publicly accepts a `Config` directly, and integration tests construct it
+    directly, so this is an actual supported entry path rather than an unreachable misuse.
+  - The new immutability test covers only the result of `load_config()`, not direct Config
+    construction. Therefore the prior fingerprint/behavior divergence remains reproducible
+    through the public constructor.
+- Impact: callers can mutate effective parent constraints after engine fingerprinting, so a
+  journal can again claim a config version different from the selection rules actually used.
+- Violated contract: Handoff Spec §5-§6; Implementation Plan T1.3/R-010; G2-011 acceptance
+  requirement that every Config value used by the engine be a defensive immutable snapshot.
+- Required correction: make every supported construction path normalize and freeze the map
+  (for example in `Config.__post_init__`), or make direct construction unavailable and
+  enforce the validated factory at the RunEngine boundary. A caller-owned mapping must
+  never remain attached to Config. Direct invalid values must either be rejected there or
+  demonstrably pass through the same validation boundary before `PLANNED`.
+- Acceptance tests: construct `Config()` and `Config(genre_parent_limits=caller_dict)`
+  directly; mutating either the original dict or the exposed mapping must not change Config.
+  Construct a RunEngine from that direct Config and prove its journaled fingerprint equals
+  the immutable rules used for selection.
+
+### [P1] G2-012 — Receipt classification is still ordered incorrectly and recovery journaling is unbounded
+
+- Location: `src/omda/orchestrator/run.py:474-529` and `:551-583`;
+  `tests/integration/test_run_engine.py:330-367`, `:610-682`, and `:746-766`
+- What is repaired: an `ok` receipt with wrong run/key/channel now enters `RECOVERING`, does
+  not commit history, and repeated `run(run_id)` does not call Delivery again.
+- Remaining evidence:
+  - `_deliver_and_commit()` checks `receipt.status != "ok"` **before** checking whether the
+    receipt belongs to the current run/key/channel.
+  - The existing `FailedReceiptDelivery` returns `status="failed"` with `run_id=""` and
+    `channel="fake"`, so it is not a confirmed failure for `run-1:markdown`; nevertheless the
+    engine marks the run terminal `FAILED`.
+  - An independent probe using this misbound failed receipt recorded one delivery call and a
+    terminal FAILED tail. Only a correctly bound failed receipt can confirm current-run
+    failure; a failed receipt for another operation is malformed/ambiguous evidence.
+  - For an `ok` misbound receipt, five repeated `run("run-1")` calls caused no re-delivery
+    but appended five separate identical `RECOVERING` entries. `MAX_RUN_ATTEMPTS` remains
+    unused, so the durable retry path has no journal-growth bound.
+  - A receipt-storage conflict after the external call is also terminalized as `FAILED`,
+    although the external side effect/evidence relationship is ambiguous.
+- Impact: some malformed receipts still hide possible delivery as ordinary failure, while a
+  correctly recognized ambiguity can grow durable state indefinitely under retries.
+- Violated contract: Handoff Spec §4 explicit recovery state and bounded idempotent retries;
+  Implementation Plan I-10/T2.6 and R-001/R-009; G2-012 acceptance requirements.
 - Required correction:
-  - validate every parent key/value as an explicit string-to-integer constraint map, with a
-    documented safe range that cannot silently become a permanent eligibility filter;
-  - reject malformed values before a run journals `PLANNED`, with a precise field path;
-  - defensively snapshot/freeze the map so neither caller-owned input nor the exposed Config
-    value can change effective behavior after validation or engine construction;
-  - serialize that immutable value deterministically for the journaled config fingerprint;
-  - follow the repository's schema-version policy for the changed config shape.
-- Acceptance tests: invalid scalar/nested/bool/float/negative/zero values reject at their
-  exact paths; mutation of original override objects cannot alter Config; direct mutation of
-  the Config value is impossible; the journaled fingerprint always equals the exact config
-  snapshot used for selection.
+  - validate receipt binding/schema first, then interpret status;
+  - only an exactly bound, valid `failed` receipt may become terminal FAILED;
+  - any misbound/malformed receipt or conflicting evidence after the external call must enter
+    the explicit recovery/manual-review path without history mutation or blind re-delivery;
+  - repeated recovery of unchanged evidence must be durably idempotent or explicitly bounded,
+    rather than appending the same state forever.
+- Acceptance tests: cover bound-failed versus wrong-run/key/channel-failed receipts, receipt
+  conflict after one recorded external effect, and at least five identical recovery calls;
+  assert exact state, one delivery call, zero history, preserved anomaly evidence, and a
+  bounded number of recovery journal entries.
 
-### [P1] G2-012 — An ambiguous successful delivery is incorrectly made terminal `FAILED`
+### [P1] G2-013 — The solver fast path is still bypassed by normal RunEngine inputs
 
-- Location: `src/omda/orchestrator/run.py:474-504`; `tests/integration/test_run_engine.py`
-  (`test_misbound_receipt_never_commits_history`)
-- Evidence:
-  - After `delivery.deliver(...)` returns an `ok` receipt with the wrong run ID, key, or
-    channel, the system correctly refuses the history commit but immediately appends
-    terminal `FAILED` and discards the receipt.
-  - The external call may already have delivered the payload; a malformed/misbound success
-    receipt cannot prove that no external side effect occurred.
-  - `run()` and `recover()` return terminal failure forever for this run, so the explicit
-    recovery/manual-review path required by the previous verdict and the state-machine
-    contract is unavailable.
-  - The added test encodes `FAILED` as the expected result and does not model an external
-    side-effect count, so it proves history safety but not delivery-ambiguity safety.
-- Impact: the system can send a recommendation, label it as an ordinary failed run, leave
-  Albums out of official exclusion history, and allow later runs to recommend them again.
-  The central delivery/history ambiguity is hidden rather than recoverable.
-- Violated contract: Handoff Spec §4 explicit recovery state; Implementation Plan I-10,
-  T2.6 and P0 risk R-001/R-009; previous G2-009 required correction.
-- Required correction: distinguish a confirmed failed receipt from an `ok` but misbound or
-  malformed receipt. The latter must persist sufficient anomaly evidence and enter
-  `RECOVERING` (or the project's explicit manual-review equivalent), never commit official
-  history, never blind re-deliver, and never be treated as an ordinary terminal failure.
-- Acceptance tests: a delivery fake records one external effect then returns each kind of
-  misbound `ok` receipt; the durable tail is recovery/manual-review, repeated `run(run_id)`
-  causes no second delivery, history remains unchanged, and the anomaly is auditable. A
-  confirmed `status="failed"` path may remain an explicit normal failure.
-
-### [P1] G2-013 — The unbiased solver has combinatorial memory growth and retains it across runs
-
-- Location: `src/omda/core/genre.py:151-228` and `:231-277`
-- Evidence:
-  - `_counts_cached()` stores every reachable state, including every terminal three-Genre
-    set, then returns the entire mutable memo through an LRU cache of 128 input variants.
-  - `build_unbiased_sampler()` always calls `_counts_cached()` before returning. The
-    `rng.sample` “fast path” is inside the returned sampler, so it cannot avoid DP
-    construction even for a completely unconstrained pool.
-  - A new global start/history changes the cache key on every successful run, retaining a
-    separate combinatorial memo until 128 variants accumulate.
-- Independent bounded probes, using only 3 picks and no constraints:
-  - 100 Genres: first sampler construction took about 0.9 seconds;
-  - five otherwise identical 100-Genre constructions with distinct global starts grew the
-    process maximum resident size to about **388 MB**, while cache entries rose 1→5;
-  - 150 Genres took about 3.7 seconds for one construction;
-  - 200 Genres took about 8.9 seconds for one construction;
-  - the growth comes before a single sample is drawn and scales combinatorially with pool
-    size; larger open-microgenre catalogs can exhaust memory rather than produce an explicit
-    bounded outcome.
-- Impact: replacing probability bias with an OOM-prone retained state space makes normal
-  repeated use increasingly expensive and can prevent the local Agent from producing any
-  result. This contradicts the module/report claim of a bounded solver.
-- Violated contract: Handoff Spec §2.3 and §8 bounded/terminating behavior; Implementation
-  Plan T2.3, D.3, R-003/R-011; G2-007 required an unbiased **bounded** method.
-- Required correction: preserve exact unbiasedness without building/retaining all terminal
-  combinations. At minimum, place genuine fast paths before DP construction, avoid memoizing
-  terminal states, eliminate or tightly bound cross-run heavyweight caches, and use a compact
-  counting strategy for active cooldown/family/parent constraints. Never reintroduce lexical
-  truncation or probabilistic false insufficiency.
-- Acceptance tests: exercise a documented realistic upper-bound Genre pool over multiple
-  distinct run histories/global starts; demonstrate a stable explicit time/memory bound and
-  bounded cache behavior, alongside the existing exact-count, equality, cooldown, parent,
-  satisfiable and unsatisfiable tests.
+- Location: `src/omda/orchestrator/run.py:342-359`; `src/omda/core/genre.py:231-292`;
+  `tests/property/test_genre_equality.py:147-194`
+- What is repaired:
+  - terminal states are no longer memoized;
+  - the LRU retains at most four DP variants;
+  - a direct call with exactly `{}` history and exactly `{}` family/parent limits enters the
+    early `rng.sample` path.
+- Remaining evidence:
+  - RunEngine constructs `pick_history` with one key for **every** eligible Genre, even when
+    every value is an empty tuple on the first-ever run. Therefore `not pick_history` is
+    false and the advertised no-cooldown fast path is unreachable from the application.
+  - RunEngine also uses `DEFAULT_FAMILY_LIMITS`; a nonempty configured limit keeps DP active
+    even when no eligible Genre belongs to that limited family.
+  - The new 200-Genre fast-path test passes a hand-built empty history and explicitly
+    `family_limits={}`, unlike the normal Orchestrator path.
+- Independent application-shape measurements with three picks, no actual cooldown, no
+  active family/parent constraint, but `{genre_id: ()}` history:
+  - 100 Genres: about 0.47 seconds and a DP cache entry;
+  - 200 Genres: about 5.14 seconds and a DP cache entry;
+  - with normal default-limit shape, 300 Genres still took about 19.2 seconds.
+  These costs occur before one Genre sample is returned. No documented realistic maximum
+  catalog size or constrained-path time/memory bound was added.
+- Impact: the optimization proved in tests does not optimize OMDA's actual initial run;
+  catalog growth still causes steep pre-sampling delay and can make repeated local operation
+  impractical despite the “bounded solver” claim.
+- Violated contract: Handoff Spec §2.3/§8; Implementation Plan T2.3/D.3; G2-013's explicit
+  requirement to test realistic RunEngine-shaped inputs over multiple starts.
+- Required correction: normalize semantically empty cooldown histories before fast-path
+  selection, ignore configured family/parent limits that cannot apply to the current pool,
+  and keep exact unbiasedness. For genuinely active constraints, document a supported upper
+  pool bound and demonstrate stable time/memory behavior over multiple distinct histories,
+  or use a compact counting method that meets that bound. Do not restore prefix truncation or
+  probabilistic false insufficiency.
+- Acceptance tests: use the exact mapping shape produced by RunEngine and a real orchestrated
+  first run with a large pool; assert no DP construction when no constraint is semantically
+  active. Add an active-constraint upper-bound test and verify the four-entry cache remains
+  bounded across distinct starts.
 
 ## Acceptance matrix
 
 | G2 criterion | Status | Evidence |
 |---|---|---|
-| T2.1 equal-opportunity Genre selection | **PASS** | Complete-space count/unranking is unbiased; 100 randomized brute-force totals matched. |
-| T2.2 global cooldown and ordered picks | **PASS** | Exact global records and position-specific cooldown remain correct. |
-| T2.3 family/parent diversity and bounded outcome | **FAIL** | Parent plumbing works, but config is unsafe and solver resources are not bounded. |
-| T2.4 permanent Album exclusion and run dedup | **PASS** | Prior fixes and tests remain passing. |
-| T2.5 year constraint and rating composition | **PASS** | Prior fixes and tests remain passing. |
-| T2.6 recoverable run transaction | **PARTIAL** | Receipt binding prevents history corruption, but post-delivery ambiguity is terminalized. |
-| Config/schema boundary | **FAIL** | Dynamic parent-limit values are unvalidated and mutable after fingerprinting. |
-| Determinism and durable reproducibility | **PARTIAL** | Per-run RNG is fixed; mutable effective config can differ from recorded provenance. |
-| Core purity / no concrete external dependencies | **PASS** | Architecture tests and source inspection pass. |
-| No G3/G4 scope creep | **PASS** | No live adapter or network implementation was added. |
-| Review package / Git evidence | **PASS** | Exact SHAs, clean tree, repair report and committed test output are present. |
+| T2.1 equal opportunity | **PASS** | Complete-space sampling remains unbiased. |
+| T2.2 global cooldown/order | **PASS** | Prior global-index and boundary fixes remain passing. |
+| T2.3 family/parent diversity and bounded result | **FAIL** | Semantics pass; application-shaped solver resource bound does not. |
+| T2.4 Album identity/exclusion | **PASS** | Prior fixes remain passing. |
+| T2.5 year/rating rules | **PASS** | Prior fixes remain passing. |
+| T2.6 recoverable transaction | **PARTIAL** | `ok` mismatch recovers; failed mismatch/conflict and repeated recovery remain unsafe. |
+| Config/schema boundary | **PARTIAL** | Loaded config is validated/frozen; direct Config remains mutable. |
+| Determinism/provenance | **PARTIAL** | Per-run RNG passes; direct Config mutation can invalidate fingerprint evidence. |
+| Core purity | **PASS** | Architecture tests pass. |
+| No G3/G4 scope creep | **PASS** | Repair delta remains in G2/foundation support files. |
+| Review package / Git evidence | **PASS** | Exact SHAs, repair report and test output are committed. |
 
 ## Checks performed and limitations
 
-- Verified exact base/candidate/previous-Reviewer ancestry, branch, clean worktree and repair
-  sequence.
-- Reviewed `4953297..c0bf31d` and the necessary full G2 regression surface.
-- Independently ran `pytest -q -p no:cacheprovider`: **225 passed**.
+- Verified exact base/candidate/previous-Reviewer ancestry, branch, repair chain, clean
+  worktree, and review package.
+- Independently ran `pytest -q -p no:cacheprovider`: **239 passed**.
 - Independently ran Ruff: **passed**.
 - Ran `git diff --check`: **passed**.
-- Compared DP solution totals to full enumeration in 100 randomized small constrained cases:
-  all matched.
-- Reproduced acceptance of six malformed parent-limit value shapes and an uncaught runtime
-  type error when the affected parent is present.
-- Reproduced mutation of effective constraints after engine fingerprinting.
-- Inspected both fresh-delivery and recovery receipt-binding paths.
-- Measured sampler construction at 100/150/200 Genres and cache growth across five distinct
-  starts. These are diagnostic measurements, not a proposed flaky CI threshold.
-- No production code, merge, tag, push, G3 work, live network or external service was used.
+- Re-ran loaded-config malformed-value and immutability behavior; those paths are repaired.
+- Reproduced mutability through both `Config()` and direct Config with a caller map.
+- Reproduced terminal FAILED for a misbound failed receipt after one delivery call.
+- Reproduced five identical RECOVERING journal entries from five unchanged retry calls while
+  confirming only one Delivery call and zero official history.
+- Measured solver construction with exact RunEngine-style empty cooldown maps at 100/200
+  Genres and the normal default-limit shape at 300 Genres.
+- No production code, merge, tag, push, G3 work, live network, or external service was used.
 
 ## Required repair scope
 
-Remain on `exec/g2-core`. Repair only parent-limit configuration validation/immutability,
-ambiguous-receipt state handling, unbiased solver resource bounds, focused regression tests
-and stage-02 evidence. Do not change product defaults, introduce popularity weighting,
-restore prefix truncation, weaken tests, merge, tag or enter G3. No ADR is currently required;
-these are implementation corrections within already-approved contracts.
+Remain on `exec/g2-core`. Repair only the remaining construction-boundary immutability,
+receipt classification/recovery idempotency, application-shaped solver fast path/resource
+bound, focused regression tests, and stage-02 evidence. Do not alter product defaults,
+reintroduce selection bias, weaken tests, merge, tag, or enter G3. No ADR is currently needed.
 
 ## Verdict
 
 **CHANGES_REQUESTED**
 
-Open blockers: G2-011 (P1), G2-012 (P1), G2-013 (P1). G2 must not be merged and G3 must not
-begin. Acceptance can apply only to a future exact candidate SHA after independent re-review.
+Open blockers: G2-011 (P1), G2-012 (P1), G2-013 (P1), all PARTIAL. G2 must not be merged and
+G3 must not begin. Acceptance applies only to a future exact candidate after independent
+re-review.
