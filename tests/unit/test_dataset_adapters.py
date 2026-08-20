@@ -709,3 +709,33 @@ def test_critic_rating_outside_effective_scale_rejected() -> None:
         pkg = _critic_pkg(Path(d), [["bad", "album-1", "0", "5", ""]])
         with pytest.raises(InvalidInputError):
             CriticDatasetAdapter(pkg).all_ratings()
+
+
+# --- G3-008 re-review 1: critic package directory invariant ---------------------
+
+
+def test_critic_source_id_must_match_directory_name() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        pkg = Path(d) / "critics" / "bad"
+        pkg.mkdir(parents=True)
+        (pkg / "source.yaml").write_text(
+            """source_id: other-source
+display_name: Bad
+license: CC0-1.0
+origin_url: https://example.org
+scrape_date: 2026-08-20
+rating_scale_min: 1
+rating_scale_max: 5
+""",
+            encoding="utf-8",
+        )
+        (pkg / "ratings.csv").write_text(
+            "source_id,album_id,rating,rating_max,review_url\n"
+            "other-source,album-1,4,5,\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(InvalidInputError) as exc:
+            CriticDatasetAdapter(pkg).all_ratings()
+        assert "directory" in str(exc.value) or "source_id" in str(exc.value)

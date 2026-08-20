@@ -133,8 +133,22 @@ class MusicBrainzEnricher:
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be >= 0")
-        if pacing_seconds < 0:
-            raise ValueError("pacing_seconds must be >= 0")
+        if not isinstance(user_agent, str) or not user_agent.strip():
+            raise ValueError("user_agent must be a non-empty string")
+        # G3-005: every time/delay/pacing value must be finite and positive —
+        # zero/negative/NaN/infinity would defeat the promised bounded access.
+        for name, value in (
+            ("connect_timeout", connect_timeout),
+            ("read_timeout", read_timeout),
+            ("base_delay", base_delay),
+            ("max_backoff", max_backoff),
+            ("fresh_ttl_seconds", fresh_ttl_seconds),
+            ("pacing_seconds", pacing_seconds),
+        ):
+            if not _is_finite_positive(value):
+                raise ValueError(
+                    f"{name} must be a finite positive number, got {value!r}"
+                )
         self._transport = transport
         self._clock = clock
         self._sleeper = sleeper
@@ -391,6 +405,17 @@ class MusicBrainzEnricher:
 def _to_epoch(value: str) -> float:
     """Parse an ISO 8601 timestamp (with timezone) into epoch seconds."""
     return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+
+
+def _is_finite_positive(value: float) -> bool:
+    """True when ``value`` is a real, finite, strictly positive number (G3-005)."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value > 0
+        and value != float("inf")
+        and value != float("nan")
+    )
 
 
 __all__ = [

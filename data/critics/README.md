@@ -44,19 +44,38 @@ Header must be exactly:
 source_id,album_id,rating,rating_max,review_url
 ```
 
-- `source_id` must equal the `source_id` in `source.yaml` on every row.
+- The package directory name must equal `source.yaml.source_id`
+  (`data/critics/<source_id>/`), and `source_id` must equal the `source_id` in
+  `source.yaml` on every row — otherwise the package is rejected.
 - `album_id` is the stable album identity the ratings attach to
   (`[a-z0-9][a-z0-9-]*`).
 - `rating` must be within the declared `[rating_scale_min, rating_scale_max]`.
-- `rating_max` and `review_url` are optional (empty cells are fine).
+- `rating_max` (blank optional): when blank it INHERITS
+  `source.yaml.rating_scale_max`; when supplied it MUST equal that declared
+  `rating_scale_max`. Zero, negative or any other denominator is rejected.
+- `review_url` is optional (empty cells are fine).
 - Every `(source_id, album_id)` pair must be unique.
+- `rating_scale_min` must be strictly below `rating_scale_max`, and
+  `rating_scale_max` must be a positive denominator.
+
+### Normalization rule (one unambiguous rule)
+
+Every row is stored as `rating / rating_max`, where `rating_max` is the declared
+`rating_scale_max` (inherited when blank). Example under a declared 1–5 scale:
+
+```
+source_id,album_id,rating,rating_max,review_url
+my-source,album-a,4,5,https://example.org/reviews/a
+my-source,album-b,3,,            # blank -> rating_max = 5, stored as 3/5
+```
 
 ## Adding a new source (no code required)
 
 1. Create `data/critics/<source_id>/` and add the two files above.
 2. Run the dataset validation tests / validator; every error pinpoints the file
    and line/field, e.g. `data/critics/<source>/ratings.csv:12: rating 11 outside
-   declared scale [0, 10]`.
+   declared scale [0, 10]` or `...:13: rating_max 4 does not match declared
+   scale_max 5`.
 3. The existing `CriticDatasetAdapter` (which implements the `CriticRatingSource`
    port) picks the package up; the Recommendation Core is never modified.
 

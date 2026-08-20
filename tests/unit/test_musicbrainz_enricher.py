@@ -439,16 +439,21 @@ def test_consecutive_successful_calls_are_paced() -> None:
     assert sleeper.delays == [1.0, 1.0]  # one pacing sleep per successful call
 
 
-def test_pacing_can_be_disabled() -> None:
-    sleeper = RecordingSleeper()
-    transport = ScriptedTransport([_single_ok_response("m1")])
-    MusicBrainzEnricher(
-        transport=transport,
-        clock=FixedClock(AT0),
-        sleeper=sleeper,
-        pacing_seconds=0.0,
-    ).enrich(_candidate())
-    assert sleeper.delays == []
+@pytest.mark.parametrize(
+    "bad",
+    [0, -1, float("inf"), float("nan"), None, "one"],
+    ids=["zero", "negative", "inf", "nan", "none", "string"],
+)
+def test_non_finite_or_zero_pacing_rejected(bad) -> None:
+    # G3-005: pacing must be finite and strictly positive — zero/NaN/infinity
+    # would disable the promised 1-req/s bound.
+    with pytest.raises(ValueError):
+        MusicBrainzEnricher(
+            transport=ScriptedTransport([_single_ok_response("m1")]),
+            clock=FixedClock(AT0),
+            sleeper=RecordingSleeper(),
+            pacing_seconds=bad,
+        )
 
 
 def test_enrichment_cache_evicts_oldest_entries() -> None:
@@ -538,3 +543,20 @@ def test_fully_corroborated_self_titled_exact() -> None:
     assert enriched.identity is not None
     assert enriched.identity.canonical_id == "mb-weezer"
     assert enriched.identity.identity_confidence == "exact"
+
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [0, -1, float("inf"), float("nan"), None, True],
+    ids=["zero", "negative", "inf", "nan", "none", "bool"],
+)
+def test_non_finite_timeout_rejected(bad) -> None:
+    # G3-005: connect/read timeouts, backoff and TTL must be finite and positive.
+    with pytest.raises(ValueError):
+        MusicBrainzEnricher(
+            transport=ScriptedTransport([]),
+            clock=FixedClock(AT0),
+            sleeper=RecordingSleeper(),
+            connect_timeout=bad,
+        )

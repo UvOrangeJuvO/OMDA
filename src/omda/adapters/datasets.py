@@ -222,6 +222,14 @@ class CriticDatasetAdapter:
     def _source_meta(self) -> dict:
         if self._meta is None:
             self._meta = _load_source_meta(self._source_dir, "critic_source")
+            # G3-008: the package directory must match the declared source_id so
+            # a critic package can never relabel another source's provenance.
+            if self._meta["source_id"] != self._source_dir.name:
+                raise InvalidInputError(
+                    f"{self._source_dir}: source.yaml source_id "
+                    f"{self._meta['source_id']!r} does not match package directory "
+                    f"{self._source_dir.name!r}"
+                )
             # G3-002: the declared scale must be well-formed — a positive
             # denominator and a strictly increasing range.
             scale_min = self._meta["rating_scale_min"]

@@ -289,3 +289,79 @@ def test_cached_extract_mutation_does_not_corrupt_cache() -> None:
     second = source.fetch_genre_page(URL)  # served from cache
     assert second["title"] == "Ambient Music genre"  # snapshot intact
     assert fetcher.calls == 1
+
+
+# --- G3-005 re-review 1: finite values and URL canonicalization -----------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [None, 0, -1, float("inf"), float("nan"), "fast"],
+    ids=["none", "zero", "negative", "inf", "nan", "string"],
+)
+def test_non_finite_fetch_timeout_rejected(bad) -> None:
+    # G3-005: the fetch deadline must be finite and positive — None/infinity
+    # would defeat the promised bounded deadline.
+    with pytest.raises(ValueError):
+        RymGenrePageSource(
+            fetcher=FixtureFetcher("genre_ok.html"),
+            clock=_clock(AT0),
+            fetch_timeout=bad,
+        )
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "https://rateyourmusic.com/genre/../release/album/x/",  # dot segment
+        "https://rateyourmusic.com/genre/%2e%2e/release/album/x/",  # encoded ..
+        "https://rateyourmusic.com/%2e%2e/release/",  # encoded traversal at root
+        "https://user@rateyourmusic.com/genre/A/",  # userinfo
+        "https://rateyourmusic.com:8080/genre/A/",  # port
+        "https://rateyourmusic.com/genre%2fA/",  # encoded slash in segment
+    ],
+    ids=["dot-segment", "encoded-dotdot", "encoded-traversal", "userinfo", "port", "encoded-slash"],
+)
+def test_disallowed_url_bypasses_are_rejected(bad_url: str) -> None:
+    # G3-005: normalization (dot segments, percent-encoding, userinfo, ports)
+    # must never let a target escape the /genre/ boundary.
+    source = RymGenrePageSource(fetcher=FixtureFetcher("genre_ok.html"), clock=_clock(AT0))
+    with pytest.raises(SourceUnavailableError):
+        source.fetch_genre_page(bad_url)
+
+
+def test_canonical_genre_url_still_accepted() -> None:
+    source = RymGenrePageSource(fetcher=FixtureFetcher("genre_ok.html"), clock=_clock(AT0))
+    extract = source.fetch_genre_page("https://rateyourmusic.com/genre/Ambient/")
+    assert extract["status"] == OK_STATUS
+
+
+# --- G3-007 re-review 1: budget ledger lifecycle ---------------------------------
+
+
+def test_budget_ledger_is_bounded_by_tracked_runs() -> None:
+    fetcher = FixtureFetcher("genre_ok.html")
+    source = RymGenrePageSource(
+        fetcher=fetcher, clock=_clock(AT0), max_tracked_runs=2
+    )
+    source.fetch_genre_page("https://rateyourmusic.com/genre/A/", run_id="r1")
+    source.fetch_genre_page("https://rateyourmusic.com/genre/B/", run_id="r2")
+    source.fetch_genre_page("https://rateyourmusic.com/genre/C/", run_id="r3")
+    # Oldest tracked run evicted; newer runs keep their budgets.
+    assert source.budget_used("r1") == 0
+    assert source.budget_used("r2") == 1
+    assert source.budget_used("r3") == 1
+
+
+def test_finish_run_releases_budget_ledger() -> None:
+    fetcher = FixtureFetcher("genre_ok.html")
+    source = RymGenrePageSource(
+        fetcher=fetcher, clock=_clock(AT0), max_pages_per_run=2
+    )
+    source.fetch_genre_page("https://rateyourmusic.com/genre/A/", run_id="run-1")
+    source.finish_run("run-1")  # explicit run-completion cleanup (G3-007)
+    assert source.budget_used("run-1") == 0
+    # A new run may start fresh without an unbounded ledger entry (new URL so
+    # the fresh page cache does not skip the budget consumption).
+    source.fetch_genre_page("https://rateyourmusic.com/genre/B/", run_id="run-2")
+    assert source.budget_used("run-2") == 1

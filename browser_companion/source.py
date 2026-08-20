@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from browser_companion.contract import (
     HUMAN_ACTION_STATUSES,
@@ -42,12 +42,24 @@ RYM_GENRE_PATH_PREFIX = "/genre/"
 
 DEFAULT_MAX_PAGES_PER_RUN = 10
 DEFAULT_CACHE_MAX_ENTRIES = 64
+DEFAULT_MAX_TRACKED_RUNS = 64
+
+
+def _is_finite_positive(value: float) -> bool:
+    """True when ``value`` is a real, finite, strictly positive number (G3-005)."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value > 0
+        and value != float("inf")
+        and value != float("nan")
+    )
 
 
 class PageFetcher(Protocol):
-    """Injectable fetch boundary with an explicit deadline (G3-005)."""
+    """Injectable fetch boundary with a REQUIRED finite deadline (G3-005)."""
 
-    def fetch(self, url: str, timeout: float | None = None) -> str:
+    def fetch(self, url: str, timeout: float) -> str:
         ...
 
 
@@ -104,17 +116,32 @@ class RymGenrePageSource:
         clock: Callable[[], str],
         cache: PageCache | None = None,
         fresh_ttl_seconds: float = 6 * 3600,
-        fetch_timeout: float | None = 10.0,
+        fetch_timeout: float = 10.0,
         max_pages_per_run: int = DEFAULT_MAX_PAGES_PER_RUN,
+        max_tracked_runs: int = DEFAULT_MAX_TRACKED_RUNS,
     ) -> None:
         if max_pages_per_run <= 0:
             raise ValueError("max_pages_per_run must be > 0")
+        if max_tracked_runs <= 0:
+            raise ValueError("max_tracked_runs must be > 0")
+        # G3-005: the fetch deadline must be finite and positive — None/zero/
+        # negative/NaN/infinity would defeat the promised bounded access.
+        if not _is_finite_positive(fetch_timeout):
+            raise ValueError(
+                f"fetch_timeout must be a finite positive number, got {fetch_timeout!r}"
+            )
+        if not _is_finite_positive(fresh_ttl_seconds):
+            raise ValueError(
+                f"fresh_ttl_seconds must be a finite positive number, "
+                f"got {fresh_ttl_seconds!r}"
+            )
         self._fetcher = fetcher
         self._clock = clock
         self._cache = cache or PageCache()
         self._fresh_ttl = fresh_ttl_seconds
         self._fetch_timeout = fetch_timeout
         self._max_pages_per_run = max_pages_per_run
+        self._max_tracked_runs = max_tracked_runs
         self._budget_used: dict[str, int] = {}
 
     def fetch_genre_page(self, page_url: str, run_id: str | None = None) -> dict:
@@ -162,9 +189,22 @@ class RymGenrePageSource:
     def budget_used(self, run_id: str | None = None) -> int:
         return self._budget_used.get(run_id or "default", 0)
 
+    def finish_run(self, run_id: str | None = None) -> None:
+        """Explicitly discard a run's budget ledger entry at run completion.
+
+        G3-007: budget state is run-scoped and released when the run finishes;
+        callers must invoke this exactly once when a run completes, so a
+        finished run's ledger can never keep the long-lived object growing.
+        """
+        self._budget_used.pop(run_id or "default", None)
+
     # -- internals -------------------------------------------------------------
     def _check_url(self, page_url: str) -> None:
-        """G3-005: allow only the intended HTTPS RYM genre origin/path."""
+        """G3-005: allow only the canonical HTTPS RYM genre origin/path.
+
+        Rejects dot segments, percent-encoded separators/traversal, userinfo
+        and ports so browser/HTTP normalization cannot escape ``/genre/``.
+        """
         try:
             parsed = urlparse(page_url)
         except ValueError as exc:
@@ -174,13 +214,36 @@ class RymGenrePageSource:
                 f"rym: disallowed page URL {page_url!r} — only "
                 f"https://{RYM_ORIGIN}/genre/... is permitted"
             )
-        if not parsed.path.startswith(RYM_GENRE_PATH_PREFIX):
+        if "@" in parsed.netloc or ":" in parsed.netloc:
             raise SourceUnavailableError(
-                f"rym: disallowed page path {parsed.path!r} — only the "
+                f"rym: disallowed page URL {page_url!r} — userinfo/port are not allowed"
+            )
+        raw_path = parsed.path
+        if not raw_path.startswith(RYM_GENRE_PATH_PREFIX):
+            raise SourceUnavailableError(
+                f"rym: disallowed page path {raw_path!r} — only the "
                 f"{RYM_GENRE_PATH_PREFIX}... path is permitted"
+            )
+        # Reject dot segments and percent-encoded traversal (raw and decoded).
+        decoded = unquote(raw_path)
+        for candidate in (raw_path, decoded):
+            segments = candidate.split("/")
+            if any(segment in (".", "..") for segment in segments):
+                raise SourceUnavailableError(
+                    f"rym: disallowed dot segment in page URL {page_url!r}"
+                )
+        if not decoded.startswith(RYM_GENRE_PATH_PREFIX):
+            raise SourceUnavailableError(
+                f"rym: decoded path {decoded!r} escapes the {RYM_GENRE_PATH_PREFIX}... "
+                "boundary"
             )
 
     def _consume_budget(self, run_id: str, page_url: str) -> None:
+        # G3-007: the ledger is bounded — the oldest tracked run is evicted
+        # when capacity is reached, so a long-lived object cannot grow forever.
+        if run_id not in self._budget_used and len(self._budget_used) >= self._max_tracked_runs:
+            oldest_run = next(iter(self._budget_used))
+            self._budget_used.pop(oldest_run)
         used = self._budget_used.get(run_id, 0)
         if used >= self._max_pages_per_run:
             raise SourceUnavailableError(
