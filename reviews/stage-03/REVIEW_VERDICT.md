@@ -226,3 +226,174 @@ the state or repurposing identity confidence.
 Open blocking findings: G3-001, G3-002, G3-003, G3-004 and G3-005 (all P1). Candidate
 `eaeacb7a6bb77e87cb3af62b41a053a3d60270fc` must not be merged, `gate-g3-accepted` must not
 be created, and G4 must not begin.
+
+---
+
+## Re-review 1 — candidate `120eedd9c14b0b5014cc50a61c7e123abb4721db`
+
+### Re-review identity and checks
+
+- Original G3 base: `f69c540ee8d98741b9a90f2175fdde012ea81c45`
+- Original G3 candidate: `eaeacb7a6bb77e87cb3af62b41a053a3d60270fc`
+- Original Reviewer commit: `9178f145ed7c0210f5dd94af4c49b1d7a659f515`
+- Repair candidate: `120eedd9c14b0b5014cc50a61c7e123abb4721db`
+- Repair commits: `de30dd7`, `ab3e1b8`, `df989cd`, `ad26c2f`; review-package
+  commit: `120eedd`
+- Candidate branch observed: `exec/g3-adapters`
+- Worktree at review start: clean
+- Independent full suite: **382 passed**
+- Ruff over `src`, `tests`, `browser_companion`: **passed**
+- `git diff --check`: **passed**
+
+The repair stays within G3 and retains the original Reviewer commit in the candidate chain.
+The data-package validation, critic denominator normalization and cache snapshot/capacity
+repairs are materially correct. However, three P1 findings remain partially open: canonical
+identity is still promoted to `exact` when corroborating evidence is missing, stale evidence
+was exposed through a concrete-adapter-only parallel API, and the new external-access bounds
+can be disabled or bypassed with accepted constructor values/URLs.
+
+### Original finding status
+
+| Finding | Re-review status | Evidence |
+|---|---|---|
+| G3-001 Genre eligibility/provenance | **CLOSED** | `eligible:false` is filtered; source/package/path containment checks are enforced before records leave the adapter. |
+| G3-002 critic scale consistency | **CLOSED** | blank denominator inherits source max; invalid/mismatched scales reject; adapter-to-Core normalization is tested. |
+| G3-003 canonical exactness | **PARTIAL / OPEN** | title/artist and conflicting years are checked, but missing/malformed year and absent/low search confidence still install `exact`. |
+| G3-004 stale evidence | **PARTIAL / OPEN** | the existing Port now fails clearly, but a second concrete-only enrichment interface bypasses the accepted Port mapping. |
+| G3-005 external-access bounds | **PARTIAL / OPEN** | defaults exist, but timeout/pacing can be non-finite, disabled or absent; RYM path restriction is normalization-bypassable; default contact remains a placeholder. |
+| G3-006 bounded immutable caches | **CLOSED for the original cache objects** | FIFO capacities and defensive page snapshots work; a new unbounded run-budget ledger is tracked separately as G3-007. |
+
+### [P1] G3-003 remains open — incomplete evidence still becomes destructive `exact` identity
+
+- Location: `src/omda/adapters/musicbrainz.py:247-315`, especially `_parse_item()`,
+  `_matches()` and `_year_conflict()`
+- Evidence: normalized title and artist equality are now required, which closes the original
+  unrelated-result counterexample. But `_year_conflict()` returns false when either year is
+  missing, and response `score` is never validated or used. A single item with the same
+  self-titled Album/artist, no usable release year and absent or zero score is therefore
+  labelled `identity_confidence="exact"`.
+- Independent reproduction: candidate `Weezer / Weezer / 1994` plus a single response item
+  `id="wrong-self-titled-id", title="Weezer", artist-credit=["Weezer"]` with no
+  `first-release-date` or score produced an exact MusicBrainz identity. The same occurred with
+  `first-release-date="unknown"` and `score=0`.
+- Impact: self-titled/reused Album names can still bind to the wrong release-group and become a
+  permanent exclusion key. The result is based on less evidence than the accepted normalized
+  fallback, which includes artist, title **and year**.
+- Required correction:
+  - distinguish missing/unparseable corroboration from non-conflict; when candidate year is
+    known, require a valid compatible first-release year before installing a destructive
+    canonical identity;
+  - validate the search confidence/score shape and define a conservative, reviewable threshold
+    or fail closed when sufficient evidence is absent;
+  - do not call a title/artist-only match `exact` merely because it is the only returned item;
+  - add same-artist/self-titled fixtures covering missing year, malformed year, low/missing
+    score and a fully corroborated exact result.
+
+### [P1] G3-004 remains open — stale provenance was implemented as a parallel adapter API
+
+- Location: `src/omda/adapters/musicbrainz.py:153-205`;
+  `src/omda/ports/album.py:20-24`; `src/omda/ports/domain.py:66-79`;
+  `src/omda/ports/__init__.py`
+- Evidence: the accepted `AlbumEnricher` Port still exposes only `enrich() -> AlbumCandidate`.
+  The repair adds `MusicBrainzEnricher.enrich_with_evidence()` directly on the concrete
+  adapter and adds `AlbumEvidence`, but the method is not part of any Port, is not usable by
+  the Orchestrator without importing the concrete MusicBrainz adapter, and has no other caller.
+  This is a second vendor-specific application contract, contrary to the G3 one-adapter-to-one-
+  existing-Port mapping. `AlbumEvidence` is not even re-exported from `omda.ports`.
+- Positive closure: `enrich()` now correctly raises a typed error with stale metadata after a
+  failed refresh, so silent stale reuse itself is fixed.
+- Impact: if downstream code follows the repair report and consumes caller-visible evidence,
+  it must couple directly to the MusicBrainz implementation. That breaks the accepted
+  `Orchestrator -> Ports <- Adapters` dependency direction and gives other enrichers no parity
+  contract.
+- Required correction:
+  - simplest path: keep the fail-clearly behavior on the existing Port and remove the unused
+    concrete-only `enrich_with_evidence()`/`AlbumEvidence` surface, updating stale docstrings;
+  - if successful enrichment evidence must be application-visible, stop at
+    `BLOCKED_ARCHITECTURE` and propose an ADR for one provider-neutral `AlbumEnricher` result
+    contract, then update Port parity/fakes/contract tests only after approval;
+  - do not retain a parallel public method merely to avoid acknowledging a Port change.
+
+### [P1] G3-005 remains open — new bounds can be disabled or URL-normalized away
+
+- Location: `src/omda/adapters/musicbrainz.py:118-150`, `:327-364`;
+  `browser_companion/source.py:47-51`, `:100-118`, `:166-190`
+- Evidence:
+  - Browser Companion accepts `fetch_timeout=None`, `0`, negative, `inf` and `nan`, then passes
+    each value to the fetcher. `None`/infinite values directly defeat the promised bounded
+    deadline, while the Protocol itself defaults to `None`.
+  - MusicBrainz accepts `pacing_seconds=0`, `inf` and `nan`; zero/NaN disables pacing and the
+    non-finite values can fail outside the typed adapter boundary. Connect/read timeouts and
+    backoff parameters likewise have no positive-finite validation.
+  - `_check_url()` checks only the raw path prefix. URLs such as
+    `https://rateyourmusic.com/genre/../release/album/x/` and percent-encoded `..`/slash
+    variants pass and are sent to the fetcher; browser/HTTP normalization can resolve them
+    outside `/genre/`, defeating the stated no-Album-Detail target restriction.
+  - `DEFAULT_USER_AGENT` still points to generic `https://github.com/omda`; the repository has
+    no Git remote or maintainer contact establishing that URL as this project's contact point.
+    The repair made it configurable but did not ensure the live default is meaningful.
+- Independent reproduction: every timeout value above reached the fake fetcher unchanged;
+  all three traversal/encoded URLs reached it; MusicBrainz zero/NaN pacing completed with no
+  pacing sleep.
+- Impact: a production run can still hang indefinitely, exceed the upstream request policy or
+  reach a non-Genre RYM page while reporting a bounded compliant source. Therefore the planned
+  G3 timeout/access contract is not yet enforceable.
+- Required correction:
+  - validate every timeout, delay, backoff, TTL and pacing value as the appropriate finite,
+    positive bounded type; if a pre-throttled transport is supported, model it explicitly
+    rather than treating zero/NaN as compliant live pacing;
+  - make `PageFetcher.fetch()` require a finite timeout, not default to `None`;
+  - canonicalize/decode the URL safely and reject dot segments, encoded path separators,
+    userinfo, ports and any non-canonical target before fetching; add the exact bypass fixtures;
+  - require an explicit, meaningful contact User-Agent for live construction or replace the
+    placeholder only when the real project URL/contact exists;
+  - preserve domain-typed errors for invalid configuration and runtime failures.
+
+Official MusicBrainz guidance still requires no more than one call per second and a meaningful,
+contactable User-Agent:
+[MusicBrainz API rate limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting).
+
+### [P2] G3-007 — the new per-run budget ledger grows without a lifecycle bound
+
+- Location: `browser_companion/source.py:118`, `:162-190`
+- Evidence: `_budget_used` retains one dictionary entry for every distinct run id forever.
+  The page cache is now capacity-bounded, but the same long-lived companion object can still
+  grow without limit through the budget ledger; there is no release/reset or bounded eviction.
+- Required correction: make budget state run-scoped and discard it at run completion, or use a
+  bounded lifecycle-aware ledger with an explicit cleanup operation and tests. Cleanup must not
+  allow a still-active run to reset its budget and exceed the limit.
+
+### [P2] G3-008 — critic package documentation and runtime checks still diverge
+
+- Location: `data/critics/README.md:17-25`, `:47-52`;
+  `src/omda/adapters/datasets.py:222-239`, `:289-308`
+- Evidence: the guide says `source_id` must match the package directory, but the critic adapter
+  checks only rows against metadata. It also does not document the new rule that blank
+  `rating_max` inherits `rating_scale_max`, a supplied value must equal it, and source scale
+  bounds must be strictly ordered with a positive denominator.
+- Required correction: enforce the documented directory/source invariant for critic packages
+  and update the contribution guide with the exact normalization and validation rules plus a
+  working blank-denominator example.
+
+### Re-review 1 assessment
+
+| G3 criterion | Result |
+|---|---|
+| Genre eligibility and package provenance | **PASS** |
+| Critic numeric normalization | **PASS WITH P2 DOC GAP** |
+| Canonical identity safety | **FAIL — G3-003** |
+| Stale-cache fail-closed behavior | **PASS** |
+| Single provider-neutral Port mapping | **FAIL — G3-004** |
+| Bounded/compliant external access | **FAIL — G3-005** |
+| Cache capacity and immutable snapshots | **PASS** |
+| Ordinary fixture-only CI / no anti-bot behavior | **PASS** |
+| Open P0/P1 findings | **THREE P1** |
+
+### Re-review 1 verdict
+
+**CHANGES_REQUESTED**
+
+G3-001, G3-002 and the original G3-006 cache defects are closed. G3-003, G3-004 and G3-005
+remain blocking P1 findings; G3-007 and G3-008 are P2 follow-ups to fix with the focused repair.
+Candidate `120eedd9c14b0b5014cc50a61c7e123abb4721db` must not be merged,
+`gate-g3-accepted` must not be created, and G4 must not begin.
