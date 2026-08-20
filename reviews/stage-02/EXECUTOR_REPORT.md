@@ -217,3 +217,35 @@
 ## Executor Conclusion（G2 Re-review 3 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G2 Re-review 4 Repair（2026-08-20）
+
+对应 Reviewer commit：`1c0265a8aaa35c4a7b4204016ea8760e56304c79`（`review(g2): keep boundary and recovery findings open`）
+上一 candidate：`061e1d11fe703a4ee3036dc5d4bad5d847a2ef99`
+本轮修复 commits：`3540c47`（G2-011）、`5b7326f`（G2-012）、`ac3fc60`（G2-013）
+详细逐项修复记录见 `reviews/stage-02/REPAIR_REPORT.md`。
+
+## Re-review 4 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G2-011 直接 Config(...) 构造仍可变 | P1 | `3540c47` | CLOSED |
+| G2-012 收据分类顺序错误 + 恢复日志无界 | P1 | `5b7326f` | CLOSED |
+| G2-013 RunEngine 形状绕过求解器快路径 | P1 | `ac3fc60` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **248 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 248 passed |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（239 → 248 单调增长） |
+| 未 merge / 未 tag / 未进入 G3 / 未改 verdict | 确认 |
+
+## Executor Conclusion（G2 Re-review 4 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）

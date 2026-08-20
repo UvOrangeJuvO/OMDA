@@ -98,3 +98,46 @@
 | `git diff --check` | clean |
 | 既有测试未删除/弱化/skip | 确认（225 → 239 单调增长；G2-009 misbound 测试按新验收语义升级为 RECOVERING，属修复而非弱化） |
 | 未 merge / 未 tag / 未进入 G3 / 未改 verdict | 确认 |
+
+---
+
+# G2 Re-review 4 Repair（2026-08-20）
+
+对应 Reviewer commit：`1c0265a8aaa35c4a7b4204016ea8760e56304c79`（`review(g2): keep boundary and recovery findings open`）
+上一 candidate：`061e1d11fe703a4ee3036dc5d4bad5d847a2ef99`
+本轮修复 commits：`3540c47`（G2-011）、`5b7326f`（G2-012）、`ac3fc60`（G2-013）
+
+## G2-011 — 直接 Config(...) 构造仍可变 — CLOSED
+
+- **根因**：`Config.genre_parent_limits` 用 `field(default_factory=dict)`，frozen dataclass 无 `__post_init__` 规范化；`Config()` 与 `Config(genre_parent_limits=caller_dict)` 暴露可变映射。
+- **修复**（`3540c47`）：`Config.__post_init__` 在**每一条构造路径**（含直接 `Config(...)`）把 parent 映射做防御性复制并冻结为 `MappingProxyType`——caller dict 与暴露映射均无法改变生效约束；引擎构造后的 fingerprint 恒等于生效规则。
+- **测试**：`test_direct_config_default_is_immutable`、`test_direct_config_with_caller_dict_is_immutable_and_detached`（mutate 原 dict 不影响 Config、改暴露映射抛 TypeError）、`test_direct_config_runengine_fingerprint_matches_selection_rules`（直接 Config 构造 RunEngine，构造后 mutate caller dict，fingerprint 仍等于生效规则）。
+- **关闭证据**：直接构造路径的映射不可变；fingerprint/行为分歧不可复现。
+
+## G2-012 — 收据分类顺序错误 + 恢复日志无界 — CLOSED
+
+- **根因**：`_deliver_and_commit` 先查 `status != "ok"` 再查绑定 → misbound failed receipt（他 run 的确认失败）被误终结为 FAILED；冲突收据（外部调用后）也被终结 FAILED；相同证据的重复恢复不断追加 RECOVERING 条目。
+- **修复**（`5b7326f`）：
+  1. **先验证 run/key/channel 绑定，再解释 status**——绑定错误（无论 status）→ RECOVERING（外部可能已投递）；绑定正确 + failed → 确认失败 → FAILED；绑定正确 + ok → 正常路径；
+  2. receipt 存储冲突（外部调用后）→ RECOVERING（歧义），原证据保留、零历史；
+  3. 恢复幂等：`_finish_after_delivery` 对未变化证据（尾部已 RECOVERING）不再追加 journal 条目。
+- **测试**：`test_bound_failed_receipt_is_ordinary_terminal_failure`（绑定正确 failed → FAILED）、`test_misbound_failed_receipt_enters_recovery`（他 run failed → RECOVERING）、`test_receipt_conflict_after_external_call_enters_recovery`（冲突 ok → RECOVERING、1 次投递、原证据保留）、`test_repeated_recovery_of_unchanged_evidence_is_bounded`（5 次相同 run() → 仅 1 条 RECOVERING、1 次投递、零历史）。
+- **关闭证据**：仅正确绑定的 failed 终结为 FAILED；任何 misbound/conflict 进 RECOVERING；恢复日志有界。
+
+## G2-013 — RunEngine 形状绕过快路径 — CLOSED
+
+- **根因**：RunEngine 对每个 eligible genre 生成 cooldown key（首次 run 值全空）→ `not pick_history` False；默认 family limits 非空且池中无对应 family 时 DP 仍激活 → 100/200/300 Genre 首 run 0.47s/5.14s/19.2s。
+- **修复**（`ac3fc60`）：`build_unbiased_sampler` 在快路径判定前做**语义规范化**——丢弃 cooldown 空值条目、丢弃对当前池不存在的 family/parent 限制（不改变有效解空间 → 等权保持）；规范化后无任何生效约束 → `rng.sample` 快路径零 DP；约束路径的 memo key 用 active 版本。快路径 count 超池时抛 `InsufficientCandidatesError`（保持有界显式失败语义）。
+- **测试**：`test_runengine_shaped_empty_cooldown_map_uses_fast_path`（200 Genre + `{gid: ()}` 形状 + 默认 limits → 零 DP）、`test_orchestrated_first_run_large_pool_has_no_dp_construction`（真实 RunEngine 200 Genre 首次 run → COMPLETE 且 `_counts_cached` currsize 不增）、`test_active_constraint_upper_bound_stays_bounded`（Regional 激活 → DP 有界、确定性、family 限制生效）；既有缓存 ≤4 跨 starts 测试保留。
+- **关闭证据**：正式 Orchestrator 输入形状零 DP；active 约束有界确定；无前缀截断、无概率性假不足。
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **248 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 248 passed |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（239 → 248 单调增长；G2-012 failed-receipt 测试按新验收语义升级为 bound/misbound 两例，属修复而非弱化） |
+| 未 merge / 未 tag / 未进入 G3 / 未改 verdict | 确认 |
