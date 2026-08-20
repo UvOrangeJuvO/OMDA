@@ -2,14 +2,14 @@
   "schema_version": 1,
   "project": "OMDA",
   "release_target": "0.1.0",
-  "active_gate": "G2",
-  "status": "ACCEPTED",
+  "active_gate": "G3",
+  "status": "IN_PROGRESS",
   "executor": "deepseek-v4-flash",
   "reviewer": "gpt-5.6-sol",
-  "base_commit": "731e0498fecdb0a28c84cf57d55c89569895a5bf",
-  "candidate_commit": "4d67c10eee64aac72954abfe5ecb8db12826809e",
-  "approved_commit": "4d67c10eee64aac72954abfe5ecb8db12826809e",
-  "open_review": "reviews/stage-02/REVIEW_VERDICT.md",
+  "base_commit": "f69c540ee8d98741b9a90f2175fdde012ea81c45",
+  "candidate_commit": null,
+  "approved_commit": null,
+  "open_review": "reviews/stage-03/EXECUTOR_REPORT.md",
   "blocking_adr": null,
-  "updated_at": "2026-08-20T19:42:37+0800"
+  "updated_at": "2026-08-20T20:05:00+0800"
 }
