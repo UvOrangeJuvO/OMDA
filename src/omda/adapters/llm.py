@@ -39,6 +39,11 @@ DEFAULT_SYSTEM_PROMPT = (
 MAX_FIELD_LENGTH = 2000
 MAX_GENRES = 10
 MAX_ALBUMS = 30
+# G4-006: aggregate cap on the FINAL serialized packet (run id + all fields).
+MAX_PACKET_BYTES = 48_000
+# Expected cardinality of a real 3x3 plan (IMPLEMENTATION_PLAN / SPEC §2).
+EXPECTED_GENRES = 3
+EXPECTED_ALBUMS = 9
 
 
 class FactPacketError(Exception):
@@ -101,6 +106,8 @@ def bounded_packet(packet: Mapping[str, Any]) -> Mapping[str, Any]:
     run_id = packet.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         raise FactPacketError("fact packet missing run_id")
+    _check_nonempty(run_id, "run_id")
+    _check_length(run_id, "run_id")
     genres = packet.get("genres")
     if not isinstance(genres, (list, tuple)) or len(genres) > MAX_GENRES:
         raise FactPacketError(f"fact packet genres must be a list of <= {MAX_GENRES}")
@@ -115,6 +122,9 @@ def bounded_packet(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         name = genre.get("name")
         if not isinstance(genre_id, str) or not isinstance(name, str):
             raise FactPacketError("genre entry needs string genre_id and name")
+        _check_nonempty(genre_id, "genre.genre_id")
+        _check_nonempty(name, "genre.name")
+        _check_length(genre_id, "genre.genre_id")
         _check_length(name, "genre.name")
         normalized["genres"].append({"genre_id": genre_id, "name": name})
     for album in albums:
@@ -127,6 +137,10 @@ def bounded_packet(packet: Mapping[str, Any]) -> Mapping[str, Any]:
             isinstance(album_id, str) and isinstance(title, str) and isinstance(artist, str)
         ):
             raise FactPacketError("album entry needs string album_id/title/artist")
+        _check_nonempty(album_id, "album.album_id")
+        _check_nonempty(title, "album.title")
+        _check_nonempty(artist, "album.artist")
+        _check_length(album_id, "album.album_id")
         _check_length(title, "album.title")
         _check_length(artist, "album.artist")
         year = album.get("year")
@@ -135,7 +149,16 @@ def bounded_packet(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         normalized["albums"].append(
             {"album_id": album_id, "title": title, "artist": artist, "year": year}
         )
+    # G4-006: the final serialized packet must stay within the aggregate cap —
+    # many in-limit fields together must not create an unbounded provider blast.
+    if len(json.dumps(_plain(normalized), ensure_ascii=False, sort_keys=True)) > MAX_PACKET_BYTES:
+        raise FactPacketError(f"fact packet exceeds {MAX_PACKET_BYTES} serialized bytes")
     return freeze_json(normalized)
+
+
+def _check_nonempty(value: str, field: str) -> None:
+    if not value:
+        raise FactPacketError(f"{field} must be a non-empty string")
 
 
 def _check_length(value: str, field: str) -> None:
@@ -154,11 +177,14 @@ def _plain(value: Any) -> Any:
 
 __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
+    "EXPECTED_ALBUMS",
+    "EXPECTED_GENRES",
     "FactPacketError",
     "LLMAdapter",
     "LLMTransport",
     "MAX_ALBUMS",
     "MAX_FIELD_LENGTH",
     "MAX_GENRES",
+    "MAX_PACKET_BYTES",
     "bounded_packet",
 ]

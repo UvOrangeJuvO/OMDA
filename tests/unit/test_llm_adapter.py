@@ -128,3 +128,98 @@ def test_bounded_packet_normalizes_and_freezes() -> None:
     assert isinstance(bounded["albums"][0], MappingProxyType)  # frozen nested
     with pytest.raises(TypeError):
         bounded["albums"][0]["title"] = "mutate"  # cannot mutate frozen packet
+
+
+# --- G4-006 re-review: the fact packet is bounded across ALL fields -------------
+
+
+def test_bounded_packet_rejects_oversized_run_id() -> None:
+    # Reviewer reproduction: a million-char run_id must be rejected BEFORE the
+    # transport is called (unbounded identifier slots -> provider blast).
+    packet = _packet()
+    packet["run_id"] = "x" * 1_000_000
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet)
+
+
+def test_bounded_packet_rejects_empty_run_id() -> None:
+    packet = _packet()
+    packet["run_id"] = ""
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet)
+
+
+def test_bounded_packet_rejects_oversized_identifiers() -> None:
+    from omda.adapters.llm import MAX_FIELD_LENGTH
+
+    packet = _packet()
+    packet["genres"][0]["genre_id"] = "g" * (MAX_FIELD_LENGTH + 1)
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet)
+
+    packet = _packet()
+    packet["albums"][0]["album_id"] = "a" * (MAX_FIELD_LENGTH + 1)
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet)
+
+
+def test_bounded_packet_rejects_empty_identifiers() -> None:
+    packet = _packet()
+    packet["genres"][0]["genre_id"] = ""
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet)
+
+    packet = _packet()
+    packet["albums"][0]["album_id"] = ""
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet)
+
+
+def test_bounded_packet_rejects_empty_genre_name() -> None:
+    packet = _packet()
+    packet["genres"][0]["name"] = ""
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet)
+
+
+def test_bounded_packet_rejects_empty_album_title_or_artist() -> None:
+    packet = _packet()
+    packet["albums"][0]["title"] = ""
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet)
+
+    packet = _packet()
+    packet["albums"][0]["artist"] = ""
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet)
+
+
+def test_bounded_packet_caps_total_serialized_size() -> None:
+    # Even many in-limit fields must not exceed the aggregate packet bound.
+    from omda.adapters.llm import MAX_PACKET_BYTES
+
+    # Fill many in-limit fields: 10 genres * 1900 + 30 albums * (2000+2000)
+    # stays under the per-field cap but far exceeds the aggregate bound.
+    packet = {
+        "run_id": "r",
+        "genres": [{"genre_id": f"g{i}", "name": "n" * 1900} for i in range(10)],
+        "albums": [
+            {"album_id": f"a{i}", "title": "t" * 2000, "artist": "z" * 2000, "year": 2000}
+            for i in range(30)
+        ],
+    }
+    assert len(json.dumps(packet)) > MAX_PACKET_BYTES  # would exceed the cap
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet)
+
+
+def test_bounded_packet_enforces_real_plan_cardinality() -> None:
+    # A real 3x3 plan: 3 genres, 9 albums; the bound allows that shape but
+    # rejects nonsense cardinality (e.g. zero albums for a real plan is not a
+    # selection — handled by the Orchestrator; here we enforce the cap).
+    from omda.adapters.llm import MAX_GENRES
+
+    packet = _packet()
+    packet["genres"] = [{"genre_id": f"g{i}", "name": f"G{i}"} for i in range(MAX_GENRES + 1)]
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet)
