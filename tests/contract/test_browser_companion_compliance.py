@@ -20,13 +20,14 @@ CORE_DIR = REPO / "src" / "omda" / "core"
 
 FORBIDDEN_IMPORTS = {
     "socket",
-    "urllib",
     "requests",
     "httpx",
     "selenium",
     "playwright",
     "bs4",
 }
+# urllib.parse (URL parsing) is inert; only urllib.request/error open sockets.
+FORBIDDEN_URLLIB_COMPONENTS = {"request", "error"}
 FORBIDDEN_TERMS = (
     "captcha_solver",
     "solve_captcha",
@@ -61,10 +62,29 @@ def _imported_names(tree: ast.AST) -> set[str]:
 
 def test_companion_has_no_network_or_browser_sdk_imports() -> None:
     # The companion extracts from HTML strings only; no live RYM is reachable
-    # from ordinary code, hence not required by ordinary tests.
+    # from ordinary code, hence not required by ordinary tests. urllib.parse is
+    # inert URL parsing; urllib.request/error (socket-opening components) are
+    # forbidden.
     for path in _python_files(COMPANION_DIR):
-        imported = _imported_names(_read_tree(path))
-        assert not (imported & FORBIDDEN_IMPORTS), f"{path}: imports {imported & FORBIDDEN_IMPORTS}"
+        tree = _read_tree(path)
+        imported = _imported_names(tree)
+        assert not (imported & FORBIDDEN_IMPORTS), (
+            f"{path}: imports {imported & FORBIDDEN_IMPORTS}"
+        )
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    parts = alias.name.split(".")
+                    if parts[0] == "urllib" and any(
+                        p in FORBIDDEN_URLLIB_COMPONENTS for p in parts[1:]
+                    ):
+                        raise AssertionError(f"{path}: imports network component {alias.name!r}")
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                parts = node.module.split(".")
+                if parts[0] == "urllib" and any(
+                    p in FORBIDDEN_URLLIB_COMPONENTS for p in parts[1:]
+                ):
+                    raise AssertionError(f"{path}: imports network component {node.module!r}")
 
 
 def test_no_anti_detection_or_album_detail_fanout_terms() -> None:
