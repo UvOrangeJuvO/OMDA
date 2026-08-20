@@ -485,28 +485,17 @@ class RunEngine:
         key = self._idempotency_key(run_id)
         self._append(run_id, DELIVERING, {"idempotency_key": key})
         receipt = self._delivery.deliver(payload, key)
-        if receipt.status != "ok":
-            # A confirmed delivery failure (the adapter explicitly reported a
-            # non-success status) is an ordinary terminal failure.
-            self._append(
-                run_id,
-                FAILED,
-                {
-                    "reason": "delivery reported failure",
-                    "receipt_status": receipt.status,
-                },
-            )
-            return RunOutcome(run_id=run_id, state=FAILED, payload=payload)
+        # G2-012: validate run/key/channel binding FIRST, then interpret status.
+        # A receipt that does not belong to this run/key/channel cannot confirm
+        # anything about the CURRENT operation — even a `failed` status for
+        # another operation is malformed/ambiguous evidence, because the external
+        # call may already have delivered. Such ambiguity enters RECOVERING.
         if not self._receipt_matches(receipt, run_id, key):
-            # G2-012: an OK-status receipt bound to another run/key/channel is
-            # delivery AMBIGUITY, not a confirmed failure — the external call may
-            # already have delivered. Fail closed into RECOVERING (manual review)
-            # with durable anomaly evidence; never commit history, never re-push.
             self._append(
                 run_id,
                 RECOVERING,
                 {
-                    "reason": "ok delivery receipt does not match run/key/channel",
+                    "reason": "delivery receipt does not match run/key/channel",
                     "receipt_run_id": receipt.run_id,
                     "receipt_key": receipt.idempotency_key,
                     "receipt_channel": receipt.channel,
@@ -516,17 +505,32 @@ class RunEngine:
             return RunOutcome(
                 run_id=run_id, state=RECOVERING, plan=plan, payload=payload, receipt=receipt
             )
-        try:
-            self._history.save_delivery_receipt(receipt)  # durable evidence first
-        except InvariantFailureError as exc:
-            # G2-005: a conflicting receipt must fail closed — original evidence
-            # stays intact, never overwritten, and no history is written.
+        if receipt.status != "ok":
+            # Correctly bound AND explicitly failed: a confirmed delivery failure
+            # for the CURRENT operation is an ordinary terminal failure.
             self._append(
                 run_id,
                 FAILED,
-                {"reason": "delivery receipt conflict", "message": str(exc)},
+                {
+                    "reason": "delivery reported failure",
+                    "receipt_status": receipt.status,
+                },
             )
             return RunOutcome(run_id=run_id, state=FAILED, payload=payload)
+        try:
+            self._history.save_delivery_receipt(receipt)  # durable evidence first
+        except InvariantFailureError as exc:
+            # G2-012: a receipt-storage conflict AFTER the external call is
+            # ambiguous (the side effect may have happened) -> RECOVERING, never
+            # an ordinary terminal failure; original evidence stays intact.
+            self._append(
+                run_id,
+                RECOVERING,
+                {"reason": "delivery receipt conflict after external call", "message": str(exc)},
+            )
+            return RunOutcome(
+                run_id=run_id, state=RECOVERING, plan=plan, payload=payload, receipt=receipt
+            )
         self._append(run_id, DELIVERED, plan.digest())
         try:
             self._commit_history(run_id, plan)
@@ -572,11 +576,18 @@ class RunEngine:
         ):
             # G2-009/G2-012: missing, failed OR unbound evidence -> do NOT re-push;
             # fail closed for human review; no official history mutation.
+            # G2-012 idempotency: unchanged evidence never appends another
+            # RECOVERING entry — the durable tail stays bounded under retries.
+            if entries[-1].transition == RECOVERING:
+                return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
             self._append(run_id, RECOVERING, {"reason": "delivery evidence missing or mismatched"})
             return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
         try:
             self._commit_history(run_id, plan)
         except StateCommitFailureError:
+            # Idempotent: unchanged failing evidence does not grow the journal.
+            if entries[-1].transition == RECOVERING:
+                return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
             self._append(run_id, RECOVERING, {"reason": "history commit still failing"})
             return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
         self._append(run_id, COMPLETE)

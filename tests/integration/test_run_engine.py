@@ -327,23 +327,63 @@ def test_missing_receipt_for_delivered_run_fails_closed() -> None:
     assert inner.latest_pick_index() == 0  # history never committed
 
 
-class FailedReceiptDelivery:
+class BoundFailedReceiptDelivery:
+    """A correctly bound, explicitly failed receipt (confirmed current-run failure)."""
+
+    def __init__(self):
+        self.calls = 0
+
     def deliver(self, payload, idempotency_key, target=None):
+        self.calls += 1
+        run_id, _, channel = idempotency_key.partition(":")
         return DeliveryReceipt(
-            run_id="",
+            run_id=run_id,
             idempotency_key=idempotency_key,
+            delivered_at=AT,
+            channel=channel or "markdown",
+            status="failed",
+        )
+
+
+class MisboundFailedReceiptDelivery:
+    """A failed-status receipt bound to ANOTHER operation: malformed/ambiguous."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def deliver(self, payload, idempotency_key, target=None):
+        self.calls += 1
+        return DeliveryReceipt(
+            run_id="other-run",
+            idempotency_key="other-key",
             delivered_at=AT,
             channel="fake",
             status="failed",
         )
 
 
-def test_failed_receipt_run_fails_without_history() -> None:
+def test_bound_failed_receipt_is_ordinary_terminal_failure() -> None:
+    # Correctly bound + explicitly failed: confirmed current-run failure.
     history = InMemoryHistory()
-    outcome = _engine(history, delivery=FailedReceiptDelivery()).run("run-1")
+    delivery = BoundFailedReceiptDelivery()
+    outcome = _engine(history, delivery=delivery).run("run-1")
     assert outcome.state == FAILED
+    assert delivery.calls == 1
     assert history.latest_pick_index() == 0
     assert history.excluded_album_identities() == frozenset()
+
+
+def test_misbound_failed_receipt_enters_recovery() -> None:
+    # A failed receipt bound to ANOTHER operation is malformed/ambiguous
+    # evidence — the external call may have delivered; never terminal FAILED.
+    history = InMemoryHistory()
+    delivery = MisboundFailedReceiptDelivery()
+    outcome = _engine(history, delivery=delivery).run("run-1")
+    assert outcome.state == RECOVERING
+    assert delivery.calls == 1
+    assert history.latest_pick_index() == 0
+    tails = [e.transition for e in history.journal_after("run-1", 0)]
+    assert tails[-1] == RECOVERING
 
 
 def test_conflicting_receipt_fails_closed_without_overwrite() -> None:
@@ -360,8 +400,9 @@ def test_conflicting_receipt_fails_closed_without_overwrite() -> None:
     )
     history.save_delivery_receipt(existing)
 
-    outcome = _engine(history, delivery=FailedReceiptDelivery()).run("run-1")
-    assert outcome.state == FAILED
+    outcome = _engine(history, delivery=MisboundFailedReceiptDelivery()).run("run-1")
+    # The delivery attempt already happened -> ambiguous -> RECOVERING.
+    assert outcome.state == RECOVERING
     # Original success evidence intact; no official history written.
     assert history.find_delivery_receipt("run-1:markdown") == existing
     assert history.latest_pick_index() == 0
@@ -653,7 +694,7 @@ def test_misbound_receipt_never_commits_history(factory, overrides, label) -> No
     # Anomaly is auditable in the journal.
     anomaly = next(e for e in history.journal_after("run-1", 0) if e.transition == "RECOVERING")
     assert anomaly.detail is not None
-    assert "ok delivery receipt does not match" in anomaly.detail["reason"]
+    assert "does not match run/key/channel" in anomaly.detail["reason"]
 
 
 @pytest.mark.parametrize("factory", HISTORY_FACTORIES)
@@ -765,3 +806,63 @@ def test_ambiguous_delivery_records_one_effect_and_never_redelivers(overrides, l
     # History never committed.
     assert history.latest_pick_index() == 0
     assert history.excluded_album_identities() == frozenset()
+
+
+# --- G2-012 re-review: recovery is durably idempotent and bounded ---------------
+
+
+def test_repeated_recovery_of_unchanged_evidence_is_bounded() -> None:
+    # Five identical recovery calls on unchanged evidence must NOT grow the
+    # journal with repeated RECOVERING entries (G2-012 bounded retries).
+    history = InMemoryHistory()
+    delivery = MisboundReceiptDelivery(run_id="another-run")
+    engine = _engine(history, delivery=delivery)
+    first = engine.run("run-1")
+    assert first.state == RECOVERING
+    assert delivery.calls == 1
+
+    for _ in range(5):
+        again = engine.run("run-1")  # same id, same evidence
+        assert again.state == RECOVERING
+        assert delivery.calls == 1  # never a second external call
+
+    tails = [e.transition for e in history.journal_after("run-1", 0)]
+    # DELIVERING + one RECOVERING entry, no growth across retries.
+    assert tails.count(RECOVERING) == 1
+    assert history.latest_pick_index() == 0
+
+
+def test_receipt_conflict_after_external_call_enters_recovery() -> None:
+    # A correctly bound ok receipt that CONFLICTS with pre-existing immutable
+    # evidence (different delivered_at) after one external effect is ambiguous:
+    # the side effect may have happened -> RECOVERING, one delivery call, zero
+    # history, original evidence preserved (G2-012).
+    history = InMemoryHistory()
+    existing = DeliveryReceipt(
+        run_id="prior-run",
+        idempotency_key="run-1:markdown",
+        delivered_at=AT,
+        channel="markdown",
+        status="ok",
+    )
+    history.save_delivery_receipt(existing)
+
+    class ConflictingOkDelivery:
+        calls = 0
+
+        def deliver(self, payload, idempotency_key, target=None):
+            ConflictingOkDelivery.calls += 1
+            run_id, _, channel = idempotency_key.partition(":")
+            return DeliveryReceipt(
+                run_id=run_id,
+                idempotency_key=idempotency_key,
+                delivered_at="2026-08-20T00:00:00+00:00",
+                channel=channel or "markdown",
+                status="ok",
+            )
+
+    outcome = _engine(history, delivery=ConflictingOkDelivery()).run("run-1")
+    assert outcome.state == RECOVERING
+    assert ConflictingOkDelivery.calls == 1
+    assert history.find_delivery_receipt("run-1:markdown") == existing
+    assert history.latest_pick_index() == 0
