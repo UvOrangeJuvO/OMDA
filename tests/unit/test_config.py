@@ -280,3 +280,52 @@ def test_direct_config_valid_round_trip() -> None:
     assert mapping["delivery"]["channel"] == "pushplus"
     # A direct valid Config reproduces exactly through the factory.
     assert load_config(overrides=mapping) == cfg
+
+
+# --- G2-011 re-review 6: exact null and nested-type validation -----------------
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["daily_genre_count", "albums_per_genre", "genre_cooldown_picks", "modern_album_year"],
+    ids=["daily", "albums", "cooldown", "year"],
+)
+def test_direct_config_rejects_none_for_non_nullable_fields(field) -> None:
+    # A direct None for a NON-nullable semantic field must be rejected with a
+    # controlled validation error (not silently dropped by a generic normalise).
+    with pytest.raises(ValueError) as exc:
+        Config(**{field: None})
+    assert "config" in str(exc.value)  # controlled RecordValidationError
+
+
+def test_direct_config_rejects_none_parent_limits_controlled() -> None:
+    with pytest.raises(ValueError) as exc:
+        Config(genre_parent_limits=None)
+    assert "genre_parent_limits" in str(exc.value)  # ValueError, never TypeError
+
+
+def test_direct_config_rejects_dict_delivery_controlled() -> None:
+    # A raw dict in place of DeliveryConfig must fail controlled, not AttributeError.
+    with pytest.raises(ValueError) as exc:
+        Config(delivery={"channel": "markdown"})
+    assert "delivery" in str(exc.value)
+
+
+def test_direct_config_rejects_none_delivery() -> None:
+    with pytest.raises(ValueError):
+        Config(delivery=None)
+
+
+def test_direct_delivery_config_rejects_non_string_env_type() -> None:
+    # Invalid TYPE for pushplus_token_env: controlled ValueError, never regex TypeError.
+    with pytest.raises(ValueError) as exc:
+        DeliveryConfig(pushplus_token_env=123)
+    assert "pushplus_token_env" in str(exc.value)
+
+
+def test_direct_config_valid_unset_optionals_round_trip() -> None:
+    # seed and pushplus_token_env may be omitted/unset; everything else defaults.
+    cfg = Config(seed=None, delivery=DeliveryConfig(pushplus_token_env=None))
+    assert cfg.seed is None
+    assert cfg.delivery.pushplus_token_env is None
+    assert load_config(overrides=config_to_dict(cfg)) == cfg

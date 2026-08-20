@@ -49,18 +49,26 @@ class DeliveryConfig:
     pushplus_token_env: str | None = None
 
     def __post_init__(self) -> None:
-        # G2-011: direct DeliveryConfig(...) must reject values the committed
-        # config schema would reject.
+        # G2-011: validate direct DeliveryConfig(...) values with a CONTROLLED
+        # error (no raw TypeError/AttributeError from regex/attribute access).
+        if not isinstance(self.channel, str):
+            raise ValueError(
+                f"delivery.channel: must be a string, got {type(self.channel).__name__}"
+            )
         if self.channel not in _CHANNELS:
             raise ValueError(
                 f"delivery.channel: must be one of {list(_CHANNELS)}, got {self.channel!r}"
             )
-        if self.pushplus_token_env is not None and not _ENV_PATTERN.fullmatch(
-            self.pushplus_token_env
-        ):
-            raise ValueError(
-                f"delivery.pushplus_token_env: invalid pattern {self.pushplus_token_env!r}"
-            )
+        if self.pushplus_token_env is not None:
+            if not isinstance(self.pushplus_token_env, str):
+                raise ValueError(
+                    "delivery.pushplus_token_env: must be a string, got "
+                    f"{type(self.pushplus_token_env).__name__}"
+                )
+            if not _ENV_PATTERN.fullmatch(self.pushplus_token_env):
+                raise ValueError(
+                    f"delivery.pushplus_token_env: invalid pattern {self.pushplus_token_env!r}"
+                )
 
 
 @dataclass(frozen=True)
@@ -79,14 +87,36 @@ class Config:
 
     def __post_init__(self) -> None:
         # G2-011: ONE complete validation boundary for EVERY construction path
-        # (including direct Config(...)): the exact immutable snapshot rendered
-        # by config_to_dict is validated against the committed config schema.
-        # Invalid fields are rejected HERE with a controlled ValueError, so a run
-        # can never journal PLANNED with an effective configuration that was not
-        # validated. This is the single source of truth — no second partial copy
-        # of schema rules is maintained. The parent map is then frozen so neither
-        # caller mutation nor any later mutation attempt can change it.
-        validate_record(get_schema("config"), _normalise(config_to_dict(self)))
+        # (including direct Config(...)). Only `seed` and `pushplus_token_env`
+        # may be unset (None) — every other field must keep its declared type,
+        # and malformed container/nested types are turned into controlled
+        # ValueError BEFORE any snapshot rendering (no raw TypeError/AttributeError
+        # can leak out of this boundary).
+        if self.delivery is not None and not isinstance(self.delivery, DeliveryConfig):
+            raise ValueError(
+                f"delivery: must be a DeliveryConfig, got {type(self.delivery).__name__}"
+            )
+        if self.genre_parent_limits is not None and not isinstance(
+            self.genre_parent_limits, Mapping
+        ):
+            raise ValueError(
+                "genre_parent_limits: must be a mapping of parent -> integer limit, got "
+                f"{type(self.genre_parent_limits).__name__}"
+            )
+        # Render the exact effective snapshot. None is NOT generically dropped:
+        # only the explicitly optional fields (seed, pushplus_token_env) may be
+        # omitted; a None in any non-nullable field reaches the schema and is
+        # rejected there.
+        snapshot = config_to_dict(self)
+        if snapshot.get("seed") is None:
+            snapshot.pop("seed", None)
+        delivery_snapshot = snapshot.get("delivery")
+        if (
+            isinstance(delivery_snapshot, dict)
+            and delivery_snapshot.get("pushplus_token_env") is None
+        ):
+            delivery_snapshot.pop("pushplus_token_env", None)
+        validate_record(get_schema("config"), snapshot)
         raw = dict(self.genre_parent_limits)
         for parent in raw:
             # The schema validates values but not object keys; empty keys would
@@ -103,18 +133,33 @@ class Config:
 
 
 def config_to_dict(config: Config) -> dict[str, Any]:
-    """Render a Config as the plain mapping used for schema validation."""
+    """Render a Config as the plain mapping used for schema validation.
+
+    Defensive: malformed field types are carried through untouched (so the
+    schema rejects them) instead of raising raw TypeError/AttributeError; only
+    valid containers are expanded.
+    """
+    parent_limits = config.genre_parent_limits
+    if parent_limits is None or not isinstance(parent_limits, Mapping):
+        parent_value: Any = parent_limits  # None/non-mapping -> schema rejects
+    else:
+        parent_value = dict(parent_limits)
+    delivery = config.delivery
+    if delivery is None or not isinstance(delivery, DeliveryConfig):
+        delivery_value: Any = delivery  # None/non-DeliveryConfig -> schema rejects
+    else:
+        delivery_value = {
+            "channel": delivery.channel,
+            "pushplus_token_env": delivery.pushplus_token_env,
+        }
     return {
         "daily_genre_count": config.daily_genre_count,
         "albums_per_genre": config.albums_per_genre,
         "genre_cooldown_picks": config.genre_cooldown_picks,
         "modern_album_year": config.modern_album_year,
         "seed": config.seed,
-        "genre_parent_limits": dict(config.genre_parent_limits),
-        "delivery": {
-            "channel": config.delivery.channel,
-            "pushplus_token_env": config.delivery.pushplus_token_env,
-        },
+        "genre_parent_limits": parent_value,
+        "delivery": delivery_value,
     }
 
 
