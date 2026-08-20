@@ -1,0 +1,8 @@
+# Example critic contribution package (see data/critics/README.md).
+source_id: example-source
+display_name: Example Critic Source
+license: CC0-1.0 (illustrative sample ratings)
+origin_url: https://example.org/critic-ratings
+scrape_date: 2026-08-20
+rating_scale_min: 1
+rating_scale_max: 5
