@@ -136,7 +136,10 @@ def test_pushplus_exhausts_retries_and_returns_failed_receipt() -> None:
     assert len(sleeper.delays) == 1
 
 
-def test_pushplus_network_error_maps_to_failed_receipt() -> None:
+def test_pushplus_network_error_maps_to_ambiguous_not_failed() -> None:
+    # G4-002: a timeout/transport error means the provider MAY have accepted
+    # the request (response lost) — the outcome is AMBIGUOUS, never a
+    # confirmed "failed" (which would terminate the run as FAILED).
     sleeper = RecordingSleeper()
     transport = ScriptedHttp(TimeoutError("down"))
     delivery = PushPlusDelivery(
@@ -148,7 +151,7 @@ def test_pushplus_network_error_maps_to_failed_receipt() -> None:
     receipt = delivery.deliver(
         "payload", "run-1:pushplus", token_provider=lambda: "test-token"
     )
-    assert receipt.status == "failed"
+    assert receipt.status == "ambiguous"
     assert transport.calls == 1
 
 
@@ -224,3 +227,99 @@ def test_same_idempotency_key_does_not_cause_second_push() -> None:
     if stored.status == "ok":  # the caller's idempotency decision
         pass  # recovery commits history directly; deliver() is not re-invoked
     assert transport.calls == 1  # exactly one external push, ever
+
+
+# --- G4-002 re-review: ambiguous PushPlus outcomes are never blindly retried ---
+
+
+class EffectThenTimeout:
+    """Transport that records an external effect and then raises TimeoutError.
+
+    Simulates 'provider accepted the request, response was lost': the first
+    call DID reach the provider, so a retry would cause a SECOND push.
+    """
+
+    def __init__(self):
+        self.effects = 0
+        self.calls = 0
+
+    def post(self, url: str, payload: dict) -> dict:
+        self.calls += 1
+        self.effects += 1  # the external side effect happened
+        raise TimeoutError("response lost after provider accepted")
+
+
+def test_timeout_after_provider_accept_is_ambiguous_not_retried() -> None:
+    # Reviewer reproduction: one deliver() call must NOT produce a second
+    # external push when the first response was lost after acceptance.
+    transport = EffectThenTimeout()
+    sleeper = RecordingSleeper()
+    delivery = PushPlusDelivery(
+        token_env="PUSHPLUS_TOKEN",
+        transport=transport,
+        sleeper=sleeper,
+        max_retries=3,
+    )
+    receipt = delivery.deliver(
+        "payload", "run-1:pushplus", token_provider=lambda: "test-token"
+    )
+    assert transport.calls == 1  # NO automatic retry of an ambiguous send
+    assert transport.effects == 1  # exactly one external effect, ever
+    assert receipt.status == "ambiguous"  # not "failed": outcome is unknown
+    assert len(sleeper.delays) == 0  # no backoff for an ambiguous outcome
+
+
+def test_ambiguous_outcome_enters_recovery_at_run_level() -> None:
+    # An ambiguous receipt must drive the RunEngine into RECOVERING (durable,
+    # human-safe), never FAILED as if the delivery were confirmed dead.
+    from tests.fakes import FakeAlbumSource, FakeGenreSource, FakeLLM, InMemoryHistory
+
+    from omda.config import load_config
+    from omda.orchestrator.run import RECOVERING, RunEngine
+    from omda.ports.domain import AlbumCandidate, GenreRef
+
+    history = InMemoryHistory()
+
+    class AmbiguousDelivery:
+        def deliver(self, payload, idempotency_key, target=None):
+            run_id, _, channel = idempotency_key.partition(":")
+            from omda.ports.domain import DeliveryReceipt
+
+            return DeliveryReceipt(
+                run_id=run_id,
+                idempotency_key=idempotency_key,
+                delivered_at="2026-08-21T00:00:00+00:00",
+                channel=channel or "markdown",
+                status="ambiguous",
+            )
+
+    genres = [
+        GenreRef("ambient", "Ambient", "Electronic"),
+        GenreRef("bebop", "Bebop", "Jazz"),
+        GenreRef("krautrock", "Krautrock", "Rock"),
+        GenreRef("tuareg", "Tuareg Music", "Regional"),
+        GenreRef("idm", "IDM", "Electronic"),
+    ]
+
+    def albums(gid):
+        return [
+            AlbumCandidate(f"{gid}-1", f"{gid} Album 1", "Artist", 2015),
+            AlbumCandidate(f"{gid}-2", f"{gid} Album 2", "Artist", 2000),
+            AlbumCandidate(f"{gid}-3", f"{gid} Album 3", "Artist", 1990),
+            AlbumCandidate(f"{gid}-4", f"{gid} Album 4", "Artist", 2020),
+        ]
+
+    engine = RunEngine(
+        config=load_config(),
+        history=history,
+        genre_source=FakeGenreSource(genres),
+        album_source=FakeAlbumSource({g.genre_id: albums(g.genre_id) for g in genres}),
+        llm=FakeLLM("A concise explanation."),
+        delivery=AmbiguousDelivery(),
+        seed="ambiguous",
+    )
+    outcome = engine.run("run-amb")
+    assert outcome.state == RECOVERING
+    # No official history was committed for an ambiguous delivery.
+    assert history.latest_pick_index() == 0
+    assert history.excluded_album_identities() == frozenset()

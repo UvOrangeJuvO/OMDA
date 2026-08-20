@@ -151,10 +151,19 @@ class PushPlusDelivery:
         for attempt in range(self._max_retries + 1):
             try:
                 response = self._transport.post(self._api_url, body)
-            except Exception:  # network / transport-level failure -> backoff/retry
-                if attempt < self._max_retries:
-                    self._backoff(attempt)
-                continue
+            except Exception:  # G4-002: response lost / timeout / transport error
+                # The provider MAY have accepted the request (the response was
+                # lost), so the outcome is AMBIGUOUS. We must NOT blindly retry
+                # (that would cause a second external push) and must NOT label
+                # it a confirmed failure. The caller journals RECOVERING.
+                return DeliveryReceipt(
+                    run_id=run_id,
+                    idempotency_key=idempotency_key,
+                    delivered_at=self._clock(),
+                    channel=channel,
+                    status="ambiguous",
+                    target=self._api_url,
+                )
             if _is_success_response(response):
                 return DeliveryReceipt(
                     run_id=run_id,
@@ -164,9 +173,12 @@ class PushPlusDelivery:
                     status="ok",
                     target=self._api_url,
                 )
+            # A definite HTTP failure response (provider explicitly rejected)
+            # is a confirmed non-delivery: bounded retry is safe here because
+            # the provider never accepted the first attempt.
             if attempt < self._max_retries:
                 self._backoff(attempt)
-        # Exhausted: confirmed failure -> failed receipt (no raise; journaled).
+        # Exhausted confirmed failures -> failed receipt (no raise; journaled).
         return DeliveryReceipt(
             run_id=run_id,
             idempotency_key=idempotency_key,
