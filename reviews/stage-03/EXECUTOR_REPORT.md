@@ -295,3 +295,33 @@
 ## Executor Conclusion（G3 Re-review 6 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G3 Re-review 7 Repair（2026-08-20）
+
+对应 Reviewer commit：`abf6673b13f4463b964de839559fc3bbfe83bbcf`
+上一 candidate：`e30dd43479fe5821f7498ff29a14b5d07d2e427c`
+本轮修复 commit：`22be44d`（G3-005）
+详细逐项修复记录见 `reviews/stage-03/REPAIR_REPORT.md`。
+
+## Re-review 7 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G3-005 联系 URL 非数字/超范围端口从未被评估 | P2 | `22be44d` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **497 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 497 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（491 → 497 单调增长） |
+| 未 merge / 未 tag / 未进入 G4 / 未改 verdict | 确认 |
+
+## Executor Conclusion（G3 Re-review 7 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）

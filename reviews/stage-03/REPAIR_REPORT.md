@@ -312,3 +312,33 @@ Browser Companion URL 校验使用标准库 `urllib.parse`（惰性 URL 解析�
 | G2 verdict 未改；G2 Core/Orchestrator/Ports/storage/config 零改动 | 确认（`git diff 3b5a2c4` 该目录树 0 文件） |
 | 无 G4 scope creep；无 live RYM 依赖；无反爬绕过 | 确认 |
 | 未 merge / 未 tag / 未进入 G4 | 确认 |
+
+---
+
+# G3 Re-review 7 Repair（2026-08-20）
+
+对应 Reviewer commit：`abf6673b13f4463b964de839559fc3bbfe83bbcf`（`review(g3): require contact port validation`）
+上一 candidate：`e30dd43479fe5821f7498ff29a14b5d07d2e427c`
+本轮修复 commit：`22be44d`（G3-005）
+先加失败测试复现 Reviewer 两个精确反例、再做最小修复；未弱化既有测试。
+
+## G3-005（P2）— 联系 URL 非数字/超范围端口从未被评估 — CLOSED
+
+- **根因**：`_url_has_hostname` 只读 `parsed.hostname`，从未读 `parsed.port`——`urllib.parse` 把端口校验延迟到 `.port` 属性访问；`:notaport`（非数字）与 `:99999`（超出 1–65535）在 hostname 非空时被接受。
+- **修复**（`22be44d`）：在**同一受保护解析区**内 `hostname = parsed.hostname` 后追加 `_ = parsed.port`——`ValueError`（畸形 IPv6、非数字端口、超范围端口）→ `False`；`None`/默认端口（无端口、`:443`、`:80`）与合法自定义端口（`:8080`）正常放行。
+- **测试**：verdict 两个精确反例（`:notaport`、`:99999`）拒绝；合法端口四类（无端口、默认 https `:443`、自定义 `:8080`、默认 http `:80`）接受；全部既有 UA 合法/非法案例保留通过。
+- **关闭证据**：Reviewer 反例全部关闭——联系 URL 必须是可用 HTTP(S) 端点；端口校验在配置边界受控执行。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **497 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 497 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（491 → 497 单调增长） |
+| tracked 敏感文件 | 无 |
+| G2 verdict 未改；G2 Core/Orchestrator/Ports/storage/config 零改动 | 确认（`git diff abf6673` 该目录树 0 文件） |
+| 无 G4 scope creep；无 live RYM 依赖；无反爬绕过 | 确认 |
+| 未 merge / 未 tag / 未进入 G4 | 确认 |
