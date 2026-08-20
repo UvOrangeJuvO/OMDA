@@ -1,12 +1,22 @@
 {
   "schema_name": "config",
-  "schema_version": 1,
+  "schema_version": 2,
   "fields": {
     "daily_genre_count": {"type": "integer", "required": false, "min": 1, "max": 10},
     "albums_per_genre": {"type": "integer", "required": false, "min": 1, "max": 10},
     "genre_cooldown_picks": {"type": "integer", "required": false, "min": 1, "max": 365},
     "modern_album_year": {"type": "integer", "required": false, "min": 1900, "max": 2100},
     "seed": {"type": "string", "required": false, "min_length": 1},
+    "genre_parent_limits": {
+      "type": "object",
+      "required": false,
+      "additional_fields": {
+        "type": "integer",
+        "min": 1,
+        "max": 10
+      },
+      "fields": {}
+    },
     "delivery": {
       "type": "object",
       "required": false,

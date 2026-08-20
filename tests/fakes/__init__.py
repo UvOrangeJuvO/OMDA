@@ -121,6 +121,12 @@ class InMemoryHistory:
     def find_delivery_receipt(self, idempotency_key: str) -> DeliveryReceipt | None:
         return self._receipts.get(idempotency_key)
 
+    # -- test-only helpers (not part of HistoryPort) ---------------------------
+
+    def record_pick_directly(self, pick_index: int, genre_id: str) -> None:
+        """Seed a historical committed pick (test fixture convenience)."""
+        self._picks.append(GenrePickRecord(pick_index, genre_id))
+
 
 class FakeGenreSource:
     def __init__(self, genres: list[GenreRef] | None = None) -> None:
@@ -163,10 +169,16 @@ class FakeLLM:
 
 
 class FakeDelivery:
-    """Records deliveries; same idempotency key never delivers twice."""
+    """Records deliveries; same idempotency key never delivers twice.
+
+    ``calls`` counts deliver() invocations; ``delivered`` maps only the keys that
+    produced a real external side effect — recovery must never increment
+    ``delivered`` for an already-delivered run (G2-005).
+    """
 
     def __init__(self) -> None:
         self.delivered: dict[str, str] = {}
+        self.calls = 0
 
     def deliver(
         self,
@@ -174,22 +186,26 @@ class FakeDelivery:
         idempotency_key: str,
         target: str | None = None,
     ) -> DeliveryReceipt:
+        self.calls += 1
+        # The idempotency key is "{run_id}:{channel}"; the receipt must bind to
+        # the same run and channel (G2-009) so the Orchestrator can trust it.
+        run_id, _, channel = idempotency_key.partition(":")
         if idempotency_key in self.delivered:
             # Replay of the same key: no second external delivery (SPEC §4).
             return DeliveryReceipt(
-                run_id="",
+                run_id=run_id,
                 idempotency_key=idempotency_key,
                 delivered_at="2026-08-19T00:00:00+00:00",
-                channel="fake",
+                channel=channel or "markdown",
                 status="ok",
                 target=target,
             )
         self.delivered[idempotency_key] = payload
         return DeliveryReceipt(
-            run_id="",
+            run_id=run_id,
             idempotency_key=idempotency_key,
             delivered_at="2026-08-19T00:00:00+00:00",
-            channel="fake",
+            channel=channel or "markdown",
             status="ok",
             target=target,
         )

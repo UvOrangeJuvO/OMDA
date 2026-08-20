@@ -39,12 +39,18 @@ def thaw_json(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class GenreRef:
-    """A genre as seen by the selection layer."""
+    """A genre as seen by the selection layer.
+
+    ``parents`` carries the source taxonomy's parent memberships (G2-010) so the
+    Orchestrator can enforce configured parent diversity as a set constraint —
+    never a popularity signal.
+    """
 
     genre_id: str
     name: str
     family: str
     eligible: bool = True
+    parents: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
