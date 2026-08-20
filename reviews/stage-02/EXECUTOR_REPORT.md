@@ -281,3 +281,34 @@
 ## Executor Conclusion（G2 Re-review 5 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G2 Re-review 6 Repair（2026-08-20）
+
+对应 Reviewer commit：`169e3eedd69710053e055c7a1b069c85c0dc0a85`（`review(g2): require complete config and solver bounds`）
+上一 candidate：`0594b2774a3a5f07f15086dc1474af9d8ef5bce6`
+本轮修复 commits：`d733fa7`（G2-011）、`af7e51b`（G2-013）
+详细逐项修复记录见 `reviews/stage-02/REPAIR_REPORT.md`。
+
+## Re-review 6 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G2-011 直接 Config 校验仅覆盖 genre_parent_limits | P1 | `d733fa7` | CLOSED |
+| G2-013 真激活约束资源边界未定义 | P1 | `af7e51b` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **274 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 274 passed |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（261 → 274 单调增长） |
+| 未 merge / 未 tag / 未 push / 未进入 G3 / 未改 verdict | 确认 |
+
+## Executor Conclusion（G2 Re-review 6 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）

@@ -184,3 +184,39 @@
 | `git diff --check` | clean |
 | 既有测试未删除/弱化/skip | 确认（248 → 261 单调增长） |
 | 未 merge / 未 tag / 未进入 G3 / 未改 verdict | 确认 |
+
+---
+
+# G2 Re-review 6 Repair（2026-08-20）
+
+对应 Reviewer commit：`169e3eedd69710053e055c7a1b069c85c0dc0a85`（`review(g2): require complete config and solver bounds`）
+上一 candidate：`0594b2774a3a5f07f15086dc1474af9d8ef5bce6`
+本轮修复 commits：`d733fa7`（G2-011）、`af7e51b`（G2-013）
+
+## G2-011 — 直接 Config 校验仅覆盖 genre_parent_limits — CLOSED
+
+- **根因**：`__post_init__` 只校验 parent 值；`Config(daily_genre_count="three")`、`albums_per_genre=0`、`genre_cooldown_picks=False`、`modern_album_year="new"`、`seed=""`、`delivery=DeliveryConfig(channel="bogus")` 均构造成功 → PLANNED 后未捕获 TypeError。
+- **修复**（`d733fa7`）：**单一完整校验边界**——`Config.__post_init__` 对 `_normalise(config_to_dict(self))` 执行 committed config schema 校验（RecordValidationError，含全部字段 type/range/enum/pattern/bool-as-int），非法配置无法构造，PLANNED 不可能写入；`DeliveryConfig.__post_init__` 直接构造时同样拒绝非法 channel（enum）与 pushplus_token_env（pattern）；保留 parent key 非空检查（schema 不表达键约束）。不再维护第二份部分校验副本。
+- **测试**：8 个字段反例（string/bool/0/11/"new"/1800/空 seed）+ DeliveryConfig 非法 channel + 合法直接 Config round-trip == `load_config(overrides=config_to_dict(...))`。
+- **关闭证据**：所有直接 Config/DeliveryConfig 非法字段在 fingerprint 与 PLANNED 前受控拒绝，与 `data/schemas/config.schema.json` 单一一致。
+
+## G2-013 — 真激活约束资源边界未定义 — CLOSED
+
+- **根因**：无文档化支持上限；原 "active upper bound" 测试用 60+1 Regional limit 1（规范化正确丢弃 → 未测 constrained path）；200+2 Regional 构建 ~3.41s 无预算/边界。
+- **修复**（`af7e51b`）：文档化并强制有界——
+  1. `MAX_CONSTRAINED_ELIGIBLE_GENRES = 400`：真激活约束池超过上限 → 显式 `InsufficientCandidatesError`（无偏、有界，非截断非 OOM）；
+  2. `MAX_CONSTRAINED_MEMO_STATES = 100_000`：`_counts_cached` 构建中 memo 超限 → 显式失败；
+  3. 模块 docstring 文档化支持边界与有界失败策略。
+- **测试**：`test_active_constraint_upper_bound_stays_bounded` 改为 **2 个 Regional**（min(2,3)=2 > limit 1 → 真激活，断言 `_counts_cached.currsize` 增加）；`test_active_constraint_over_supported_bound_fails_explicitly`（>400 → 显式失败）；`test_active_constraint_maximum_pool_is_bounded_and_correct`（200+2 Regional：进入 constrained path、构建 <15s 预算、多 seed 采样 family 限制正确、确定性重放）。
+- **关闭证据**：真激活约束（≥2 受限成员）进入 constrained path 且有明确时间/状态/缓存边界；超限显式有界失败；无前缀截断、无碰运气重试、无 popularity 过滤、无词法偏置。
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **274 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 274 passed |
+| `ruff check src tests` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（261 → 274 单调增长；原 active 上限测试升级为真激活断言，属修复而非弱化） |
+| 未 merge / 未 tag / 未 push / 未进入 G3 / 未改 verdict | 确认 |
