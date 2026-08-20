@@ -257,19 +257,26 @@ def test_orchestrated_first_run_large_pool_has_no_dp_construction() -> None:
 
 
 def test_active_constraint_upper_bound_stays_bounded() -> None:
-    # When a family/parent limit genuinely applies, the constrained path builds
-    # a compact memo and sampling stays exact, bounded and deterministic.
+    # TWO Regional members with default limit one: the constraint is PROVABLY
+    # active (min(members=2, count=3) = 2 > limit 1), so this test must really
+    # enter the constrained path and stay bounded/correct/deterministic.
     from omda.core import genre as g
 
     g._counts_cached.cache_clear()
-    pool = _big_pool(size=60) + [GenreRef("r1", "R1", "Regional")]
+    before = g._counts_cached.cache_info().currsize
+    pool = _big_pool(size=60) + [
+        GenreRef("r1", "R1", "Regional"),
+        GenreRef("r2", "R2", "Regional"),
+    ]
     sampler, total = build_unbiased_sampler(pool, 3)  # Regional limit active
     assert total > 0
-    chosen = sampler(make_rng("active-constraint"))
-    assert len(chosen) == 3
-    assert sum(1 for x in chosen if x.family == "Regional") <= 1
-    # Repeated draws from the same memo are deterministic and fast.
-    assert sampler(make_rng("active-constraint")) == chosen
+    assert g._counts_cached.cache_info().currsize > before  # really constrained
+    for seed in ["active-constraint", "active-2", "active-3"]:
+        chosen = sampler(make_rng(seed))
+        assert len(chosen) == 3
+        assert sum(1 for x in chosen if x.family == "Regional") <= 1
+    # Repeated draws from the same memo are deterministic.
+    assert sampler(make_rng("active-constraint")) == sampler(make_rng("active-constraint"))
 
 
 # --- G2-013/G2-010 re-review 4: explicit parent map + stale history ------------
@@ -353,3 +360,48 @@ def test_limits_that_cannot_bind_are_dropped() -> None:
         parents_by_genre={"g1": ("electronic",), "g2": ("electronic",)},
     )
     assert g._counts_cached.cache_info().currsize == before
+
+
+# --- G2-013 re-review 5: genuine active-constraint resource bound ---------------
+
+
+def test_active_constraint_over_supported_bound_fails_explicitly() -> None:
+    # Pools beyond the documented supported constrained-pool maximum fail with
+    # an explicit, bounded domain error — never OOM, never silent truncation.
+    from omda.core.genre import MAX_CONSTRAINED_ELIGIBLE_GENRES
+    from omda.ports.errors import InsufficientCandidatesError
+
+    pool = _big_pool(size=MAX_CONSTRAINED_ELIGIBLE_GENRES + 50) + [
+        GenreRef("r1", "R1", "Regional"),
+        GenreRef("r2", "R2", "Regional"),
+    ]
+    with pytest.raises(InsufficientCandidatesError):
+        build_unbiased_sampler(pool, 3)
+
+
+def test_active_constraint_maximum_pool_is_bounded_and_correct() -> None:
+    # The documented realistic maximum (200 ordinary + 2 Regional, default
+    # limit 1 PROVABLY active) constructs within a stable performance budget,
+    # keeps the memo bounded, and samples exact/unbiased/deterministic.
+    import time
+
+    from omda.core import genre as g
+
+    g._counts_cached.cache_clear()
+    before = g._counts_cached.cache_info().currsize
+    pool = _big_pool(size=200) + [
+        GenreRef("r1", "R1", "Regional"),
+        GenreRef("r2", "R2", "Regional"),
+    ]
+    started = time.monotonic()
+    sampler, total = build_unbiased_sampler(pool, 3)
+    elapsed = time.monotonic() - started
+    assert total > 0
+    assert g._counts_cached.cache_info().currsize > before  # really constrained
+    assert elapsed < 15.0, f"constrained construction took {elapsed:.2f}s"
+
+    for seed in [f"max-{i}" for i in range(5)]:
+        chosen = sampler(make_rng(seed))
+        assert len(chosen) == 3
+        assert sum(1 for x in chosen if x.family == "Regional") <= 1
+    assert sampler(make_rng("max-0")) == sampler(make_rng("max-0"))

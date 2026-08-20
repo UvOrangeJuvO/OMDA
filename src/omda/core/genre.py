@@ -15,6 +15,14 @@ valid ordered solution space using count-based dynamic programming + unranking â
 never a lexicographically early prefix. ``enumerate_valid_selections`` remains
 for small-space inspection, but the planner itself never truncates the solution
 space, so a Genre's identifier can never become a probability weight.
+
+G2-013 supported constrained-path bounds: with genuinely active cooldown/family/
+parent constraints, the exact solver is bounded by
+``MAX_CONSTRAINED_ELIGIBLE_GENRES`` eligible Genres and
+``MAX_CONSTRAINED_MEMO_STATES`` memo states. Pools beyond those limits fail with
+an explicit ``InsufficientCandidatesError`` (unbiased, bounded) instead of OOM or
+silent truncation. Semantically inactive inputs always take the rng.sample fast
+path with zero DP construction.
 """
 
 from __future__ import annotations
@@ -30,6 +38,10 @@ from omda.ports.domain import GenreRef
 from omda.ports.errors import InsufficientCandidatesError
 
 MAX_ENUMERATED_SOLUTIONS = 100_000
+
+# G2-013: documented supported bounds for the genuinely constrained path.
+MAX_CONSTRAINED_ELIGIBLE_GENRES = 400
+MAX_CONSTRAINED_MEMO_STATES = 100_000
 
 
 def sort_genres(genres: Sequence[GenreRef]) -> list[GenreRef]:
@@ -219,6 +231,13 @@ def _counts_cached(
                 tuple(sorted(new_fam.items())),
                 tuple(sorted(new_par.items())),
             )
+        # G2-013: bound the retained state space; beyond the documented maximum
+        # the exact solver fails explicitly instead of growing without limit.
+        if len(memo) >= MAX_CONSTRAINED_MEMO_STATES:
+            raise InsufficientCandidatesError(
+                "constrained-pool solver memo exceeds the supported bound "
+                f"({MAX_CONSTRAINED_MEMO_STATES} states)"
+            )
         memo[key] = total
         return total
 
@@ -323,6 +342,14 @@ def build_unbiased_sampler(
             return [by_id[gid] for gid in rng.sample(candidate_ids, count)]
 
         return fast_sampler, total
+
+    # G2-013: a genuinely constrained pool beyond the documented supported
+    # maximum fails explicitly (unbiased, bounded) instead of exhausting memory.
+    if len(eligible) > MAX_CONSTRAINED_ELIGIBLE_GENRES:
+        raise InsufficientCandidatesError(
+            "constrained-pool eligible genres exceed the supported bound "
+            f"({MAX_CONSTRAINED_ELIGIBLE_GENRES}); reduce scope or split the run"
+        )
 
     key = (
         tuple(sorted((g.genre_id, g.family) for g in eligible)),
@@ -446,6 +473,8 @@ def select_daily_genres(
 
 
 __all__ = [
+    "MAX_CONSTRAINED_ELIGIBLE_GENRES",
+    "MAX_CONSTRAINED_MEMO_STATES",
     "MAX_ENUMERATED_SOLUTIONS",
     "build_unbiased_sampler",
     "enumerate_valid_selections",
