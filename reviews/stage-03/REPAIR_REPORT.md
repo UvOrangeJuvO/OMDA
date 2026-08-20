@@ -198,3 +198,50 @@ Browser Companion URL 校验使用标准库 `urllib.parse`（惰性 URL 解析�
 | G2 verdict 未改；G2 Core/Orchestrator/Ports/storage/config 零改动 | 确认（`git diff 033e599` 该目录树 0 文件） |
 | 无 G4 scope creep；无 live RYM 依赖；无反爬绕过 | 确认 |
 | 未 merge / 未 tag / 未进入 G4 | 确认 |
+
+---
+
+# G3 Re-review 4 Repair（2026-08-20）
+
+对应 Reviewer commit：`068b49df50ed5d7cf3bfbd931b43507a21b7ee8e`（`review(g3): require cache policy invalidation`）
+上一 candidate：`98b13b892787caf0dd52e511a2e8913d53e380e9`
+本轮修复 commit：`fd925e8`（G3-003/G3-005/G3-008）
+每项先加失败测试复现 Reviewer 反例、再做最小修复；未弱化既有测试。
+
+## G3-003（P1）— 旧 v1 canonical 缓存绕过新阈值 — CLOSED
+
+- **根因**：上一轮收紧匹配语义（`MIN_EXACT_SCORE=90`）但 `QUERY_VERSION` 仍是 `"v1"`——旧规则（任何正 score）写入的 `v1` 缓存条目在 fresh hit 时被直接 `_apply` 为 exact，绕过新策略；缓存条目不含 score，无法重估。
+- **修复**（`fd925e8`）：
+  1. `QUERY_VERSION` 升级 `"v1" → "v2"`（模块常量文档化：匹配/接受语义改变时须升版本，旧命名空间条目永不作为当前 exact serve）；
+  2. `enrich()` fresh-hit 增加**双保险**：`cached.query_version == QUERY_VERSION` 才直接 serve，同 key 但旧 query_version 的条目（如持久化 backend 注入）也视为 stale-by-policy，强制当前查询；
+  3. 既有测试的"当前 key"硬编码 `v1|...` 改为动态 `f"{QUERY_VERSION}|..."`；反例测试保留 `v1|` 前缀。
+- **测试**：`test_old_version_cache_entry_does_not_bypass_threshold`（seed 旧 `v1` 弱规则条目 → 不 serve，发起当前查询 `mb-current`，`transport.calls == 1`）；`test_old_version_cache_entry_is_never_served_directly`（当前查询失败时旧条目也绝不成为 exact，raise typed error）；`test_same_key_old_query_version_entry_is_not_served`（同 key 旧版本字段防御）。
+- **关闭证据**：Reviewer 反例关闭——pre-threshold 条目在任何情况下都不再作为 exact 身份被 serve。
+
+## G3-005（P2）— "contactable UA"只验证非空 — CLOSED
+
+- **根因**：构造只要求显式字符串，`"x"`/`"omda/0.1"`/`"not contactable"` 均通过；只有 None 被拒绝，未证明联系要求。
+- **修复**（`fd925e8`）：新增 `_is_contactable_user_agent()`——校验文档化的 `Application/version (contact URL or email)` 形状：应用名 token 打头 + 括号内 `(+https://`/`(+http://`/`(+mailto:`/`(mailto:` 联系 URL，或尖括号 `<user@example.org>` email 联系；其余一律受控 `ValueError`（无匿名/非联系串可静默替换）。
+- **测试**：`"x"`/`"omda/0.1"`/`"not contactable"`/`"anonymous/1.0"`/`"app/1.0 (no contact)"` 拒绝；URL/mailto/尖括号 email 三种合法形状接受。
+- **关闭证据**：运行时组合无法再传入非联系 UA；匿名标识符在 adapter 边界被拒。
+
+## G3-008（P2）— README 列号/存储值/Core 归一化说明矛盾 — CLOSED
+
+- **根因**：指南说"keep the fifth cell empty"（空白分母是**第四**列 `rating_max`，第五列 `review_url` 有值）；又说 album-b "stored as 3/5 (not 3.0)"——而 adapter 实际存 `CriticRatingRow(rating=3.0, rating_max=5.0)`，Core 组合时才算 `3.0/5.0`。
+- **修复**（`fd925e8`）：`data/critics/README.md` 措辞修正——第四 `rating_max` 列可留空；adapter 填充并存 `rating_max=5.0` + 原始 `rating=3.0`；Core 在组合时归一化为 `3/5 = 0.6`；示例行保持有效 CSV。
+- **测试**：既有 README smoke test 扩展——`compose_rating(adapter.ratings_for(album-b), {"my-source": 1.0}) == 3.0/5.0`（从 README 提取代码块构造真实包、经 adapter 解析、再经 Core 组合的端到端断言）。
+- **关闭证据**：README 契约与实际存储/归一化行为完全一致；示例对贡献者可执行。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **474 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 474 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（463 → 474 单调增长；既有 cache key 硬编码改为动态版本，属修复同步非弱化） |
+| tracked 敏感文件 | 无 |
+| G2 verdict 未改；G2 Core/Orchestrator/Ports/storage/config 零改动 | 确认（`git diff 068b49d` 该目录树 0 文件） |
+| 无 G4 scope creep；无 live RYM 依赖；无反爬绕过 | 确认 |
+| 未 merge / 未 tag / 未进入 G4 | 确认 |

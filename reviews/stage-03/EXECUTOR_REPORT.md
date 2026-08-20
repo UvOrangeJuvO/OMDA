@@ -203,3 +203,35 @@
 ## Executor Conclusion（G3 Re-review 3 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G3 Re-review 4 Repair（2026-08-20）
+
+对应 Reviewer commit：`068b49df50ed5d7cf3bfbd931b43507a21b7ee8e`
+上一 candidate：`98b13b892787caf0dd52e511a2e8913d53e380e9`
+本轮修复 commit：`fd925e8`（G3-003/G3-005/G3-008）
+详细逐项修复记录见 `reviews/stage-03/REPAIR_REPORT.md`。
+
+## Re-review 4 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G3-003 旧 v1 canonical 缓存绕过新阈值 | P1 | `fd925e8` | CLOSED |
+| G3-005 contactable UA 只验证非空 | P2 | `fd925e8` | CLOSED |
+| G3-008 README 列号/存储值/Core 归一化说明矛盾 | P2 | `fd925e8` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **474 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 474 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（463 → 474 单调增长；cache key 硬编码动态化属修复同步） |
+| 未 merge / 未 tag / 未进入 G4 / 未改 verdict | 确认 |
+
+## Executor Conclusion（G3 Re-review 4 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
