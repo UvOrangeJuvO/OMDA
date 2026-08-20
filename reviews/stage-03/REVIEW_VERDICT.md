@@ -1004,3 +1004,67 @@ out-of-range ports.
 Only the two malformed-port cases remain in G3-005; all P0/P1 and every other G3 finding are
 closed. Candidate `e30dd43479fe5821f7498ff29a14b5d07d2e427c` must not be merged,
 `gate-g3-accepted` must not be created, and G4 must not begin.
+
+---
+
+## Re-review 7 — candidate `d201c164c0a5c90be739ae200a95c4619326abaf`
+
+### Reviewed object
+
+- Original G3 base: `f69c540ee8d98741b9a90f2175fdde012ea81c45`
+- Previous candidate: `e30dd43479fe5821f7498ff29a14b5d07d2e427c`
+- Previous Reviewer commit: `abf6673b13f4463b964de839559fc3bbfe83bbcf`
+- Accepted candidate: `d201c164c0a5c90be739ae200a95c4619326abaf`
+- Repair commit: `22be44d`; review-package commit: `d201c16`
+- Branch observed: `exec/g3-adapters`
+- Exact merge base: `f69c540ee8d98741b9a90f2175fdde012ea81c45`
+- Worktree at review start: clean
+
+### Final finding status
+
+The last G3-005 P2 is closed. `_url_has_hostname()` now evaluates `parsed.port` in the guarded
+parse block, rejecting both a nonnumeric port and a port outside 1–65535 while preserving normal,
+default and valid custom ports. Independent reproduction confirmed:
+
+- `omda/1 (+https://example.org:notaport)` -> rejected;
+- `omda/1 (+https://example.org:99999)` -> rejected;
+- no explicit port, `:443` and `:8080` -> accepted.
+
+All G3-001 through G3-009 findings are **CLOSED**. There are no open P0, P1, P2 or P3 findings
+against this exact candidate.
+
+### Final acceptance matrix
+
+| G3 criterion | Result |
+|---|---|
+| Reviewable Genre/critic datasets, schema validation and provenance | **PASS** |
+| Critic scale inheritance, normalization and text-only contribution flow | **PASS** |
+| MusicBrainz provider response parsing and conservative canonical identity | **PASS** |
+| Cache policy versioning, freshness, provenance, capacity and stale failure | **PASS** |
+| Bounded timeout/retry/backoff/pacing and contactable User-Agent boundary | **PASS** |
+| Browser Companion canonical URL, page/run budget, lifecycle and cache boundary | **PASS** |
+| Human-intervention path; no anti-bot, mass crawl or Album Detail fan-out | **PASS** |
+| Fixture-only ordinary CI, Core isolation and no G4 scope creep | **PASS** |
+| Open findings | **NONE** |
+
+### Checks performed and limitations
+
+- Reviewed the full original `base..candidate` range and the focused
+  `abf6673..d201c16` repair increment; exact ancestry and commit chain verified.
+- Independent complete suite: **497 passed in 3.61s**.
+- Ruff over `src`, `tests`, `browser_companion`: **passed**.
+- Full-range `git diff --check`: **passed**.
+- Tracked cookie/profile/database/`.env` filename scan: **no matches**.
+- Independently exercised invalid and valid contact ports with local fakes.
+- No live MusicBrainz/RYM request, production-code edit by Reviewer, merge, tag, push or G4 work
+  was performed.
+
+### Verdict
+
+**ACCEPTED**
+
+This acceptance applies only to exact candidate
+`d201c164c0a5c90be739ae200a95c4619326abaf`. Any subsequent change to the accepted tree requires
+review of the affected scope. The candidate is now eligible for the separate controlled G3 merge
+procedure; this verdict does not itself merge, tag or authorize starting G4 before that procedure
+records the accepted state.
