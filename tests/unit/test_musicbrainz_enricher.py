@@ -27,7 +27,7 @@ AT1 = "2026-08-21T00:00:00+00:00"
 LATER = "2026-09-01T00:00:00+00:00"  # > 7 days after AT0
 
 # G3-005: a contactable test User-Agent (MusicBrainz policy requires one).
-TEST_USER_AGENT = "omda-test/0.1 (+https://example.invalid/omda-test; testing only)"
+TEST_USER_AGENT = "omda-test/0.1 (+https://example.invalid/omda-test)"
 
 
 def _candidate(album_id="a-1", title="Blue Train", artist="John Coltrane", year=1958):
@@ -840,7 +840,7 @@ def test_non_contactable_user_agent_rejected(bad) -> None:
 @pytest.mark.parametrize(
     "good",
     [
-        "omda-test/0.1 (+https://example.invalid/omda-test; testing only)",
+        "omda-test/0.1 (+https://example.invalid/omda-test)",
         "omda/1.0 (+mailto:omda@example.org)",
         "omda/1.0 <maintainer@example.org>",
     ],
@@ -856,3 +856,48 @@ def test_contactable_user_agent_accepted(good) -> None:
     )
     enricher.enrich(_candidate())
     assert enricher is not None
+
+
+# --- G3-005 re-review 4: complete User-Agent shape validation ------------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "x(+https://)",  # no app/version separation, empty URL
+        "x <@>",  # empty local part and domain
+        "anonymous/1.0 (+https://)",  # anonymous app token + empty contact
+        "app (+mailto:)",  # no version, empty mailbox
+        "app/1 (+https://example.org)\r\nX-Test: injected",  # trailing CRLF/header
+        "app/1 (+https://example.org)\nX-Test: injected",  # trailing LF/header
+        "app/1\r\nX-Test: injected (+https://example.org)",  # CRLF before contact
+        "app/1 (+https://)",  # http(s) URL without hostname
+        "app/1 (+mailto:@example.org)",  # mailto empty local part
+        "app/1 <@example.org>",  # angle-email empty local part
+        "app/1 <user@>",  # angle-email empty domain
+    ],
+    ids=[
+        "no-app-version-empty-url",
+        "empty-angle-email",
+        "anonymous-empty-contact",
+        "no-version-empty-mailto",
+        "trailing-crlf",
+        "trailing-lf",
+        "crlf-before-contact",
+        "https-no-host",
+        "mailto-empty-local",
+        "angle-empty-local",
+        "angle-empty-domain",
+    ],
+)
+def test_incomplete_or_unsafe_user_agent_rejected(bad) -> None:
+    # G3-005: the WHOLE UA value must be validated — control characters/CRLF,
+    # missing application/version, empty contacts and "anonymous" app tokens
+    # are rejected at the configuration boundary.
+    with pytest.raises(ValueError):
+        MusicBrainzEnricher(
+            transport=ScriptedTransport([]),
+            clock=FixedClock(AT0),
+            sleeper=RecordingSleeper(),
+            user_agent=bad,
+        )

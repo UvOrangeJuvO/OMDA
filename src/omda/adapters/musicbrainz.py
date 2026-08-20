@@ -19,11 +19,13 @@ rather than guessing.
 from __future__ import annotations
 
 import json
+import re
 import time as _time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol
+from urllib.parse import urlparse
 
 from omda.core.album import normalized_text
 from omda.ports.domain import AlbumCandidate, AlbumIdentity
@@ -463,28 +465,61 @@ class MusicBrainzEnricher:
         )
 
 
-def _is_contactable_user_agent(value) -> bool:
-    """True when ``value`` matches the MusicBrainz UA shape.
+_UA_APP_VERSION = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)/(\d[\w.+-]*)$")
+_UA_CONTACT_URL = re.compile(r"^\([+]?(https?://\S+)\)$")
+_UA_CONTACT_MAILTO = re.compile(r"^\([+]?mailto:([^@\s)]+)@([^@\s)]+)\)$")
+_UA_CONTACT_ANGLE = re.compile(r"^<([^@\s>]+)@([^@\s>]+)>$")
+_UA_CTRL = re.compile(r"[\x00-\x1f\x7f]")
+_UA_ANON_APPS = frozenset({"anonymous", "anon", "bot", "app"})
 
-    MusicBrainz requires ``Application/version (contact URL or email)``: an
-    app/version token followed by a parenthesized contact URL/email (or an
-    angle-bracketed email). Anything else — bare tokens, "anonymous/1.0",
-    "(no contact)" — is rejected at construction so a non-contact string can
-    never be silently substituted for a contactable identity.
+
+def _is_contactable_user_agent(value) -> bool:
+    """True when ``value`` matches the complete MusicBrainz UA shape.
+
+    MusicBrainz requires ``Application/version (contact URL or email)``. The
+    ENTIRE value is validated:
+
+    - no ASCII control characters anywhere (CR/LF injection is rejected);
+    - a real application token ``name/version`` (``anonymous`` and friends are
+      not accepted as the application identity);
+    - exactly one contact field, one of:
+      ``(+https://host/...)`` / ``(+http://host/...)`` with a NON-EMPTY
+      hostname, ``(+mailto:user@host)`` / ``(mailto:user@host)`` or
+      ``<user@host>`` with non-empty local and domain parts;
+    - no trailing content after the contact field.
     """
     if not isinstance(value, str) or not value.strip():
         return False
     stripped = value.strip()
-    # Requires an application name/version token before the contact.
-    if not stripped[0].isalnum():
+    if _UA_CTRL.search(stripped):
+        return False  # control characters / CRLF injection
+    parts = stripped.split(" ", 1)
+    if len(parts) != 2:
+        return False  # must be "app/version contact"
+    app_version, contact = parts
+    match = _UA_APP_VERSION.fullmatch(app_version)
+    if match is None:
+        return False  # requires an application token and a /version
+    app_token = match.group(1).lower()
+    if app_token in _UA_ANON_APPS:
+        return False  # "anonymous" etc. are not a real application identity
+    # Contact field: URL (with host) or email (non-empty local/domain).
+    url_match = _UA_CONTACT_URL.fullmatch(contact)
+    if url_match is not None:
+        return _url_has_hostname(url_match.group(1))
+    if _UA_CONTACT_MAILTO.fullmatch(contact) is not None:
+        return True  # non-empty local/domain enforced by the pattern
+    # Angle-bracketed email contact (non-empty local/domain enforced).
+    return _UA_CONTACT_ANGLE.fullmatch(contact) is not None
+
+
+def _url_has_hostname(url: str) -> bool:
+    """True when an http(s) contact URL carries a non-empty hostname."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
         return False
-    # Parenthesized contact: (+https://...), (+mailto:...), (mailto:...)
-    if "(+https://" in stripped or "(+http://" in stripped:
-        return True
-    if "(+mailto:" in stripped or "(mailto:" in stripped:
-        return True
-    # Angle-bracketed email contact: <user@example.org>
-    return "<" in stripped and ">" in stripped and "@" in stripped
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
 def _parse_score(value) -> float | None:
