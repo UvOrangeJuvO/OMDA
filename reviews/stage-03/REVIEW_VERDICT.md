@@ -609,3 +609,152 @@ G3-007 repair introduces a directly reproducible active-run budget bypass, also 
 G3-008 and G3-009 are focused P2 corrections to include in the same repair. Candidate
 `e8baf77787d552b086489f78850e71e1e363f0be` must not be merged,
 `gate-g3-accepted` must not be created, and G4 must not begin.
+
+---
+
+## Re-review 3 — candidate `98b13b892787caf0dd52e511a2e8913d53e380e9`
+
+### Re-review identity and checks
+
+- Original G3 base: `f69c540ee8d98741b9a90f2175fdde012ea81c45`
+- Previous repair candidate: `e8baf77787d552b086489f78850e71e1e363f0be`
+- Previous Reviewer commit: `033e599468ff8677b262d1714c67a6a7bcc6eacb`
+- New repair candidate: `98b13b892787caf0dd52e511a2e8913d53e380e9`
+- Repair commit: `ce67bd3`; review-package commit: `98b13b8`
+- Candidate branch observed: `exec/g3-adapters`
+- Merge base of original base and new candidate: exact original base
+  `f69c540ee8d98741b9a90f2175fdde012ea81c45`
+- Worktree at review start: clean
+- Independent full suite: **463 passed in 5.08s**
+- Ruff over `src`, `tests`, `browser_companion`: **passed**
+- `git diff --check` over original base to new candidate: **passed**
+- Tracked cookie/profile/database/`.env` filename scan: **no matches**
+- Scope audit: no G4 implementation, merge, tag, live RYM dependency, anti-bot code or accepted
+  G2 contract change observed
+
+The repair correctly parses provider-shaped MusicBrainz string scores, applies a named 90-point
+threshold, rejects non-finite confidence, makes page/run/cache counts integer typed, rejects the
+reported URL normalization bypasses, fails closed at run-ledger capacity and removes the stale
+fallback documentation error. One canonical-identity P1 remains: the stricter matching semantics
+reuse the old `v1` cache namespace, so a canonical ID accepted by the previous weak rule bypasses
+the new score policy on a fresh cache hit.
+
+### Finding status
+
+| Finding | Re-review status | Evidence |
+|---|---|---|
+| G3-001 Genre eligibility/provenance | **CLOSED** | No regression. |
+| G3-002 critic scale consistency | **CLOSED** | No runtime regression. |
+| G3-003 canonical exactness | **PARTIAL / OPEN (P1)** | Live lookup is corrected, but pre-threshold `v1` cache entries are still accepted as current exact identities. |
+| G3-004 stale evidence / Port parity | **CLOSED** | No regression; only the accepted Port exists and stale refresh fails observably. |
+| G3-005 external-access bounds | **PASS WITH P2 UA VALIDATION GAP** | Reported numeric and URL bypasses are closed; explicit UA is required, but “contactable” is not actually validated. |
+| G3-006 bounded immutable caches | **CLOSED** | Capacity type, FIFO and snapshot behavior pass. |
+| G3-007 run-budget ledger lifecycle | **CLOSED** | Active ledgers are never evicted; new runs fail closed at capacity and explicit finish releases state. |
+| G3-008 critic documentation parity | **PARTIAL / OPEN (P2)** | CSV now parses, but the prose still contradicts both its own example and runtime storage. |
+| G3-009 stale-cache module documentation | **CLOSED** | Module contract now matches fail-closed implementation. |
+
+### [P1] G3-003 remains open — the strengthened identity rule did not invalidate weaker `v1` cache entries
+
+- Location: `src/omda/adapters/musicbrainz.py:49-56`, `:93-109`, `:202-218`,
+  `:239-251`, `:370-383`, `:434-448`
+- Evidence:
+  - The previous candidate accepted any positive numeric score as sufficient for `exact`. The new
+    candidate correctly requires `MIN_EXACT_SCORE = 90.0`, but `QUERY_VERSION` remains `"v1"`.
+  - The cache key begins with `QUERY_VERSION`, and a fresh hit is passed directly to `_apply()`;
+    cached entries do not retain the score needed to re-evaluate the new threshold.
+  - The cache is expressly designed to be overridable by a persistent backend, and each entry
+    carries query-version provenance. Keeping the same namespace after a destructive identity
+    acceptance change defeats that versioning boundary.
+- Independent reproduction:
+  1. Construct the current query key for `Blue Train / John Coltrane / 1958`.
+  2. Seed a fresh `v1` `EnrichmentEntry` with canonical ID `pre-threshold-id`, emulating an entry
+     produced by the prior positive-score rule.
+  3. Call the repaired enricher. It returns `pre-threshold-id` with
+     `identity_confidence="exact"` and makes **zero** transport calls.
+- Impact: an identity that would fail the new 90-point rule can survive the repair and become a
+  permanent exclusion key. The provider parser and threshold tests all pass because none exercise
+  cache migration across the policy change.
+- Violated contract: MP canonical identity and Implementation Plan I-4/T2.4 prohibit ambiguous
+  permanent exclusion; R-004 is P1. G3 T3.3 explicitly requires versioned, provenance-carrying
+  cache behavior, and the G3-003 repair must apply to cached as well as newly fetched evidence.
+- Required acceptance:
+  - advance the MusicBrainz query/cache policy version (for example `v2`) whenever matching or
+    destructive-identity acceptance semantics change;
+  - add a regression test that seeds an old-version, previously acceptable canonical entry and
+    proves the current policy does not serve it as `exact` and instead performs/requires a current
+    lookup;
+  - retain all corrected provider-string, threshold, finiteness and year/title/artist tests.
+
+### [P2] G3-005 — “contactable User-Agent” is asserted but only non-emptiness is enforced
+
+- Location: `src/omda/adapters/musicbrainz.py:43-47`, `:167-172`;
+  `tests/unit/test_musicbrainz_enricher.py:29`, `:237-251`
+- Evidence: requiring an explicit value correctly removes the unsafe placeholder default, but
+  values such as `"x"`, `"omda/0.1"` and `"not contactable"` all construct successfully. The only
+  negative regression supplies `None`; it does not prove the documented contact requirement.
+- Impact: runtime composition can satisfy the constructor while still sending an upstream-policy-
+  noncompliant anonymous identifier. The safe default is now fail-closed, so this is no longer the
+  earlier P1 default-path defect.
+- Required acceptance: either validate a documented `Application/version (contact URL or email)`
+  shape at the adapter boundary, or model/document a provider-neutral validated configuration
+  boundary that cannot silently substitute a non-contact string. Add app-only/nonsense rejection
+  and URL/email acceptance tests.
+
+MusicBrainz requires enough User-Agent information to contact maintainers:
+[MusicBrainz API rate limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting).
+
+### [P2] G3-008 remains partially open — the now-parseable example still describes the wrong cells and storage behavior
+
+- Location: `data/critics/README.md:61-74`;
+  `src/omda/adapters/datasets.py:281-345`; `src/omda/core/rating.py:22-25`;
+  `tests/unit/test_dataset_adapters.py:746-776`
+- Evidence:
+  - The guide says to keep the “fifth cell” empty, but the blank denominator is the **fourth** cell
+    and the example's fifth `review_url` cell is populated.
+  - It says album-b “is stored as `3/5` (not `3.0`)”. The adapter and its new test do the opposite:
+    they store `CriticRatingRow(rating=3.0, rating_max=5.0)`; Recommendation Core later computes
+    `3.0 / 5.0` during composition.
+- Impact: the CSV itself works, but contributors and future adapter authors are given a false
+  representation contract.
+- Required acceptance: state that the fourth `rating_max` cell is blank, the adapter fills and
+  stores `rating_max=5.0` alongside raw `rating=3.0`, and Core normalizes that pair to `3/5`.
+  Extend the existing README test through `compose_rating()` or assert the corrected wording.
+
+### Re-review 3 acceptance matrix
+
+| G3 criterion | Result |
+|---|---|
+| Genre eligibility and package provenance | **PASS** |
+| Critic numeric runtime normalization | **PASS** |
+| Critic contribution documentation accuracy | **FAIL (P2) — G3-008** |
+| New MusicBrainz response parsing and confidence threshold | **PASS** |
+| Canonical identity safety across cache-policy versions | **FAIL (P1) — G3-003** |
+| Stale-cache fail-closed behavior and Port parity | **PASS** |
+| Bounded Browser Companion access and active-run lifecycle | **PASS** |
+| Cache capacity and immutable snapshots | **PASS** |
+| Explicit MusicBrainz identification | **PARTIAL (P2) — G3-005** |
+| Browser Companion human-intervention/no-circumvention boundary | **PASS** |
+| Ordinary fixture-only CI and Core isolation | **PASS** |
+| G3 scope / no G4 implementation | **PASS** |
+| Open P0/P1 findings | **ONE P1** |
+
+### Re-review 3 checks and limitations
+
+- Reviewed the full original `base..new candidate` diff and the
+  `033e599..98b13b8` repair increment; verified exact ancestry and commit chain.
+- Re-ran all 463 tests and Ruff using the WorkBuddy Python environment.
+- Reproduced old-policy fresh-cache reuse and explicit but non-contact User-Agent acceptance with
+  local fakes; no live MusicBrainz or RYM requests were made.
+- Rechecked the repaired score, count, URL, ledger, cache and README regression tests and found no
+  weakening beyond the disclosed replacement of the incorrect FIFO-reset expectation.
+- Did not modify production code, merge, tag, push or enter G4.
+
+### Re-review 3 verdict
+
+**CHANGES_REQUESTED**
+
+G3-006, G3-007 and G3-009 are closed, and the direct network path for G3-003/G3-005 is materially
+repaired. G3-003 remains one blocking P1 because the unchanged `v1` cache namespace bypasses the
+new destructive-identity threshold. G3-005 and G3-008 have focused P2 corrections to include in
+the same repair. Candidate `98b13b892787caf0dd52e511a2e8913d53e380e9` must not be merged,
+`gate-g3-accepted` must not be created, and G4 must not begin.
