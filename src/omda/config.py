@@ -57,14 +57,32 @@ class Config:
     delivery: DeliveryConfig = field(default_factory=DeliveryConfig)
 
     def __post_init__(self) -> None:
-        # G2-011: normalize and freeze the parent map on EVERY construction path.
-        # MappingProxyType wraps a defensive copy, so neither caller mutation of
-        # the original dict nor any mutation attempt on the exposed mapping can
-        # change the effective constraints after engine construction.
+        # G2-011: normalize, validate and freeze the parent map on EVERY
+        # construction path (including direct Config(...)). Invalid values are
+        # rejected HERE with a controlled ValueError — never stored, so a run can
+        # never journal PLANNED with an effective configuration that was not
+        # validated. MappingProxyType wraps a defensive copy, so neither caller
+        # mutation of the original dict nor any mutation attempt on the exposed
+        # mapping can change the effective constraints.
+        raw = dict(self.genre_parent_limits)
+        for parent, limit in raw.items():
+            if not isinstance(parent, str) or not parent:
+                raise ValueError(
+                    f"genre_parent_limits: parent key {parent!r} must be a non-empty string"
+                )
+            if isinstance(limit, bool) or not isinstance(limit, int):
+                raise ValueError(
+                    f"genre_parent_limits.{parent}: must be an integer, got "
+                    f"{type(limit).__name__}"
+                )
+            if limit < 1 or limit > 10:
+                raise ValueError(
+                    f"genre_parent_limits.{parent}: must be within 1..10, got {limit}"
+                )
         object.__setattr__(
             self,
             "genre_parent_limits",
-            MappingProxyType(dict(self.genre_parent_limits)),
+            MappingProxyType(raw),
         )
 
 

@@ -184,3 +184,35 @@ def test_direct_config_runengine_fingerprint_matches_selection_rules() -> None:
     )
     assert cfg.genre_parent_limits["electronic"] == 1  # snapshot frozen
     assert engine._config_version == _config_fingerprint(cfg)
+
+
+# --- G2-011 re-review 4: direct Config invalid values are rejected ------------
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        "one",        # string
+        True,         # bool is not an integer
+        1.5,          # float
+        0,            # zero would permanently starve a parent
+        -1,           # negative
+        11,           # above the documented safe range (max 10)
+    ],
+    ids=["string", "bool", "float", "zero", "negative", "out-of-range"],
+)
+def test_direct_config_rejects_invalid_parent_values(bad_value) -> None:
+    # Direct Config(...) must reject invalid parent limits with a CONTROLLED
+    # ValueError (not an uncaught built-in later in a run), with a precise path.
+    with pytest.raises(ValueError) as exc:
+        Config(genre_parent_limits={"electronic": bad_value})
+    assert "genre_parent_limits" in str(exc.value)
+
+
+def test_invalid_direct_config_never_reaches_planned() -> None:
+    # An engine built from an invalid direct Config must fail BEFORE any run
+    # journal is written (no PLANNED entry, no uncaught TypeError).
+
+    with pytest.raises(ValueError):
+        Config(genre_parent_limits={"electronic": "one"})
+    # The invalid value cannot construct a Config at all, so no engine exists.
