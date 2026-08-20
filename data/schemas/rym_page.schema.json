@@ -1,0 +1,31 @@
+{
+  "schema_name": "rym_page",
+  "schema_version": 1,
+  "fields": {
+    "page_url": {"type": "string", "required": true, "pattern": "^https?://"},
+    "status": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "ok",
+        "login_required",
+        "captcha_challenge",
+        "rate_limited",
+        "session_invalid",
+        "unknown_page"
+      ]
+    },
+    "title": {"type": "string", "required": true},
+    "genre_id": {"type": "string", "required": false, "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "genre_name": {"type": "string", "required": false, "min_length": 1},
+    "extracted_at": {"type": "string", "required": true, "format": "iso8601-datetime"},
+    "provenance": {
+      "type": "object",
+      "required": true,
+      "fields": {
+        "source": {"type": "string", "required": true, "min_length": 1},
+        "page_url": {"type": "string", "required": true, "pattern": "^https?://"}
+      }
+    }
+  }
+}
