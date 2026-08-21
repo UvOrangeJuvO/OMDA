@@ -111,6 +111,11 @@ def test_all_ports_define_minimal_method_sets() -> None:
         "commit_history",
         "save_delivery_receipt",
         "find_delivery_receipt",
+        # ADR-0001 v2: atomic delivery claim / CAS finalize / resolution.
+        "begin_delivery_operation",
+        "finalize_delivery_attempt",
+        "record_delivery_resolution",
+        "find_delivery_operation",
     }
 
 

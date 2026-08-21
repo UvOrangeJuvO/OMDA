@@ -11,8 +11,19 @@ Semantics must match the SQLite adapter exactly — especially all-or-nothing
 from __future__ import annotations
 
 from omda.ports.domain import (
+    OP_AMBIGUOUS,
+    OP_CONFIRMED_FAILED,
+    OP_IN_FLIGHT_OR_MAY_HAVE_SENT,
+    OP_RESOLVED_DELIVERED,
+    OP_RESOLVED_NOT_DELIVERED,
+    OP_SUCCEEDED,
+    RESOLUTION_CONFIRMED_DELIVERED,
+    RESOLUTION_CONFIRMED_NOT_DELIVERED,
     AlbumCandidate,
     AlbumIdentity,
+    DeliveryAttempt,
+    DeliveryOperation,
+    DeliveryOperationSnapshot,
     DeliveryReceipt,
     GenrePickRecord,
     GenreRef,
@@ -30,6 +41,9 @@ class InMemoryHistory:
         self._picks: list[GenrePickRecord] = []
         self._albums: dict[str, AlbumIdentity] = {}
         self._receipts: dict[str, DeliveryReceipt] = {}
+        self._operations: dict[str, DeliveryOperation] = {}
+        self._attempts: list[DeliveryAttempt] = []
+        self._resolutions: list[dict] = []
 
     def append_journal(
         self,
@@ -120,6 +134,145 @@ class InMemoryHistory:
 
     def find_delivery_receipt(self, idempotency_key: str) -> DeliveryReceipt | None:
         return self._receipts.get(idempotency_key)
+
+    # -- delivery operations (ADR-0001 v2; semantics mirror SqliteHistory) -----
+
+    def begin_delivery_operation(
+        self,
+        *,
+        run_id: str,
+        idempotency_key: str,
+        channel: str,
+        payload_digest: str,
+    ) -> DeliveryOperationSnapshot:
+        existing = self._operations.get(idempotency_key)
+        if existing is not None:
+            return DeliveryOperationSnapshot(created=False, operation=existing)
+        operation = DeliveryOperation(
+            idempotency_key=idempotency_key,
+            run_id=run_id,
+            channel=channel,
+            payload_digest=payload_digest,
+            state=OP_IN_FLIGHT_OR_MAY_HAVE_SENT,
+            version=1,
+            created_at="2026-08-21T00:00:00Z",
+        )
+        self._operations[idempotency_key] = operation
+        self.append_journal(
+            run_id,
+            "DELIVERING",
+            operation.created_at,
+            {"idempotency_key": idempotency_key},
+        )
+        return DeliveryOperationSnapshot(created=True, operation=operation)
+
+    def finalize_delivery_attempt(
+        self,
+        *,
+        operation_key: str,
+        expected_version: int,
+        outcome: str,
+        evidence: str,
+        attempted_at: str,
+    ) -> DeliveryOperation:
+        op = self._operations.get(operation_key)
+        if op is None:
+            raise InvariantFailureError(f"no delivery operation for key {operation_key!r}")
+        if op.version != expected_version:
+            raise InvariantFailureError(
+                f"delivery operation version mismatch for {operation_key!r}"
+            )
+        if operation_key in self._receipts:
+            raise InvariantFailureError(
+                f"delivery receipt already exists for key {operation_key!r}"
+            )
+        state = {
+            "ok": OP_SUCCEEDED,
+            "failed": OP_CONFIRMED_FAILED,
+            "ambiguous": OP_AMBIGUOUS,
+        }[outcome]
+        seq = sum(1 for a in self._attempts if a.operation_key == operation_key) + 1
+        self._attempts.append(
+            DeliveryAttempt(
+                attempt_id=f"{operation_key}#{seq}",
+                operation_key=operation_key,
+                outcome=outcome,
+                evidence=evidence,
+                attempted_at=attempted_at,
+            )
+        )
+        self._receipts[operation_key] = DeliveryReceipt(
+            run_id=op.run_id,
+            idempotency_key=operation_key,
+            delivered_at=attempted_at,
+            channel=op.channel,
+            status=outcome,
+            target=evidence,
+        )
+        updated = DeliveryOperation(
+            idempotency_key=op.idempotency_key,
+            run_id=op.run_id,
+            channel=op.channel,
+            payload_digest=op.payload_digest,
+            state=state,
+            version=op.version + 1,
+            created_at=op.created_at,
+        )
+        self._operations[operation_key] = updated
+        return updated
+
+    def record_delivery_resolution(
+        self,
+        *,
+        operation_key: str,
+        run_id: str,
+        idempotency_key: str,
+        attempt_id: str | None,
+        outcome: str,
+        actor: str,
+        reason: str,
+        decided_at: str,
+    ) -> DeliveryOperation:
+        self._resolutions.append(
+            {
+                "operation_key": operation_key,
+                "run_id": run_id,
+                "idempotency_key": idempotency_key,
+                "attempt_id": attempt_id,
+                "outcome": outcome,
+                "actor": actor,
+                "reason": reason,
+                "decided_at": decided_at,
+            }
+        )
+        op = self._operations.get(operation_key)
+        if op is None:
+            raise InvariantFailureError(f"no delivery operation for key {operation_key!r}")
+        new_state = {
+            RESOLUTION_CONFIRMED_DELIVERED: OP_RESOLVED_DELIVERED,
+            RESOLUTION_CONFIRMED_NOT_DELIVERED: OP_RESOLVED_NOT_DELIVERED,
+        }.get(outcome)
+        if new_state is None:  # STILL_UNKNOWN: record appended, state stays blocked
+            return op
+        if op.state not in (OP_IN_FLIGHT_OR_MAY_HAVE_SENT, OP_AMBIGUOUS):
+            raise InvariantFailureError(
+                f"resolution cannot advance operation {operation_key!r} "
+                "from its current state (evidence immutable)"
+            )
+        updated = DeliveryOperation(
+            idempotency_key=op.idempotency_key,
+            run_id=op.run_id,
+            channel=op.channel,
+            payload_digest=op.payload_digest,
+            state=new_state,
+            version=op.version + 1,
+            created_at=op.created_at,
+        )
+        self._operations[operation_key] = updated
+        return updated
+
+    def find_delivery_operation(self, idempotency_key: str) -> DeliveryOperation | None:
+        return self._operations.get(idempotency_key)
 
     # -- test-only helpers (not part of HistoryPort) ---------------------------
 

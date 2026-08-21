@@ -1,0 +1,11 @@
+{
+  "schema_name": "delivery_attempt",
+  "schema_version": 2,
+  "fields": {
+    "attempt_id": {"type": "string", "required": true, "min_length": 1},
+    "operation_key": {"type": "string", "required": true, "min_length": 1},
+    "outcome": {"type": "string", "required": true, "enum": ["ok", "failed", "ambiguous"]},
+    "evidence": {"type": "string", "required": true, "min_length": 1},
+    "attempted_at": {"type": "string", "required": true, "format": "iso8601-datetime"}
+  }
+}

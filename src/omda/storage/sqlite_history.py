@@ -24,7 +24,18 @@ import sqlite3
 from pathlib import Path
 
 from omda.ports.domain import (
+    OP_AMBIGUOUS,
+    OP_CONFIRMED_FAILED,
+    OP_IN_FLIGHT_OR_MAY_HAVE_SENT,
+    OP_RESOLVED_DELIVERED,
+    OP_RESOLVED_NOT_DELIVERED,
+    OP_SUCCEEDED,
+    RESOLUTION_CONFIRMED_DELIVERED,
+    RESOLUTION_CONFIRMED_NOT_DELIVERED,
+    RESOLUTION_STILL_UNKNOWN,
     AlbumIdentity,
+    DeliveryOperation,
+    DeliveryOperationSnapshot,
     DeliveryReceipt,
     GenrePickRecord,
     JournalEntry,
@@ -36,7 +47,13 @@ from omda.ports.errors import (
     StateCommitFailureError,
 )
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
+
+
+def _utc_now() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 _MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -79,6 +96,60 @@ _MIGRATIONS: dict[int, list[str]] = {
         """,
         "CREATE INDEX IF NOT EXISTS idx_journal_run ON run_journal (run_id)",
         "CREATE INDEX IF NOT EXISTS idx_pick_genre ON genre_pick_history (genre_id)",
+    ],
+    # ADR-0001 v2 (G4-002): durable per-key delivery operations, append-only
+    # attempt/resolution ledgers. v1 tables are untouched (rows stay valid).
+    2: [
+        """
+        CREATE TABLE IF NOT EXISTS delivery_operation (
+            operation_key   TEXT PRIMARY KEY,
+            run_id          TEXT NOT NULL,
+            channel         TEXT NOT NULL
+                CHECK (channel IN ('markdown', 'pushplus')),
+            payload_digest  TEXT NOT NULL,
+            state           TEXT NOT NULL CHECK (state IN (
+                'IN_FLIGHT_OR_MAY_HAVE_SENT', 'SUCCEEDED',
+                'CONFIRMED_FAILED', 'AMBIGUOUS',
+                'RESOLVED_DELIVERED', 'RESOLVED_NOT_DELIVERED')),
+            version         INTEGER NOT NULL DEFAULT 1,
+            created_at      TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS delivery_attempt (
+            attempt_id      TEXT PRIMARY KEY,
+            operation_key   TEXT NOT NULL
+                REFERENCES delivery_operation(operation_key),
+            outcome         TEXT NOT NULL
+                CHECK (outcome IN ('ok', 'failed', 'ambiguous')),
+            evidence        TEXT NOT NULL,
+            attempted_at    TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_attempt_op
+            ON delivery_attempt (operation_key)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS delivery_resolution (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation_key   TEXT NOT NULL
+                REFERENCES delivery_operation(operation_key),
+            run_id          TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            attempt_id      TEXT,
+            outcome         TEXT NOT NULL CHECK (outcome IN (
+                'CONFIRMED_DELIVERED', 'CONFIRMED_NOT_DELIVERED',
+                'STILL_UNKNOWN')),
+            actor           TEXT NOT NULL,
+            reason          TEXT NOT NULL,
+            decided_at      TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_resolution_op
+            ON delivery_resolution (operation_key)
+        """,
     ],
 }
 
@@ -396,6 +467,251 @@ class SqliteHistory:
             channel=row["channel"],
             status=row["status"],
             target=row["target"],
+        )
+
+    # -- delivery operations (ADR-0001 v2: atomic claim / CAS / resolution) ----
+
+    def begin_delivery_operation(
+        self,
+        *,
+        run_id: str,
+        idempotency_key: str,
+        channel: str,
+        payload_digest: str,
+    ) -> DeliveryOperationSnapshot:
+        try:
+            with self._conn as conn:
+                cursor = conn.execute(
+                    "INSERT INTO delivery_operation "
+                    "(operation_key, run_id, channel, payload_digest, state, version, "
+                    " created_at) "
+                    "VALUES (?, ?, ?, ?, ?, 1, ?) "
+                    "ON CONFLICT DO NOTHING",
+                    (
+                        idempotency_key,
+                        run_id,
+                        channel,
+                        payload_digest,
+                        OP_IN_FLIGHT_OR_MAY_HAVE_SENT,
+                        _utc_now(),
+                    ),
+                )
+                created = cursor.rowcount == 1
+                if created:
+                    conn.execute(
+                        "INSERT INTO run_journal (run_id, transition, at, detail) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            run_id,
+                            "DELIVERING",
+                            _utc_now(),
+                            json.dumps({"idempotency_key": idempotency_key}),
+                        ),
+                    )
+                row = conn.execute(
+                    "SELECT operation_key, run_id, channel, payload_digest, state, "
+                    "       version, created_at "
+                    "FROM delivery_operation WHERE operation_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise StateCommitFailureError(
+                f"begin_delivery_operation failed for key {idempotency_key!r}",
+                detail={"idempotency_key": idempotency_key},
+            ) from exc
+        return DeliveryOperationSnapshot(
+            created=created,
+            operation=self._row_to_operation(row),
+        )
+
+    def finalize_delivery_attempt(
+        self,
+        *,
+        operation_key: str,
+        expected_version: int,
+        outcome: str,
+        evidence: str,
+        attempted_at: str,
+    ) -> DeliveryOperation:
+        state = {
+            "ok": OP_SUCCEEDED,
+            "failed": OP_CONFIRMED_FAILED,
+            "ambiguous": OP_AMBIGUOUS,
+        }.get(outcome)
+        if state is None:
+            raise InvariantFailureError(f"invalid attempt outcome {outcome!r}")
+        try:
+            with self._conn as conn:
+                op_row = conn.execute(
+                    "SELECT run_id, channel, payload_digest, state, version "
+                    "FROM delivery_operation WHERE operation_key = ?",
+                    (operation_key,),
+                ).fetchone()
+                if op_row is None:
+                    raise InvariantFailureError(
+                        f"no delivery operation for key {operation_key!r}"
+                    )
+                if int(op_row["version"]) != expected_version:
+                    raise InvariantFailureError(
+                        f"delivery operation version mismatch for {operation_key!r}: "
+                        f"expected {expected_version}, stored {op_row['version']}"
+                    )
+                # The attempt is append-only and immutable (ADR-0001 v2 §5).
+                seq = conn.execute(
+                    "SELECT COUNT(*) AS n FROM delivery_attempt "
+                    "WHERE operation_key = ?",
+                    (operation_key,),
+                ).fetchone()["n"]
+                attempt_id = f"{operation_key}#{int(seq) + 1}"
+                conn.execute(
+                    "INSERT INTO delivery_attempt "
+                    "(attempt_id, operation_key, outcome, evidence, attempted_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (attempt_id, operation_key, outcome, evidence, attempted_at),
+                )
+                # Immutable receipt (G1-002): the key must not already have one.
+                if conn.execute(
+                    "SELECT 1 FROM delivery_receipt WHERE idempotency_key = ?",
+                    (operation_key,),
+                ).fetchone():
+                    raise InvariantFailureError(
+                        f"delivery receipt already exists for key {operation_key!r}; "
+                        "evidence is immutable (G1-002)"
+                    )
+                conn.execute(
+                    "INSERT INTO delivery_receipt "
+                    "(idempotency_key, run_id, delivered_at, channel, status, target) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        operation_key,
+                        op_row["run_id"],
+                        attempted_at,
+                        op_row["channel"],
+                        outcome,
+                        evidence,
+                    ),
+                )
+                cursor = conn.execute(
+                    "UPDATE delivery_operation SET state = ?, version = version + 1 "
+                    "WHERE operation_key = ? AND version = ?",
+                    (state, operation_key, expected_version),
+                )
+                if cursor.rowcount != 1:
+                    raise InvariantFailureError(
+                        f"delivery operation CAS failed for key {operation_key!r}"
+                    )
+                updated = conn.execute(
+                    "SELECT operation_key, run_id, channel, payload_digest, state, "
+                    "       version, created_at "
+                    "FROM delivery_operation WHERE operation_key = ?",
+                    (operation_key,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise StateCommitFailureError(
+                f"finalize_delivery_attempt failed for key {operation_key!r}",
+                detail={"operation_key": operation_key},
+            ) from exc
+        return self._row_to_operation(updated)
+
+    def record_delivery_resolution(
+        self,
+        *,
+        operation_key: str,
+        run_id: str,
+        idempotency_key: str,
+        attempt_id: str | None,
+        outcome: str,
+        actor: str,
+        reason: str,
+        decided_at: str,
+    ) -> DeliveryOperation:
+        if outcome not in {
+            RESOLUTION_CONFIRMED_DELIVERED,
+            RESOLUTION_CONFIRMED_NOT_DELIVERED,
+            RESOLUTION_STILL_UNKNOWN,
+        }:
+            raise InvariantFailureError(f"invalid resolution outcome {outcome!r}")
+        try:
+            with self._conn as conn:
+                conn.execute(
+                    "INSERT INTO delivery_resolution "
+                    "(operation_key, run_id, idempotency_key, attempt_id, outcome, "
+                    " actor, reason, decided_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        operation_key,
+                        run_id,
+                        idempotency_key,
+                        attempt_id,
+                        outcome,
+                        actor,
+                        reason,
+                        decided_at,
+                    ),
+                )
+                new_state = {
+                    RESOLUTION_CONFIRMED_DELIVERED: OP_RESOLVED_DELIVERED,
+                    RESOLUTION_CONFIRMED_NOT_DELIVERED: OP_RESOLVED_NOT_DELIVERED,
+                }.get(outcome)
+                if new_state is not None:
+                    # §15-4: only advance from in-flight/ambiguous; never
+                    # silently rewrite SUCCEEDED/CONFIRMED_FAILED.
+                    cursor = conn.execute(
+                        "UPDATE delivery_operation SET state = ?, version = version + 1 "
+                        "WHERE operation_key = ? AND state IN (?, ?)",
+                        (
+                            new_state,
+                            operation_key,
+                            OP_IN_FLIGHT_OR_MAY_HAVE_SENT,
+                            OP_AMBIGUOUS,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise InvariantFailureError(
+                            f"resolution cannot advance operation {operation_key!r} "
+                            "from its current state (evidence immutable)"
+                        )
+                row = conn.execute(
+                    "SELECT operation_key, run_id, channel, payload_digest, state, "
+                    "       version, created_at "
+                    "FROM delivery_operation WHERE operation_key = ?",
+                    (operation_key,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise StateCommitFailureError(
+                f"record_delivery_resolution failed for key {operation_key!r}",
+                detail={"operation_key": operation_key},
+            ) from exc
+        return self._row_to_operation(row)
+
+    def find_delivery_operation(self, idempotency_key: str) -> DeliveryOperation | None:
+        try:
+            with self._conn as conn:
+                row = conn.execute(
+                    "SELECT operation_key, run_id, channel, payload_digest, state, "
+                    "       version, created_at "
+                    "FROM delivery_operation WHERE operation_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise SourceUnavailableError(
+                f"find_delivery_operation failed for key {idempotency_key!r}",
+                detail={"idempotency_key": idempotency_key},
+            ) from exc
+        if row is None:
+            return None
+        return self._row_to_operation(row)
+
+    @staticmethod
+    def _row_to_operation(row: sqlite3.Row) -> DeliveryOperation:
+        return DeliveryOperation(
+            idempotency_key=row["operation_key"],
+            run_id=row["run_id"],
+            channel=row["channel"],
+            payload_digest=row["payload_digest"],
+            state=row["state"],
+            version=int(row["version"]),
+            created_at=row["created_at"],
         )
 
     # -- introspection (tests/ops only, not part of the Port) ------------------

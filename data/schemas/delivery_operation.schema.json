@@ -1,0 +1,24 @@
+{
+  "schema_name": "delivery_operation",
+  "schema_version": 2,
+  "fields": {
+    "idempotency_key": {"type": "string", "required": true, "min_length": 1},
+    "run_id": {"type": "string", "required": true, "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "channel": {"type": "string", "required": true, "enum": ["markdown", "pushplus"]},
+    "payload_digest": {"type": "string", "required": true, "pattern": "^[0-9a-f]{64}$"},
+    "state": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "IN_FLIGHT_OR_MAY_HAVE_SENT",
+        "SUCCEEDED",
+        "CONFIRMED_FAILED",
+        "AMBIGUOUS",
+        "RESOLVED_DELIVERED",
+        "RESOLVED_NOT_DELIVERED"
+      ]
+    },
+    "version": {"type": "integer", "required": true, "min": 1},
+    "created_at": {"type": "string", "required": true, "format": "iso8601-datetime"}
+  }
+}

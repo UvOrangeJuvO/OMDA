@@ -1,0 +1,18 @@
+{
+  "schema_name": "delivery_resolution",
+  "schema_version": 2,
+  "fields": {
+    "operation_key": {"type": "string", "required": true, "min_length": 1},
+    "run_id": {"type": "string", "required": true, "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "idempotency_key": {"type": "string", "required": true, "min_length": 1},
+    "attempt_id": {"type": "string", "required": false, "min_length": 1},
+    "outcome": {
+      "type": "string",
+      "required": true,
+      "enum": ["CONFIRMED_DELIVERED", "CONFIRMED_NOT_DELIVERED", "STILL_UNKNOWN"]
+    },
+    "actor": {"type": "string", "required": true, "min_length": 1},
+    "reason": {"type": "string", "required": true, "min_length": 1},
+    "decided_at": {"type": "string", "required": true, "format": "iso8601-datetime"}
+  }
+}

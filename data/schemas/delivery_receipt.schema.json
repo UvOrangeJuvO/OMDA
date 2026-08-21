@@ -1,12 +1,13 @@
 {
   "schema_name": "delivery_receipt",
-  "schema_version": 1,
+  "schema_version": 2,
   "fields": {
     "run_id": {"type": "string", "required": true, "pattern": "^[a-z0-9][a-z0-9-]*$"},
     "idempotency_key": {"type": "string", "required": true, "min_length": 1},
     "delivered_at": {"type": "string", "required": true, "format": "iso8601-datetime"},
     "channel": {"type": "string", "required": true, "enum": ["markdown", "pushplus"]},
     "target": {"type": "string", "required": false, "min_length": 1},
-    "status": {"type": "string", "required": true, "enum": ["ok", "failed"]}
+    "status": {"type": "string", "required": true, "enum": ["ok", "failed", "ambiguous"]},
+    "attempt_id": {"type": "string", "required": false, "min_length": 1}
   }
 }
