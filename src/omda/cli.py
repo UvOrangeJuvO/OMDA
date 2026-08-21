@@ -117,3 +117,64 @@ __all__ = [
     "run_dry_run",
     "select_delivery",
 ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Application entry point (``python -m omda.cli``).
+
+    Defaults to a DRY-RUN: executes the real production dry-run pipeline
+    against isolated history and writes a local Markdown preview, making zero
+    external calls. Only ``--deliver`` would enable external push (requires a
+    full production wiring with a PushPlus transport; not composed here).
+    """
+    args = parse_args(argv)
+    mode = select_delivery(args)
+    if mode is DeliveryMode.DRY_RUN:
+        from omda.adapters.datasets import GenreDatasetAdapter
+        from omda.adapters.llm import LLMAdapter
+        from omda.orchestrator.run import utc_now
+
+        # Default dry-run composition over the repository's sample data.
+        genre_source = GenreDatasetAdapter("data/genres/rym-sample")
+        genres = genre_source.list_eligible_genres()
+        album_source = _sample_album_source(genres)
+        run_id = args.run_id or f"dry-{utc_now().replace(':', '').replace('Z', '')}"
+        llm = LLMAdapter(transport=_LocalEchoTransport())
+        outcome = run_dry_run(
+            run_id=run_id,
+            output_dir=args.output_dir,
+            genre_source=genre_source,
+            album_source=album_source,
+            llm=llm,
+            seed=run_id,
+        )
+        print(f"dry-run {run_id}: {outcome.state}")
+        print(f"preview: {(Path(args.output_dir) / f'{run_id}.md')}")
+        return 0
+    raise SystemExit("--deliver requires a production PushPlus wiring (not composed in this gate)")
+
+
+class _LocalEchoTransport:
+    """Local echo transport for the sample dry-run (no network, no SDK)."""
+
+    def complete(self, system: str, user: str) -> str:
+        return "A concise local explanation of the selected picks."
+
+
+def _sample_album_source(genres):
+    from omda.ports.domain import AlbumCandidate
+
+    class SampleAlbums:
+        def candidates_for_genre(self, genre) -> list[AlbumCandidate]:
+            gid = genre.genre_id
+            return [
+                AlbumCandidate(f"{gid}-1", f"{gid} Sample 1", "Sample Artist", 2015),
+                AlbumCandidate(f"{gid}-2", f"{gid} Sample 2", "Sample Artist", 2000),
+                AlbumCandidate(f"{gid}-3", f"{gid} Sample 3", "Sample Artist", 1990),
+            ]
+
+    return SampleAlbums()
+
+
+if __name__ == "__main__":  # pragma: no cover - entry point
+    raise SystemExit(main())
