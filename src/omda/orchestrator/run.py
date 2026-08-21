@@ -29,6 +29,13 @@ from omda.core.album import dedupe_candidates, filter_candidates
 from omda.core.genre import select_daily_genres
 from omda.core.rating import rank_candidates
 from omda.core.year import AlbumSelectionResult, select_albums_for_genre
+
+# G4-004R: the REAL engine and the recovery helper share ONE decision path.
+from omda.orchestrator.recovery import (
+    COMMIT_HISTORY,
+    COMPLETE_ALREADY,
+    resolve_recovery_action,
+)
 from omda.output.markdown import (
     build_report_data,
     render_markdown,
@@ -700,8 +707,11 @@ class RunEngine:
     def _finish_after_delivery(
         self, run_id: str, entries: list[JournalEntry]
     ) -> RunOutcome:
-        # Rebuild the plan from durable journal evidence; confirm delivery via the
-        # immutable receipt before committing history (never blind re-delivery).
+        # Rebuild the plan from durable journal evidence, then let the SINGLE
+        # production recovery decision (resolve_recovery_action) decide the
+        # action — the decision helper and the real engine can never diverge
+        # (G4-004R). Only a delivered operation (SUCCEEDED or the human-confirmed
+        # RESOLVED_DELIVERED) may commit history; nothing is ever re-pushed.
         digest: dict[str, Any] | None = None
         for entry in reversed(entries):
             if entry.detail and "albums" in entry.detail:
@@ -713,47 +723,31 @@ class RunEngine:
 
         plan = Plan.from_digest(run_id, digest)
         key = self._idempotency_key(run_id)
-        operation = self._history.find_delivery_operation(key)
-        # ADR-0001 v2 recovery: the durable operation state decides. Only a
-        # delivered (SUCCEEDED / RESOLVED_DELIVERED) operation may commit
-        # history; ambiguous/in-flight evidence requires human review and is
-        # NEVER re-pushed; confirmed-not-delivered never commits history.
-        if operation is not None and operation.state in (
-            OP_SUCCEEDED,
-            OP_RESOLVED_DELIVERED,
-        ):
-            receipt = self._history.find_delivery_receipt(key)
-            if receipt is not None and self._receipt_matches(receipt, run_id, key):
-                try:
-                    self._commit_history(run_id, plan)
-                except StateCommitFailureError:
-                    if entries[-1].transition == RECOVERING:
-                        return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
-                    self._append(run_id, RECOVERING, {"reason": "history commit still failing"})
+        decision = resolve_recovery_action(self._history, run_id, idempotency_key=key)
+        if decision.action == COMMIT_HISTORY:
+            try:
+                self._commit_history(run_id, plan)
+            except StateCommitFailureError:
+                # Idempotent: unchanged failing evidence does not grow the journal.
+                if entries[-1].transition == RECOVERING:
                     return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
-                self._append(run_id, COMPLETE)
-                return RunOutcome(run_id=run_id, state=COMPLETE, plan=plan, receipt=receipt)
-            # delivered operation but unbound receipt -> ambiguous, human.
-            if entries[-1].transition == RECOVERING:
+                self._append(run_id, RECOVERING, {"reason": "history commit still failing"})
                 return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
-            self._append(run_id, RECOVERING, {"reason": "delivery evidence missing or mismatched"})
-            return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
-        if operation is not None and operation.state in (
-            OP_CONFIRMED_FAILED,
-            OP_RESOLVED_NOT_DELIVERED,
-        ):
-            # Confirmed not delivered: terminal, no history commit.
-            if entries[-1].transition != FAILED:
-                self._append(
-                    run_id, FAILED, {"reason": "delivery confirmed not delivered"}
-                )
-            return RunOutcome(run_id=run_id, state=FAILED, plan=plan)
-        # No operation, or in-flight/ambiguous: fail closed for human review;
-        # never re-push. Idempotent under retries (G2-012): unchanged evidence
-        # does not grow the journal.
+            self._append(run_id, COMPLETE)
+            return RunOutcome(
+                run_id=run_id,
+                state=COMPLETE,
+                plan=plan,
+                receipt=decision.receipt,
+            )
+        if decision.action == COMPLETE_ALREADY:
+            return RunOutcome(run_id=run_id, state=COMPLETE, plan=plan)
+        # REQUIRE_HUMAN (missing/mismatched/in-flight/ambiguous evidence or a
+        # confirmed-not-delivered operation): fail closed, never re-push, and
+        # keep the journal bounded under retries (G2-012).
         if entries[-1].transition == RECOVERING:
             return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
-        self._append(run_id, RECOVERING, {"reason": "delivery evidence missing or mismatched"})
+        self._append(run_id, RECOVERING, {"reason": decision.reason})
         return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
 
 

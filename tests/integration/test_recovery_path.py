@@ -214,3 +214,59 @@ def test_recovery_only_commits_on_bound_ok_receipt_plus_delivery_journal() -> No
     decision = resolve_recovery_action(history, "run-1")
     assert decision.action == COMMIT_HISTORY
     assert decision.reason == "delivered-but-not-committed"
+
+
+# --- G4-004R re-review 3: human-confirmed delivered completes in the REAL engine ---
+
+
+def test_real_engine_crash_human_confirmed_delivered_completes() -> None:
+    # Reviewer reproduction: claim committed -> external call happened ->
+    # finalize/evidence write "crashed" (IN_FLIGHT, no receipt) -> owner records
+    # CONFIRMED_DELIVERED -> restarting the REAL engine must COMPLETE with one
+    # external effect and one atomic history commit (ADR §6/§11, acceptance 8).
+    from omda.ports.errors import StateCommitFailureError
+
+    class FinalizeCrashHistory(InMemoryHistory):
+        """First finalize fails (simulated crash) so the operation stays
+        IN_FLIGHT with no attempt/receipt; later calls succeed."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.finalize_failures_left = 1
+
+        def finalize_delivery_attempt(self, **kw):
+            if self.finalize_failures_left > 0:
+                self.finalize_failures_left -= 1
+                raise StateCommitFailureError("simulated crash after external call")
+            return super().finalize_delivery_attempt(**kw)
+
+    history = FinalizeCrashHistory()
+    delivery = FakeDelivery()
+    engine = _engine(history, delivery)
+    outcome = engine.run("run-crash")
+    # The claim was committed, the external call happened, but the evidence
+    # write crashed -> IN_FLIGHT, no receipt, RECOVERING.
+    assert outcome.state == RECOVERING
+    op = history.find_delivery_operation("run-crash:markdown")
+    assert op is not None and op.state == "IN_FLIGHT_OR_MAY_HAVE_SENT"
+    assert history.find_delivery_receipt("run-crash:markdown") is None
+    assert delivery.calls == 1
+
+    # Owner confirms delivery (append-only resolution, no receipt required).
+    history.record_delivery_resolution(
+        operation_key="run-crash:markdown",
+        run_id="run-crash",
+        idempotency_key="run-crash:markdown",
+        attempt_id=None,
+        outcome="CONFIRMED_DELIVERED",
+        actor="owner",
+        reason="wechat shows the push",
+        decided_at="2026-08-21T12:00:00Z",
+    )
+
+    # Restart the real engine: recover() must complete via the resolution.
+    restarted = _engine(history, delivery)
+    recovered = restarted.recover("run-crash")
+    assert recovered.state == COMPLETE
+    assert delivery.calls == 1  # no second external delivery
+    assert history.latest_pick_index() == 3  # one atomic history commit
