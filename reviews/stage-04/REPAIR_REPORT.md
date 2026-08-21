@@ -150,3 +150,97 @@ ADR-0001 接受 commit：`1349a0fd53116335d372c89684d83f1d556b63ac`（Accepted A
 | ADR-0001 §15 六条约束 | 全部落实（见各节） |
 | 无 G5 scope；无 live LLM/PushPlus 依赖；无反爬绕过 | 确认 |
 | 未 merge / 未 tag / 未进入 G5 / 未写 ACCEPTED | 确认 |
+
+---
+
+# G4 Re-review 3 Repair（2026-08-21，candidate 1a197d9）
+
+对应 Reviewer commit：`50ce635ede960265dc60927e6bc09e0ffd9745bf`（`review(g4): keep adr delivery implementation findings open`）
+上一 candidate：`1a197d9ceb95acd4e8214a28cd52c8172a4a02a0`
+本轮修复 commits：`f60f225`（G4-002A）、`0437aa9`（G4-002B）、`cbe8a23`（G4-004R）、
+`a8c2a4c`（G4-007）、`ab6c23e`（G4-008）
+每项先加失败测试复现 Reviewer 反例、再做最小修复；未弱化测试。
+
+## G4-002A（P1）— 生产 transport 把全部 HTTP 4xx 当 definitive — CLOSED
+
+- **根因**：`PushPlusHttpTransport` 把整个 400-499 段分类为 definitive rejection（ProviderRejection）；
+  独立注入 HTTP 418 复现 `ProviderRejection`；acceptance-10 标着 "unknown 4xx -> ambiguous" 却供给
+  `ProviderRejection("499", ...)` 期望 failed——测试证明了被禁止的行为。
+- **修复**（`f60f225`）：**移除无文档化的 definitive 类别**。当前 PushPlus 官方文档只定义业务码
+  `code == 200`，没有任何 HTTP 4xx/5xx 的"未入队"证明（Reviewer 已核对官方 API 文档）→
+  生产 transport 对**任何非 200 状态（含全部 4xx/5xx/未知码）一律 `AmbiguousFailure`**（no-retry）；
+  `ProviderRejection` 类型保留为接口（供未来有文档化契约时启用），生产不产生。
+- **测试**：真实 `PushPlusHttpTransport`（注入 urlopen）418/499/400/401/403/404/422/429 全表 →
+  AmbiguousFailure；修正 acceptance-10 误导用例（移除 `ProviderRejection("499")→failed`，改由真实
+  transport 覆盖）；`test_http_transport_classifies_401_definitive_rejection` 更新为
+  `..._as_ambiguous`。
+
+## G4-002B（P1）— §15-5 持久化绑定未校验 + receipt-attempt 关联缺失 — CLOSED
+
+- **根因**：`record_delivery_resolution` 插入 caller 提供的冗余字段不比对 operation（复现：对
+  operation A 用 run-b/key-b/attempt-b 成功推进 A）；receipt 表无 attempt_id 列、`DeliveryReceipt`
+  无 attempt_id 字段；begin 的 DELIVERING journal 只记 key 不记 digest；Delivery Port docstring
+  仍只写 ok/failed。
+- **修复**（`0437aa9`）：
+  1. **SQLite v3 迁移**（`ALTER TABLE delivery_receipt ADD COLUMN attempt_id`，v1 行 NULL；迁移
+     包在 `BEGIN IMMEDIATE` 中串行化，并做列存在检查——并发迁移（两个独立连接同时打开）不再
+     duplicate-column 崩溃，顺带修复并发迁移死锁）；
+  2. `finalize_delivery_attempt` 写 receipt 时**绑定生成的 attempt_id**；`DeliveryReceipt` 增加
+     `attempt_id` 字段；find/save 读写该列；
+  3. `record_delivery_resolution` **同事务校验绑定**：operation 的 run_id 必须等于传入 run_id、
+     idempotency_key 必须等于 operation_key、attempt_id（若有）必须属于该 operation——跨绑定
+     一律 `InvariantFailureError`（SQLite + InMemory parity 均加负向测试）；
+  4. begin 的 DELIVERING journal 原子记录 **key + payload_digest**；
+  5. Delivery Port docstring 更新为 ADR-0001 三态 + pre-claim 协议；
+  6. acceptance-9 增强：查真实 v3 列（`PRAGMA table_info` 含 attempt_id）、v1 行 attempt_id 为
+     NULL、finalize 后 receipt.attempt_id == 生成的 attempt id。
+
+## G4-004R（P1）— 人工 confirmed-delivered 未接入真实 RunEngine 恢复 — CLOSED
+
+- **根因**：`_finish_after_delivery` 把 SUCCEEDED 与 RESOLVED_DELIVERED 合并并要求 receipt——
+  崩溃后（IN_FLIGHT 无 receipt）+ owner 记 CONFIRMED_DELIVERED 的恢复路径永远 RECOVERING；
+  验收测试只测未使用的 helper。
+- **修复**（`cbe8a23`）：`_finish_after_delivery` **复用 `resolve_recovery_action` 作为唯一生产
+  决策路径**（helper 与 engine 不可能发散）；RESOLVED_DELIVERED（append-only 人工确认，无需
+  receipt）→ COMMIT_HISTORY → COMPLETE；其他动作幂等执行。
+- **测试**：`test_real_engine_crash_human_confirmed_delivered_completes`——真实 RunEngine：
+  claim → 外部调用 → finalize 模拟崩溃（IN_FLIGHT 无 receipt，RECOVERING）→ owner 记
+  CONFIRMED_DELIVERED → restart 新引擎 `recover()` → **COMPLETE** + 外部效果恰 1 次 +
+  一次原子历史提交（pick_index==3）。
+
+## G4-007（P1）— 公共 `--deliver` 仍是死路 — CLOSED
+
+- **根因**：`_main` 调 `load_config()`（无路径）→ 默认 channel 恒为 markdown → pushplus 检查恒
+  失败；`--token-env` 未被应用；生产组合测试绕过公共 CLI 直连 helper。
+- **修复**（`a8c2a4c`）：CLI 增加 **`--config`** 路径选项（`load_config(args.config)`）；
+  `--deliver` 应用 **`--token-env`**（覆盖 config 的 pushplus_token_env，经
+  `build_production_engine(token_env=...)`）；transport 提取为可注入 hook `_pushplus_transport()`
+  （生产默认标准库 `PushPlusHttpTransport`，测试 monkeypatch 注入 fake 网络边界）。
+- **测试**（经公共 `cli.main` 入口 + 注入 fake 网络）：`--deliver --config <pushplus> --token-env
+  <VAR>` → 到达组合、COMPLETE、恰 1 次外部推送、使用指定 token 变量；ambiguous → 非零退出码且
+  不盲重试；无 pushplus config → 仍明确拒绝（安全门保持）。产品边界如实声明：narrative 为
+  存档用途，`--deliver` 的 LLM 是本地 echo transport（可替换注入），真实 LLM 客户端属 G5
+  runtime composition（报告披露）。
+
+## G4-008（P2）— LLM 输出被丢弃，cost 无存档价值 — CLOSED
+
+- **根因**：`_generate` 调用 `generate_narrative` 丢弃返回值且失败使整个 run 失败。
+- **修复**（`ab6c23e`）：**narrative 有界存档**到 GENERATED journal detail
+  （`NARRATIVE_ARCHIVE_LENGTH = 1500` 截断）；run() 不再重复 append GENERATED。
+- **测试**：`test_generated_narrative_is_archived_bounded_in_journal`（GENERATED detail 含
+  narrative，交付物仍无自由文本槽）；`test_generated_narrative_is_truncated_to_bounded_length`
+  （10000 字符截断到 ≤1500）。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **630 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 630 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（617 → 630 单调增长；acceptance-10 误导用例移除改由真实 transport 覆盖、401 测试改 ambiguous 语义，均披露） |
+| tracked 敏感文件 | 无 |
+| G0-G3 verdict 未改（相对 base 0 行）；G2 Core 零改动 | 确认 |
+| 无 G5 scope；无 live LLM/PushPlus 依赖；无反爬绕过 | 确认 |
+| 未 merge / 未 tag / 未进入 G5 / 未写 ACCEPTED | 确认 |

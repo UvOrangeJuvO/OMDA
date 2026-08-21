@@ -222,3 +222,37 @@ ADR-0001 接受 commit：`1349a0fd53116335d372c89684d83f1d556b63ac`
 ## Executor Conclusion（G4 Re-review 2 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G4 Re-review 3 Repair（2026-08-21，candidate 1a197d9）
+
+对应 Reviewer commit：`50ce635ede960265dc60927e6bc09e0ffd9745bf`
+上一 candidate：`1a197d9ceb95acd4e8214a28cd52c8172a4a02a0`
+本轮修复 commits：`f60f225`、`0437aa9`、`cbe8a23`、`a8c2a4c`、`ab6c23e`
+详细逐项修复记录见 `reviews/stage-04/REPAIR_REPORT.md`。
+
+## Re-review 3 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G4-002A 全部 HTTP 4xx 被当 definitive | P1 | `f60f225` | CLOSED |
+| G4-002B §15-5 绑定 + receipt-attempt 关联 | P1 | `0437aa9` | CLOSED |
+| G4-004R 人工 confirmed-delivered 未接入真实恢复 | P1 | `cbe8a23` | CLOSED |
+| G4-007 公共 --deliver 死路 | P1 | `a8c2a4c` | CLOSED |
+| G4-008 LLM 输出被丢弃 | P2 | `ab6c23e` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **630 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 630 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（617 → 630；2 处按新语义披露） |
+| 未 merge / 未 tag / 未进入 G5 / 未改 verdict / 未写 ACCEPTED | 确认 |
+
+## Executor Conclusion（G4 Re-review 3 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
