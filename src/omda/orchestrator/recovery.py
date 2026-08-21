@@ -92,7 +92,15 @@ def resolve_recovery_action(
     # ADR-0001 v2: the durable OPERATION state is the primary authority.
     operation = history.find_delivery_operation(key)
     if operation is not None:
-        if operation.state in (OP_SUCCEEDED, OP_RESOLVED_DELIVERED):
+        if operation.state == OP_RESOLVED_DELIVERED:
+            # Human-confirmed delivery (append-only resolution) is itself the
+            # authoritative evidence: commit history WITHOUT re-push.
+            return RecoveryDecision(
+                action=COMMIT_HISTORY,
+                reason="human-confirmed delivery; commit without re-push",
+                journal_tail=tail,
+            )
+        if operation.state == OP_SUCCEEDED:
             receipt = history.find_delivery_receipt(key)
             if (
                 receipt is not None

@@ -175,6 +175,9 @@ class SqliteHistory:
             conn = sqlite3.connect(self._path)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
+            # ADR-0001 v2 acceptance: concurrent independent connections race
+            # on the same key; wait for the writer instead of failing instantly.
+            conn.execute("PRAGMA busy_timeout = 5000")
             self._migrate(conn)
         except sqlite3.Error as exc:
             # Hygiene (G1-005): close a successfully-created connection when
@@ -479,8 +482,14 @@ class SqliteHistory:
         channel: str,
         payload_digest: str,
     ) -> DeliveryOperationSnapshot:
+        # BEGIN IMMEDIATE (not the deferred ``with conn`` default) so the write
+        # lock is taken at transaction start: two independent connections racing
+        # on the same absent key serialize deterministically and only one can
+        # ever insert (ADR-0001 §12 acceptance 1).
+        conn = self._conn
         try:
-            with self._conn as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
                 cursor = conn.execute(
                     "INSERT INTO delivery_operation "
                     "(operation_key, run_id, channel, payload_digest, state, version, "
@@ -514,6 +523,10 @@ class SqliteHistory:
                     "FROM delivery_operation WHERE operation_key = ?",
                     (idempotency_key,),
                 ).fetchone()
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
         except sqlite3.Error as exc:
             raise StateCommitFailureError(
                 f"begin_delivery_operation failed for key {idempotency_key!r}",
