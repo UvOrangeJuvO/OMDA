@@ -8,6 +8,8 @@ never resolves a token.
 
 from __future__ import annotations
 
+import pytest
+
 from omda.cli import DeliveryMode, parse_args, select_delivery
 from omda.config import Config, DeliveryConfig
 
@@ -86,3 +88,54 @@ def build_delivery(args) -> object:
         ).HttpTransport,
         sleeper=__import__("time", fromlist=["sleep"]).sleep,
     )
+
+
+# --- G4-007: the CLI main() wiring (dry-run executable, --deliver guard) -------
+
+
+def test_main_dry_run_exits_zero_and_reports_real_preview_path(monkeypatch, tmp_path) -> None:
+    from omda import cli
+
+    out = tmp_path / "previews"
+    run_id = "cli-dry-1"
+    code = cli.main(["--dry-run", "--output-dir", str(out), "--run-id", run_id])
+    assert code == 0
+    # The reported preview file actually exists (no dots in the run id).
+    preview = out / f"{run_id}.md"
+    assert preview.exists()
+    assert preview.read_text(encoding="utf-8").startswith("# 每日音乐发现")
+
+
+def test_main_dry_run_returns_nonzero_on_failed_run(monkeypatch, tmp_path) -> None:
+    from omda import cli
+
+    out = tmp_path / "previews"
+    # A dataset with a valid source.yaml but NO eligible genres -> the run
+    # fails (InsufficientCandidatesError) and the CLI exits nonzero.
+    ds = tmp_path / "genres"
+    ds.mkdir()
+    (ds / "source.yaml").write_text(
+        "# empty dataset: valid source meta, zero records\n"
+        "source_id: genres\n"
+        "display_name: Empty Genres\n"
+        "license: CC0-1.0\n"
+        "origin_url: https://example.org\n"
+        "retrieved_at: 2026-08-21T00:00:00+00:00\n"
+        "dataset_version: 2026-08-21\n"
+        "data_scope: empty\n"
+        "records_file: genres.jsonl\n",
+        encoding="utf-8",
+    )
+    (ds / "genres.jsonl").write_text("", encoding="utf-8")
+    code = cli.main(
+        ["--dry-run", "--output-dir", str(out), "--run-id", "cli-fail", "--source-path", str(ds)]
+    )
+    assert code != 0
+
+
+def test_main_deliver_rejects_non_pushplus_channel(monkeypatch) -> None:
+    from omda import cli
+
+    # Default config uses channel == "markdown": --deliver must refuse loudly.
+    with pytest.raises(SystemExit):
+        cli.main(["--deliver", "--run-id", "cli-pp"])

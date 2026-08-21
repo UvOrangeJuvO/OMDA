@@ -19,6 +19,10 @@ if TYPE_CHECKING:
 
 DEFAULT_OUTPUT_DIR = Path("var/output")
 DEFAULT_TOKEN_ENV = "PUSHPLUS_TOKEN"
+# Package-root anchored default runtime store (independent of the caller's CWD).
+DEFAULT_HISTORY_PATH = Path(
+    __import__("omda.production", fromlist=["DEFAULT_DATA_DIR"]).DEFAULT_DATA_DIR
+).parent / "var" / "omda.sqlite3"
 
 
 class DeliveryMode(enum.Enum):
@@ -48,6 +52,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
         help="directory for the dry-run Markdown report",
+    )
+    parser.add_argument(
+        "--history",
+        type=Path,
+        default=DEFAULT_HISTORY_PATH,
+        help="SQLite runtime-store path used by the --deliver path",
+    )
+    parser.add_argument(
+        "--source-path",
+        type=Path,
+        default=None,
+        help="explicit genre dataset directory (default: packaged sample data)",
     )
     parser.add_argument(
         "--token-env",
@@ -124,34 +140,98 @@ def main(argv: list[str] | None = None) -> int:
 
     Defaults to a DRY-RUN: executes the real production dry-run pipeline
     against isolated history and writes a local Markdown preview, making zero
-    external calls. Only ``--deliver`` would enable external push (requires a
-    full production wiring with a PushPlus transport; not composed here).
+    external calls. An explicit ``--deliver`` runs the REAL production
+    Agent/PushPlus composition (G4-007): a PushPlus HTTP transport, the
+    packaged data sources and the official SQLite runtime store; the push only
+    happens for that explicitly approved run.
     """
     args = parse_args(argv)
     mode = select_delivery(args)
-    if mode is DeliveryMode.DRY_RUN:
-        from omda.adapters.datasets import GenreDatasetAdapter
-        from omda.adapters.llm import LLMAdapter
-        from omda.orchestrator.run import utc_now
+    try:
+        return _main(mode, args)
+    except SystemExit:
+        raise
+    except Exception as exc:  # any unexpected failure -> non-zero exit code
+        print(f"omda: run failed: {exc}")
+        return 1
 
-        # Default dry-run composition over the repository's sample data.
-        genre_source = GenreDatasetAdapter("data/genres/rym-sample")
+
+def _main(mode: DeliveryMode, args: argparse.Namespace) -> int:
+    if mode is DeliveryMode.DELIVER:
+        from omda.config import load_config
+        from omda.orchestrator.run import COMPLETE
+        from omda.production import build_production_engine
+        from omda.storage import SqliteHistory
+
+        config = load_config()
+        if config.delivery is None or config.delivery.channel != "pushplus":
+            raise SystemExit(
+                "--deliver requires delivery.channel == 'pushplus' in config "
+                "(see data/schemas/config.schema.json)"
+            )
+        genre_source = _sample_genre_source(args)
         genres = genre_source.list_eligible_genres()
         album_source = _sample_album_source(genres)
-        run_id = args.run_id or f"dry-{utc_now().replace(':', '').replace('Z', '')}"
-        llm = LLMAdapter(transport=_LocalEchoTransport())
-        outcome = run_dry_run(
-            run_id=run_id,
-            output_dir=args.output_dir,
-            genre_source=genre_source,
-            album_source=album_source,
-            llm=llm,
-            seed=run_id,
-        )
-        print(f"dry-run {run_id}: {outcome.state}")
-        print(f"preview: {(Path(args.output_dir) / f'{run_id}.md')}")
-        return 0
-    raise SystemExit("--deliver requires a production PushPlus wiring (not composed in this gate)")
+        run_id = args.run_id or _new_run_id("run")
+        history = SqliteHistory(args.history)
+        try:
+            engine = build_production_engine(
+                config=config,
+                history=history,
+                genre_source=genre_source,
+                album_source=album_source,
+                llm_transport=_LocalEchoTransport(),
+                seed=run_id,
+            )
+            outcome = engine.run(run_id)
+        finally:
+            history.close()
+        print(f"deliver {run_id}: {outcome.state}")
+        return 0 if outcome.state == COMPLETE else 1
+
+    # DRY-RUN (default safety gate): local preview, zero external calls.
+    from omda.adapters.llm import LLMAdapter
+
+    genre_source = _sample_genre_source(args)
+    genres = genre_source.list_eligible_genres()
+    album_source = _sample_album_source(genres)
+    run_id = args.run_id or _new_run_id("dry")
+    llm = LLMAdapter(transport=_LocalEchoTransport())
+    outcome = run_dry_run(
+        run_id=run_id,
+        output_dir=args.output_dir,
+        genre_source=genre_source,
+        album_source=album_source,
+        llm=llm,
+        seed=run_id,
+    )
+    target = outcome.receipt.target if outcome.receipt is not None else str(
+        Path(args.output_dir) / f"{run_id}.md"
+    )
+    print(f"dry-run {run_id}: {outcome.state}")
+    print(f"preview: {target}")
+    from omda.orchestrator.run import COMPLETE
+
+    return 0 if outcome.state == COMPLETE else 1
+
+
+def _new_run_id(prefix: str) -> str:
+    from omda.orchestrator.run import utc_now
+
+    # No dots: the run id is the file-name input for Markdown delivery, so the
+    # printed preview path must match the actual file exactly (G4-003 P2).
+    return f"{prefix}-{utc_now().replace(':', '').replace('.', '').replace('Z', '')}"
+
+
+def _sample_genre_source(args) -> object:
+    from omda.adapters.datasets import GenreDatasetAdapter
+
+    if args.source_path is not None:
+        return GenreDatasetAdapter(str(args.source_path))
+    # Packaged data resolved independently of the caller's working directory.
+    from omda.production import DEFAULT_DATA_DIR
+
+    return GenreDatasetAdapter(str(DEFAULT_DATA_DIR / "genres" / "rym-sample"))
 
 
 class _LocalEchoTransport:
