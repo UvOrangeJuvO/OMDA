@@ -1,16 +1,28 @@
-# ADR-0001 — Delivery 收据的歧义表示与幂等发送协议
+# ADR-0001 — Delivery 收据的歧义表示与幂等发送协议（修订版 v2）
 
-- Status: **Proposed**（等待 GPT-5.6 Sol 评审；评审通过后改 Accepted，否则 Rejected/Superseded）
-- Date: 2026-08-21
+- Status: **Proposed**（修订版 v2，等待 GPT-5.6 Sol 复审；评审通过后改
+  Accepted，否则 Rejected/Superseded）
+- Date: 2026-08-21（修订 v2：2026-08-21）
 - Gate: G4（Agent & Delivery），T4.3 / T4.4
 - 触发 Reviewer finding：G4-002（P1）——`ambiguous` 状态违反已接受的
   Delivery Port / `DeliveryReceipt` / `delivery_receipt.schema.json` v1 契约；
   同一幂等键直接重放仍产生第二次外部推送；provider 非成功响应被一律当作
   "明确拒绝"并重试。
 - 触发流程：Executor 进入 **BLOCKED_ARCHITECTURE**（按 verdict 明确要求
-  "stop and submit an ADR"，以及用户指令"若现有 Port 无法安全表达交付歧义，
-  停止实现，进入 BLOCKED_ARCHITECTURE 并提交 ADR"）。
-- 本 ADR 期间**不修改 production code**；只提交 ADR、状态与必要报告。
+  "stop and submit an ADR"）。
+- 修订触发：`reviews/stage-04/ADR_0001_REVIEW.md`（Reviewer commit
+  `a699a4955e2e925641ee979a7dd8f26b74beef5f`，结论 **REVISE**），
+  finding ADR-001 ~ ADR-005。本修订逐条解决；**仍不修改 production code**。
+
+## 0. 修订记录（ADR-001 ~ ADR-005 响应）
+
+| Reviewer finding | 本修订的解决方案 |
+|---|---|
+| ADR-001 REGISTERED→SENT 并发双发窗口 | **删除可恢复 REGISTERED 协议**。改为外部调用前**原子创建** operation 于 `IN_FLIGHT_OR_MAY_HAVE_SENT`（与 DELIVERING journal 同一 SQLite 事务，`INSERT ... ON CONFLICT` 保证仅一方成功）；已有任意 operation 行 → 阻止所有其他自动调用方（§4）。崩溃于 claim 后、调用前 = 假歧义 → 人工（availability 取舍，换 at-most-one）。不采用 lease/fencing（成本高且非必需）。 |
+| ADR-002 不可变 failed 收据与同 key 重试矛盾 | **分离 DeliveryOperation 与 DeliveryAttempt 两层**；`failed` 对当前 operation 是 **terminal**（不自动重试、不覆盖不可变收据）；人工确认未投递后以**新 generation key**（`<run>:<channel>:<gen>`）开新 operation 并绑定原 run（§5）。 |
+| ADR-003 ambiguous 无人工 resolution 路径 | 新增 **append-only `delivery_resolution`** 记录（run/operation/key/attempt/actor/time/reason/outcome），outcome ∈ {CONFIRMED_DELIVERED, CONFIRMED_NOT_DELIVERED, STILL_UNKNOWN}；定义允许转换与恢复动作（§6）。 |
+| ADR-004 持久化 API/事务边界未指定 | 定义语义级原子 Port 方法 `begin_delivery_operation` / `finalize_delivery_attempt`（CAS 期望 state+version）/ `record_delivery_resolution`；payload digest（SHA-256）；journal+operation 同事务且网络前 commit；SQLite v1→v2 DDL 草案、两独立连接并发行为与崩溃点（§7、§8）。 |
+| ADR-005 4xx 全重试无依据 | **取消笼统 4xx 重试**。自动重试类别收窄为：仅 transport 证明**未发送任何请求字节**（`NoBytesSentError`，连接建立/首字节前失败）；未知响应、5xx、解析失败、写后异常一律 ambiguous/no-retry；认证/参数/配置拒绝 = 该 operation 的 CONFIRMED_FAILED terminal（§9）。 |
 
 ## 1. 背景与问题
 
@@ -23,238 +35,313 @@
   `"status": {"enum": ["ok", "failed"]}`。
 
 G4-002 第一轮修复时，`PushPlusDelivery` 在 transport 异常（超时/响应丢失）时
-返回 `status="ambiguous"`。该状态**未经 ADR 即扩展了已接受的跨层契约**：
-独立的 schema 校验以 `value 'ambiguous' not in enum ['ok', 'failed']` 拒绝。
+返回 `status="ambiguous"`。该状态**未经 ADR 即扩展了已接受的跨层契约**；
 同时 `PushPlusDelivery` 是**无状态**的：同一 key 调用 `deliver()` 两次会发起
 两次外部请求并返回两个 `ok` 收据（Reviewer 独立复现 `external_calls=2`）；
-既有幂等测试 `test_same_idempotency_key_does_not_cause_second_push` 只调用
-adapter 一次，重放分支执行 `pass`，属于空洞测试。
+既有幂等测试只调用 adapter 一次，重放分支执行 `pass`，属于空洞测试。
 
-因此存在三个必须由 ADR 解决的架构问题：
+存在三个必须由 ADR 解决的架构问题：
 
-1. **歧义没有合法的表示位置**：运行时状态机（G2-012 三分法
-   DELIVERING/DELIVERED/RECOVERING，`RunEngine._deliver_and_commit` 已有
-   "every OTHER value → RECOVERING" 兜底）在语义上已经预期非二元结果，
-   但持久化收据契约仍是二元的——跨层缝隙未文档化。
-2. **幂等没有执行点**：防重复的唯一权威（`HistoryPort` 收据的
-   G1-002 不可变/幂等语义）只在 Orchestrator 恢复路径生效；adapter 本身
-   不查询、不注册，直接重放/并发调用都能绕过。
-3. **"明确拒绝"与"交付歧义"未区分**：任何非 200 响应都被假设为
-   "provider 未接受"而重试；但 5xx/业务错误码/响应丢失都可能意味着
-   provider 已入队，重试会造成重复推送。
+1. **歧义没有合法的表示位置**（运行时三分法已预期非二元，持久化契约仍是二元）；
+2. **幂等没有执行点**（防重复权威只在恢复路径生效，adapter 不查询、不注册，
+   直接重放/并发调用都能绕过）；
+3. **"明确拒绝"与"交付歧义"未区分**（任意非 200 都被当"未接受"重试）。
 
-## 2. 术语区分（设计点 1）
+## 2. 术语区分
 
 | 术语 | 定义 | 持久化位置 | 示例 |
 |---|---|---|---|
-| **Delivery Attempt（交付尝试）** | 对 provider 发起的一次外部调用，含 attempt_id、时间、调用边界 | `delivery_intent` outbox（新记录，见 §5） | attempt `at-001` 于 2026-08-21T00:00:01Z 调 PushPlus /send |
-| **Confirmed failure（确认失败）** | provider **明确**表示未接受/未发送（只有 §6 分类表中"明确拒绝"类） | `delivery_receipt.status="failed"` | 认证失败 401（provider 未处理请求） |
-| **Ambiguous outcome（交付歧义）** | 无法确认 provider 是否接受/发送（超时、连接重置、响应丢失、5xx、未文档化的业务错误码） | `delivery_receipt.status="ambiguous"`（v2 新增） | 请求已发出但响应丢失 |
-| **Receipt（收据）** | 每幂等键**唯一、不可变、权威**的交付证据（G1-002） | `delivery_receipt` 表（v2） | ok / failed / ambiguous 之一 |
+| **Delivery Operation（交付操作）** | 每个稳定幂等键**唯一一个**的交付意图单元；持有 claim、payload digest、状态机 | `delivery_operation` 表（§8） | `run-1:pushplus` 的操作行 |
+| **Delivery Attempt（交付尝试）** | 一次对外部 provider 的调用及其不可变证据 | `delivery_attempt` 表（append-only） | attempt `at-…`：outcome=ok |
+| **Confirmed failure（确认失败）** | 有**官方文档证明** provider 未接受/未产生副作用（§9 精确类别），或人工确认未投递 | operation=CONFIRMED_FAILED；attempt=failed | 认证拒绝（文档化码） |
+| **Ambiguous outcome（交付歧义）** | 无法确认 provider 是否接受/发送 | operation=AMBIGUOUS；attempt=ambiguous | 响应丢失 / 5xx / 解析失败 |
+| **Receipt（收据）** | 每幂等键**唯一、不可变、权威**的交付证据（G1-002），ok/ambiguous 每键至多一个 | `delivery_receipt` 表（v2 兼容 v1） | ok / failed / ambiguous |
+| **Resolution（人工裁决）** | append-only 人工/操作员决定记录 | `delivery_resolution` 表（§6） | CONFIRMED_DELIVERED |
 
-要点：
+要点：**Operation 是"意图与归属"，Attempt 是"事实"，Receipt 是"不可变
+结论"，Resolution 是"人工结论"**。ambiguous 不等于 failed（未知 ≠ 确认未
+送达），也不等于 ok（未知 ≠ 成功）；failed 是 operation 的 terminal 状态。
 
-- **Attempt 是"事实"，Receipt 是"结论"**。一次 deliver() 最多产生一个
-  attempt；attempt 结束于三种结论之一：ok（已发送）、failed（明确未发送）、
-  ambiguous（未知）。
-- **ambiguous 不等于 failed**：failed 是"确认未送达"，ambiguous 是
-  "可能已送达、可能未送达"。两者对恢复动作的语义完全不同
-  （见 §4/§7）。
-- **ambiguous 不等于 ok**：不得把未知当成功提交官方历史。
-
-## 3. 方案比较（设计点 8）
+## 3. 方案比较
 
 ### 方案 A：保持现有 `ok|failed`，不新增状态
 
-- **含义**：收据保持二元；歧义通过**异常路径**表达（adapter 抛
-  `DeliveryAmbiguousError`，Orchestrator 捕获后 journal RECOVERING 且
-  **不写收据**）；同 key 防重依赖 `HistoryPort` 收据幂等 + 恢复决策。
-- **优点**：schema/Port/domain 零变更；改动集中在 adapter 异常分类。
-- **缺点**：
-  1. "不写收据"意味着该 key 在收据表中无记录——恢复时
-     `find_delivery_receipt` 返回 None，无法区分"从未发送"与"发送过但结果
-     未知"，**进程重启后可能重发**（违反幂等验收）；
-  2. 要真正防重/防并发，仍需引入 durable intent/outbox 记录（§5）——
-     这本身就是新契约与新表，改动面反而大于"enum 增项 + Port 文档"；
-  3. RunEngine 三分法已存在的 "unrecognized status → RECOVERING" 兜底
-     在二元 schema 下永远不可达，成为死代码，跨层缝隙悬空。
-- **验收满足度**：重放/并发防重可满足（若引入 outbox），但"歧义有合法
-  表示位置"与"Port 契约如实描述能力"不满足；违背"stale/corrupt 证据不能
-  授权历史提交"的保守原则（无收据 = 无证据 = 只能 REQUIRE_HUMAN，导致
-  每次歧义都永久卡人工，且丢失 attempt 证据）。
+- 歧义通过异常路径表达（不写收据）→ 收据表无记录 → 恢复无法区分"从未发送"
+  与"发送过但未知"，重启后可能重发；仍需 durable intent 记录才能防重（改动面
+  反而大于 enum 增项）；RunEngine 三分法兜底成为死代码。
+- **结论：否决**（无法满足幂等与"歧义有合法表示位置"）。
 
-### 方案 B：版本化增加 `ambiguous`（及 attempt 字段）—— **推荐**
+### 方案 B：版本化增加 `ambiguous` + operation/attempt/resolution 模型 —— **推荐**
 
-- **含义**：`delivery_receipt` schema v2 将 `status.enum` 扩展为
-  `["ok", "failed", "ambiguous"]`，可选新增 `attempt_id` 字段；Delivery Port
-  docstring、`DeliveryReceipt` 注释同步三态；新增 `delivery_intent` outbox
-  表（UNIQUE `idempotency_key`）作为外部调用前的 durable 注册；写入顺序按
-  §5；provider 拒绝/歧义分类按 §6；恢复决策按 §7。
-- **优点**：
-  1. 歧义有**合法、持久化、跨层一致**的表示位置，与 G2-012 运行时三分法
-     对齐（"unrecognized status → RECOVERING" 兜底变成显式第三态）；
-  2. outbox UNIQUE 键在**外部调用之前**拦截同 key 的并发/重放（§4），
-     这是唯一能真正防并发的机制；
-  3. enum 增项是向后兼容的 schema 演化（v1 记录仍有效、不可变不改写，
-     符合 G1-002）；符合 SPEC §5 "每个持久记录带 schema version"；
-  4. ambiguous 收据在恢复时给出确定性动作（REQUIRE_HUMAN 不重发），
-     不丢失 attempt 证据。
-- **缺点**：需要改 Port 文档、domain 注释、schema v2、adapter、Orchestrator
-  接线、迁移/回滚文档（§7/§8）；均为 G4 T4.3/T4.4 授权范围。
-- **验收满足度**：Reviewer 全部验收点可满足——直接重放、重启、并发恰一次
-  外部副作用（在文档化保证内）；schema 校验通过；明确拒绝与歧义可区分。
+- `delivery_operation`（每 key 一行，状态机）+
+  `delivery_attempt`（append-only 不可变尝试记录）+
+  `delivery_receipt` v2（enum 增项 + 关联 attempt_id）+
+  `delivery_resolution`（append-only 人工裁决）。
+- 原子 claim（§4）保证 at-most-one；failed 为 terminal（§5）；歧义有
+  人工 resolution（§6）；Port 原子方法 + CAS + digest + DDL（§7/§8）；
+  provider 分类钉死文档化码（§9）。
+- **结论：采用**（满足 Reviewer 全部验收点；符合 SPEC §5 版本化要求与
+  G2-012 三分法；不宣称跨系统原子）。
 
 ### 方案 C：没有安全保证时禁用真实 PushPlus
 
-- **含义**：在幂等/歧义模型落地前，`--deliver` 保持 dead-end（不提供真实
-  PushPlus transport），仅在显式配置 + 文档化"存在重复投递风险"时启用；
-  或完全推迟到后续 Gate。
-- **优点**：零契约变更、零重复推送风险、实现量最小。
-- **缺点**：G4-007 要求的生产 Agent/PushPlus 组合无法成立，`--deliver`
-  仍是死路；Reviewer 明确要求"不要静默把生产功能实现移入 G5 audit；
-  Gate 归属变更须用 ADR/plan 更新"——方案 C 实际上要求一个**范围变更 ADR**
-  才能合法；产品功能推迟交付。
-- **验收满足度**：幂等/歧义验收全部"真空通过"，但 T4.3/T4.5 里程碑 FAIL。
+- 零契约变更、零重复推送风险；但 G4-007 的生产 Agent/PushPlus 组合无法
+  成立，`--deliver` 保持 dead-end，且需范围变更 ADR 才合法。
+- **结论：作为"评审认为任何 schema 变更都不可接受"时的最后手段**
+  （届时另提范围变更 ADR）；不作为主选。
 
-### 结论
+## 4. 原子 claim 协议：消除并发双发窗口（ADR-001 修订）
 
-**采用方案 B**。理由：它是唯一同时满足 (a) 歧义有合法跨层表示、
-(b) 同 key 重放/重启/并发不二次推送（靠 outbox UNIQUE + receipt 幂等）、
-(c) 明确拒绝与歧义可区分、(d) 不宣称跨系统原子的方案；且都在 G4 授权范围
-内，无需 Gate 归属变更。方案 A 作为"评审认为 schema 变更过重"时的降级备选；
-方案 C 作为"评审认为任何 schema 变更都不可接受"时的最后手段（届时需另提
-范围变更 ADR）。
+**废弃**上一版的 `REGISTERED → SENT` 双步协议（两进程间存在双发窗口）。
+本版采用 Reviewer 首选的保守协议：
 
-## 4. 防止同一 key 二次推送（设计点 3）
+1. 外部调用**之前**，`begin_delivery_operation(run_id, key, channel, payload_digest)`
+   在**同一个 SQLite 事务**内完成：写 `DELIVERING` journal（含 key 与 digest）
+   + `INSERT INTO delivery_operation`（state=`IN_FLIGHT_OR_MAY_HAVE_SENT`，
+   version=1）。`INSERT ... ON CONFLICT DO NOTHING` + 事务内 `SELECT` 决定
+   返回 `created` 或 `existing` 快照。
+2. **已有任意 operation 行 → 该键的权威快照返回给调用方，调用方必须按状态
+   决定（§5）：非 CONFIRMED_FAILED 的一切状态都阻止其调用 transport。**
+   即：任何已存在的行阻止任何其他自动调用方（含新进程、并发进程）。
+3. 网络调用前必须提交的写 = 上述事务（journal + operation 行）。
+4. 崩溃在 claim 提交后、外部调用前 → 恢复时该键为
+   `IN_FLIGHT_OR_MAY_HAVE_SENT` 且无 attempt → **视为假歧义，要求人工**
+   （不自动重发）。这是显式的 availability 取舍：以"崩溃后需人工"换取
+   "任何情况下至多一次自动外部请求"的硬保证。
+5. **不采用** owner token / lease / fencing 恢复式重发（成本高，且任何
+   "可自动重发 REGISTERED"的设计都要求完整的 fencing 证明；保守协议不需要）。
 
-目标：在**明确文档化的保证范围**内，同一幂等键的 (a) 直接重放、(b) 进程
-重启、(c) 并发调用都不能从 OMDA 侧发出第二次外部调用。
+## 5. Operation 状态机与 Attempt（ADR-002 修订）
 
-- 权威机制是**本地的 durable ledger**，不是 adapter 内存，也不是 provider
-  （PushPlus /send 无服务端幂等键，无法在 provider 侧去重——这一点必须
-  如实声明，见 §6）。
-- **先注册、后发送（reserve-before-send）**：
-  1. 外部调用**之前**，先向 `delivery_intent` 插入
-     `(idempotency_key PRIMARY KEY, run_id, channel, attempt_id, state='REGISTERED')`；
-  2. 唯一约束保证**并发**下只有一个调用方能注册成功，另一方收到
-     conflict → fail-closed（REQUIRE_HUMAN / 幂等返回既有收据），
-     绝不发起第二次外部调用；
-  3. 注册成功后调用 provider，随后写 receipt（ok/failed/ambiguous），
-     并将 intent 置 `SENT` → `RECEIPTED`。
-- **直接重放**：Orchestrator/adapter 在调用前查 receipt 与 intent：
-  已存在 ok/ambiguous 收据 → 返回既有收据（或按 §7 恢复），不调用外部；
-  intent 已存在但无收据 → 按 §5 崩溃窗口规则处理，不盲重发。
-- **进程重启**：`RunEngine.recover()` 只读 durable 证据：
-  journal tail + receipt + intent；没有 ok/ambiguous 收据的 DELIVERING tail
-  必须能区分"从未发送"（intent REGISTERED 无 SENT → 允许重发一次）与
-  "已发送但结果未知"（SENT 无 RECEIPTED → REQUIRE_HUMAN，不重发）。
-- **并发调用**：唯一约束即最终裁判；任何绕过查询的竞态都被数据库层拦截。
-- **保证边界（如实声明）**：OMDA 保证"同 key 的并发/重放不会从 OMDA 侧
-  发出第二次调用"（本地 ledger 硬保证）；由于 PushPlus 无服务端去重，
-  "provider 侧恰好一次"是 best-effort（SENT→RECEIPTED 之间崩溃的极小窗口
-  除外，此时 REQUIRE_HUMAN 而非重发，副作用至多一次未知——绝不超过一次
-  来自 OMDA 的调用）。
+```text
+DeliveryOperation（每稳定 key 一行）
+  （不存在）──begin（原子）──> IN_FLIGHT_OR_MAY_HAVE_SENT
+                                 │
+     finalize(attempt outcome)───┤
+                                 ▼
+        ┌──────────────┬─────────┴──────────────┐
+        ▼              ▼                        ▼
+   SUCCEEDED     CONFIRMED_FAILED           AMBIGUOUS
+   （ok 收据）   （failed 收据，terminal）  （不可变，无自动重试）
+        │              │                        │
+        └──┬───────────┘        record_delivery_resolution（人工）
+           ▼                    ▼              ▼           ▼
+   RESOLVED_DELIVERED   RESOLVED_DELIVERED  RESOLVED_NOT_DELIVERED  STILL_UNKNOWN
+   （提交历史，不重推）  （提交历史，不重推） （abandon/新操作）      （保持阻塞）
+```
 
-## 5. durable intent / receipt 写入顺序与崩溃窗口（设计点 5）
+- **DeliveryOperation 与 DeliveryAttempt 分离**：operation 一行 = 归属与
+  状态机；attempt 零/一/多行 = append-only 不可变调用证据
+  （`attempt_id` PK、operation_key FK、outcome、evidence、attempted_at）。
+  自动路径下每 operation 恰好一个 attempt；人工重试会为**新 operation** 追加
+  attempt。
+- **`failed` 是 terminal**：同 key 的不可变 failed 收据**永不被覆盖/追加**
+  （G1-002）；同 key **不自动重试**。如需更正重试：人工 resolution 记录
+  CONFIRMED_NOT_DELIVERED（abandon 当前 operation）→ 开**新 operation**，
+  使用**新 generation key**（如 `run-1:pushplus:gen2`），并在 resolution 中
+  记录对新 key 的引用与原因，保持与原 run 的绑定——不削弱同 run 重放保护
+  （重放保护按 operation key 生效，原 key 的任何重放仍被既有行拦截）。
+- **每 operation 至多一次自动外部请求**（§10 保证边界）。
 
-单次交付的持久化顺序（全部在本地 SQLite，与 journal 同一事务边界 T1.5）：
+## 6. 人工 resolution（ADR-003 修订）
 
-| 步骤 | 写入 | 崩溃于此步之后 | 恢复动作 |
-|---|---|---|---|
-| ① | journal `DELIVERING`（含 idempotency_key） | 无外部副作用 | 重新从 ① 开始（幂等） |
-| ② | `delivery_intent` 插入（UNIQUE key, state=REGISTERED） | **未调用 provider** | intent 无 SENT 标记 → 允许重发一次（安全：无外部副作用证据） |
-| ③ | 调用 provider（前置 intent state=SENT） | **外部调用可能已发出**，未写收据 | intent=SENT 且无收据 → **歧义 → REQUIRE_HUMAN，绝不重发** |
-| ④ | 写 receipt（ok/failed/ambiguous，G1-002 不可变） | 收据已存在 | 幂等复用，不重发 |
-| ⑤ | journal `DELIVERED`（ok）/ `FAILED`（bound failed）/ `RECOVERING`（ambiguous/不匹配） | 三分法状态已持久 | 按 G2-012/recovery 恢复 |
-| ⑥ | `commit_history`（G1-001 全有或全无） | 已交付未提交 | delivered-but-not-committed → COMMIT_HISTORY，不重发 |
+新增 append-only `delivery_resolution` 记录（不修改不可变收据）：
 
-- receipt 写入必须保持 G1-002：exact replay no-op、conflicting write
-  fail-closed、成功收据永不被覆盖。
-- **不宣称跨系统原子**（设计点 6）：PushPlus 与本地 SQLite 是两个独立
-  系统，OMDA 不实现、不宣称二者之间的分布式原子性（SPEC §4：
-  "No implementation may claim atomicity across an external push service and
-  local SQLite"）。协议是：稳定幂等键先推送 → 持久化收据 → 提交本地历史；
-  "ok 收据 + commit 失败" → 只提交本地历史；"ambiguous 收据" → 人工介入。
+- 字段：`id`、`operation_key`、`run_id`、`idempotency_key`、
+  `attempt_id`（可为空）、`outcome`、`actor`、`reason`、`decided_at`。
+- outcome ∈ {`CONFIRMED_DELIVERED`, `CONFIRMED_NOT_DELIVERED`,
+  `STILL_UNKNOWN`}。
+- 允许转换与恢复动作：
 
-## 6. provider 非成功响应分类（设计点 4）
-
-`HttpTransport` 契约升级为可暴露 **HTTP status 与响应体**（或分类异常）后，
-PushPlus 响应按下表分类（以 provider 文档为准，未文档化的码一律保守）：
-
-| 观测 | 分类 | 动作 |
+| 人工裁决 | 对 operation 的转换 | 恢复动作 |
 |---|---|---|
-| `code == 200`（或 HTTP 2xx + 业务成功） | 成功 | `ok`，不重试 |
-| HTTP 4xx（认证/参数错误，provider 明确未处理） | **明确拒绝** | confirmed failure：有界重试（安全，provider 未接受）→ 耗尽 `failed` |
-| HTTP 5xx | **歧义**（服务端可能已入队） | `ambiguous`，**不重试** |
-| 超时 / 连接重置 / EOF / 响应解析失败 | **歧义**（响应丢失，请求可能已接受） | `ambiguous`，**不重试** |
-| 业务码非 200 但 provider 文档未声明"未入队" | **歧义**（默认保守） | `ambiguous`，不重试 |
+| CONFIRMED_DELIVERED（确认已送达） | AMBIGUOUS / IN_FLIGHT → RESOLVED_DELIVERED | **提交官方历史，不重推**（等价于 ok 收据的 delivered-but-not-committed 路径） |
+| CONFIRMED_NOT_DELIVERED（确认未送达） | AMBIGUOUS / IN_FLIGHT → RESOLVED_NOT_DELIVERED | **abandon 当前 operation**；如要重试，开新 generation operation（§5），不静默复用被阻塞的 key |
+| STILL_UNKNOWN（仍未知） | 维持 AMBIGUOUS | **保持阻塞**（no-send / no-commit），等待再次人工 |
 
-原则：**只有可证明"provider 未接受"的响应才是 confirmed failure**；任意
-非成功响应一律推断为未投递是错误假设（Reviewer 明确指出）。
+- resolution 是 append-only：每次裁决追加一条，状态机按最新记录推进；记录
+  必须绑定 run/operation/key/attempt/actor/time/reason，供审计。
+- 未决议的 AMBIGUOUS 永不自动重推、永不自动提交历史。
 
-## 7. 恢复语义（设计点 5 续）
+## 7. 持久化 API 与事务边界（ADR-004 修订）
 
-`resolve_recovery_action`（已含 G4-004 绑定强化）在三态下：
+### Port 方法（语义级原子，全部经 `HistoryPort` 暴露）
 
-- journal tail ∈ {DELIVERING, DELIVERED, RECOVERING} + receipt ok（run/key/
-  channel 全绑定）→ `COMMIT_HISTORY`（不重发）；
-- journal tail ∈ {DELIVERING, DELIVERED, RECOVERING} + receipt ambiguous →
-  `REQUIRE_HUMAN`（不重发、不提交历史）；
-- receipt failed（绑定）→ 已确认未送达 → 可安全重试交付（新 attempt，
-  复用同一 key，因为无外部副作用）；若重试仍失败 → 终止；
-- intent 存在但无收据：REGISTERED 无 SENT → 允许重发一次；SENT 无
-  RECEIPTED → `REQUIRE_HUMAN`（歧义，不重发）；
-- 证据缺失/不匹配 → `REQUIRE_HUMAN`（维持 G4-004 语义）。
+1. `begin_delivery_operation(run_id, idempotency_key, channel, payload_digest)
+   -> DeliveryOperationSnapshot`
+   - 同一 SQLite 事务：append `DELIVERING` journal（含 key+digest）+
+     `INSERT ... ON CONFLICT DO NOTHING` operation 行（state=
+     IN_FLIGHT_OR_MAY_HAVE_SENT, version=1）；
+   - 返回 `created=True, snapshot` 或 `created=False, existing`；
+   - 调用方规则：`created=False` 时按 §5 状态表决定——除 CONFIRMED_FAILED
+     的"人工新操作路径"外，**一律不得调用 transport**。
+2. `finalize_delivery_attempt(operation_key, expected_version, attempt_id,
+   outcome, evidence, attempted_at) -> DeliveryOperationSnapshot`
+   - **CAS**：`UPDATE delivery_operation SET state=…, version=version+1
+     WHERE operation_key=… AND version=expected_version`（RETURNING）；
+    写入 append-only attempt 行 + 不可变 receipt（ok/failed/ambiguous）同一
+    事务；`affected==0` → 冲突异常（fail-closed，绝不覆盖既有证据）。
+3. `record_delivery_resolution(operation_key, run_id, idempotency_key,
+   attempt_id, outcome, actor, reason, decided_at) -> DeliveryOperationSnapshot`
+   - append-only resolution 行 + CAS 推进 operation 状态
+     （AMBIGUOUS/IN_FLIGHT → RESOLVED_*）同一事务。
+4. `find_delivery_operation(idempotency_key) -> snapshot | None`（只读）；
+   既有 `find_delivery_receipt` / `save_delivery_receipt` 保留（G1-002 语义）。
 
-## 8. rollout / rollback / 验收测试（设计点 7）
+### payload digest
 
-### rollout
+- `payload_digest = SHA-256(payload_bytes)`，begin 时记录，finalize/复用前校验；
+- **同 key 不同 digest → fail-closed（不达网络）**——同一 key 不可重放不同内容
+  （验收 5）。
 
-1. 先合入 `delivery_receipt` schema **v2**（enum 增项 + 可选 attempt_id）
-   与读取器（接受 v1/v2；未知状态 fail-closed）；
-2. 再合入 `delivery_intent` 表与 reserve-before-send 协议；
-3. 最后切换 adapter 分类（§6）与恢复决策（§7）；
-4. v1 旧收据记录只读保留（不可变，不改写——G1-002）。
+### 事务边界
 
-### rollback
+- 网络调用前必须提交的写：`begin_delivery_operation`（journal DELIVERING +
+  operation 行）——即 §4 的原子 claim；
+- attempt + receipt + operation 状态推进在同一事务（finalize）；
+- resolution + operation 状态推进在同一事务；
+- journal 的其余追加（PLANNED…VALIDATED、DELIVERED/FAILED/RECOVERING、
+  HISTORY_COMMITTED/COMPLETE）沿用 G2 既有事务语义，不在此变更。
 
-- 回退到 v1 代码时，v2 记录中 `status="ambiguous"` 条目会被 v1 校验拒绝
-  ——**回退前必须**：导出 ambiguous 记录清单交由人工处置（REQUIRE_HUMAN
-  清单），或在 v1 读取器中保留"未知状态 fail-closed"（读失败而非误判
-  ok/failed）。回退不得静默把 ambiguous 当 failed/ok。
-- 回退后 `delivery_intent` 表保留（无写入即可），不删除数据。
+## 8. SQLite v1 → v2（ADR-004 修订）
 
-### 验收测试（全部本地 fake/fixture，零 live 调用；可执行计数器）
+- `PRAGMA user_version` 1 → 2；v1 的 `delivery_receipt` 表**保留且只读兼容**
+  （旧 ok/failed 行仍有效；不改写——G1-002）。
+- 新增表（草案，实现时以迁移脚本为准）：
 
-| 验收 | 测试 |
-|---|---|
-| 直接重放 | 同 key 连续两次 deliver() → 外部调用恰 1 次（第二个调用被 receipt/intent 拦截返回既有收据） |
-| 进程重启 | deliver → 模拟崩溃（收据已写、commit 未做）→ 新 RunEngine 实例 recover() → 外部调用仍 1 次 |
-| 并发 | 两线程/两"进程"同 key 同时 deliver → UNIQUE 冲突 fail-closed，外部调用恰 1 次 |
-| 歧义不重试 | transport 超时 → `status="ambiguous"`、calls==1、零退避、RunEngine → RECOVERING |
-| 明确拒绝重试 | 4xx 连续失败 → 有界重试后 `failed`；期间每次都是新 attempt 但同 key |
-| schema 校验 | ambiguous 收据通过 v2 schema；v1 校验拒绝 ambiguous（fail-closed） |
-| 恢复绑定 | ok/ambiguous 收据 + 绑定 journal → 相应动作；无证据 → REQUIRE_HUMAN |
-| 崩溃窗口 | REGISTERED 无 SENT → 重发一次；SENT 无 RECEIPTED → REQUIRE_HUMAN |
+```sql
+CREATE TABLE delivery_operation (
+  operation_key   TEXT PRIMARY KEY,          -- 稳定幂等键
+  run_id          TEXT NOT NULL,
+  channel         TEXT NOT NULL CHECK (channel IN ('markdown','pushplus')),
+  payload_digest  TEXT NOT NULL,             -- SHA-256 hex
+  state           TEXT NOT NULL CHECK (state IN
+                    ('IN_FLIGHT_OR_MAY_HAVE_SENT','SUCCEEDED',
+                     'CONFIRMED_FAILED','AMBIGUOUS',
+                     'RESOLVED_DELIVERED','RESOLVED_NOT_DELIVERED')),
+  version         INTEGER NOT NULL DEFAULT 1, -- CAS 计数器
+  created_at      TEXT NOT NULL
+);
+CREATE TABLE delivery_attempt (
+  attempt_id      TEXT PRIMARY KEY,
+  operation_key   TEXT NOT NULL REFERENCES delivery_operation(operation_key),
+  outcome         TEXT NOT NULL CHECK (outcome IN ('ok','failed','ambiguous')),
+  evidence        TEXT NOT NULL,             -- provider 响应摘要/异常类别
+  attempted_at    TEXT NOT NULL
+);
+CREATE INDEX idx_attempt_op ON delivery_attempt(operation_key);
+CREATE TABLE delivery_resolution (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  operation_key   TEXT NOT NULL REFERENCES delivery_operation(operation_key),
+  run_id          TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  attempt_id      TEXT,
+  outcome         TEXT NOT NULL CHECK (outcome IN
+                    ('CONFIRMED_DELIVERED','CONFIRMED_NOT_DELIVERED','STILL_UNKNOWN')),
+  actor           TEXT NOT NULL,
+  reason          TEXT NOT NULL,
+  decided_at      TEXT NOT NULL
+);
+CREATE INDEX idx_resolution_op ON delivery_resolution(operation_key);
+```
 
-## 9. 受影响契约与文件（Accepted 后）
+- 约束要点：`operation_key` PK 即并发唯一裁判；attempt 追加不可变；
+  resolution append-only；状态/outcome 用 CHECK 约束 fail-closed。
+- **两个独立连接并发行为**（验收 1/2）：`BEGIN IMMEDIATE` 事务下
+  `INSERT … ON CONFLICT DO NOTHING` → 仅一方插入成功并获得 created；
+  另一方拿到既有行快照 → 阻止 transport；finalize 的 CAS 同理。并发测试
+  使用两个独立 `sqlite3` 连接（非共享内存）。
+- 迁移/回滚：v1→v2 迁移不触碰旧行；v2→v1 回滚前导出 AMBIGUOUS /
+  RESOLVED_* 清单交人工处置，v1 读取器对未知状态 fail-closed（读失败而非
+  误判 ok/failed）。
 
-- `src/omda/ports/delivery.py`：docstring 三态 + 幂等义务；
+## 9. provider 响应分类（ADR-005 修订）
+
+`HttpTransport` 升级为**类型化结果**：`ProviderSuccess(body)` /
+`ProviderDefinitiveRejection(http_status, code, msg)` /
+`NoBytesSentError`（连接建立/首字节写出前失败，可证明未发送任何请求字节）/
+`AmbiguousFailure`（超时、连接重置、EOF、解析失败、写后异常、5xx、
+未知业务码）。
+
+| 观测 | 分类 | 自动动作 |
+|---|---|---|
+| PushPlus 文档化成功码（`code == 200`） | 成功 | finalize → SUCCEEDED / receipt ok；不重试 |
+| `NoBytesSentError`（可证明未发送字节） | 无副作用 | **唯一允许的自动重试类别**，有界（≤ `max_retries`）；其余一律不自动重试 |
+| 认证/参数/配置拒绝（文档化且明确未入队的精确类别） | CONFIRMED_FAILED terminal | finalize → failed 收据；**不是重试循环**（改输入需人工开新 operation） |
+| 未文档化/未知业务码、HTTP 5xx、解析失败、响应丢失、写后 transport 异常 | AMBIGUOUS | finalize → ambiguous 收据；**no-retry**，进 RECOVERING/人工 |
+| provider 提供真实服务端幂等保证（未来） | 由届时文档补充 | 仅在文档证明下放宽 |
+
+- **原则**：只允许**官方文档证明"请求未产生副作用"的精确类别**自动重试；
+  PushPlus 当前文档无此承诺的类别一律 no-retry。绝不对任意非成功响应推断
+  "未投递"。
+
+## 10. 保证边界（明确声明）
+
+- OMDA **保证：每个 delivery operation 至多一次自动外部请求**——由
+  §4 原子 claim（网络前持久化保守状态）+ §9 无自动歧义重试共同实现。
+- OMDA **不宣称** provider 端 exactly-once：PushPlus /send 无服务端幂等键，
+  远程恰好一次无法保证（SENT→evidence 之间崩溃的极小窗口除外，此时
+  REQUIRE_HUMAN 而非重发，来自 OMDA 的自动调用至多一次）。
+- **不宣称 PushPlus 与 SQLite 跨系统原子**（SPEC §4）：协议为"先推送
+  （稳定 key）→ 持久化证据 → 提交本地历史"；ok+commit 失败 → 只提交本地
+  历史；ambiguous → 人工；不虚构分布式事务。
+
+## 11. rollout / rollback / 恢复
+
+- **rollout**：① schema v2 DDL（新表 + user_version=2，旧表只读保留）→
+  ② Port 原子方法 → ③ adapter 切换（begin→transport→finalize）→
+  ④ 恢复/CLI 接线。旧 ok/failed 收据继续有效。
+- **rollback**：v2→v1 前导出 AMBIGUOUS/RESOLVED_* 清单人工处置；v1 读取器
+  对未知状态 fail-closed；不删除数据。
+- **恢复**：`RunEngine.recover()` 只读 durable 证据——journal tail +
+  operation 快照 + receipt + resolution：
+  - operation=SUCCEEDED / RESOLVED_DELIVERED（+绑定证据）→ COMMIT_HISTORY，
+    不重推；
+  - operation=AMBIGUOUS（无 resolution）→ REQUIRE_HUMAN（不重推不提交）；
+  - operation=CONFIRMED_FAILED / RESOLVED_NOT_DELIVERED → 不提交历史；
+    重试仅经人工开新 generation operation；
+  - operation 缺失但 journal 有 DELIVERING → 从未完成 claim（崩溃于
+    begin 之前）→ 可安全重新 begin（无外部副作用证据）。
+
+## 12. 验收测试（本地 fake/fixture，零 live 调用；纳入 Reviewer 10 项）
+
+| # | 验收 | 测试设计 |
+|---|---|---|
+| 1 | 两独立 SQLite 连接竞争同一缺失 key | 仅一方获 created 授权；外部调用 `<= 1` |
+| 2 | 第二调用方在 claim 与 send 之间到达 | 看到既有行 → 从不调用 transport（calls==1） |
+| 3 | claim 后、调用前崩溃 | 重启不自动发送；状态显式 AMBIGUOUS/人工（保守协议） |
+| 4 | 调用后、证据前崩溃 | 重启不自动发送（attempt 缺失 → 人工） |
+| 5 | 同 key 不同 payload digest | 网络前 fail-closed（calls==0） |
+| 6 | 既有 ok / ambiguous(in-flight) / resolved-delivered 证据 | 永不重发（calls 不增） |
+| 7 | `failed` 终态与不可变证据 | 同 key 不覆盖不重试；attempt/operation 基数断言 |
+| 8 | 人工裁决三结果 | CONFIRMED_DELIVERED 提交历史不重推；CONFIRMED_NOT_DELIVERED 走 abandon/新 operation；STILL_UNKNOWN 保持阻塞 |
+| 9 | schema v2 + SQLite 迁移 v2 | 接受旧 v1 行；校验每个新状态；降级/fail-closed 保留数据 |
+| 10 | 类型化 provider 响应 | 精确文档化码 + 未知 4xx、5xx、畸形体、超时、连接重置、响应丢失 全表断言 |
+
+崩溃窗口（§4/§8 映射到验收 3/4）：`begin 前崩溃`（无 operation）→ 安全重
+begin；`begin 后、调用前崩溃`（IN_FLIGHT 无 attempt）→ 假歧义人工（验收 3）；
+`调用后、finalize 前崩溃`（IN_FLIGHT 有/无 attempt 但无 evidence）→ 人工
+（验收 4）；`finalize 后崩溃` → 按 operation 状态恢复。
+
+## 13. 受影响契约与文件（Accepted 后）
+
+- `src/omda/ports/delivery.py`：docstring 三态 + 幂等/原子义务；
 - `src/omda/ports/domain.py`：`DeliveryReceipt.status` 注释
-  `# "ok" | "failed" | "ambiguous"`，新增可选 `attempt_id`；
+  `# "ok" | "failed" | "ambiguous"`，新增 operation/attempt/resolution 快照类型；
 - `data/schemas/delivery_receipt.schema.json`：v2（enum 增项 + attempt_id）；
-- 新增 `delivery_intent` 表定义（SQLite，UNIQUE idempotency_key）与
-  HistoryPort 两个方法（`register_delivery_intent` / `find_delivery_intent`）；
-- `src/omda/adapters/delivery.py`：reserve-before-send、§6 分类、无状态
-  消除（幂等查询收据）；
-- `src/omda/orchestrator/recovery.py`：§7 决策；
-- 测试：`tests/unit/test_delivery_adapters.py` 空洞重放测试替换为 §8 验收。
+- 新增 `delivery_operation` / `delivery_attempt` / `delivery_resolution`
+  DDL 与迁移脚本（v1→v2）；
+- `src/omda/ports/history.py`：§7 四个新方法；
+- `src/omda/adapters/delivery.py`：begin→transport→finalize、§9 分类、
+  `NoBytesSentError` 唯一自动重试；
+- `src/omda/orchestrator/run.py` / `recovery.py`：接线新 Port 与 §11 恢复；
+- 测试：`tests/unit/test_delivery_adapters.py` 空洞重放测试替换为 §12 矩阵。
 
-## 10. 决策与下一步
+## 14. 决策与下一步
 
-- **决策**：采用**方案 B**（版本化增加 ambiguous + attempt 字段 +
-  durable intent outbox + reserve-before-send + 明确拒绝/歧义分类）。
-- **本 ADR 为 Proposed**：等待 GPT-5.6 Sol 评审。评审期间 Executor 不修改
-  production code，不修复 G4-005/G4-007，不进入 G5。
-- 评审通过 → 更新本 ADR 为 Accepted 并按其实现 T4.3/T4.4 修复；
-  评审否决 → 按 Reviewer 意见修订或改选方案 A/C。
+- **决策**：采用**方案 B**（版本化增加 ambiguous + operation/attempt/
+  resolution 模型 + 原子 claim + 保守 provider 分类）。
+- **本 ADR 为 Proposed（修订 v2）**：等待 GPT-5.6 Sol 复审。评审期间
+  Executor 不修改 production code，不修复 G4-005/G4-007，不进入 G5。
+- 评审通过 → 更新本 ADR 为 Accepted 并按其实现 G4-002 修复；
+  评审否决 → 按 Reviewer 意见再修订。

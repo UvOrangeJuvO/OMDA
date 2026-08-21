@@ -149,3 +149,40 @@ Executor 按用户指令进入 **BLOCKED_ARCHITECTURE**，暂不修改 productio
 - 未 merge、未打 tag、**未进入 G5**、未写 ACCEPTED。
 - 下一步：等待 GPT-5.6 Sol 评审本 Proposed ADR；评审通过后按 ADR 实现
   G4-002 修复（T4.3/T4.4），随后处理 G4-005/G4-007。
+
+---
+
+# G4 Re-review 3 — ADR-0001 REVISE → 修订 v2（2026-08-21）
+
+对应 Reviewer commit：`a699a4955e2e925641ee979a7dd8f26b74beef5f`
+评审文件：`reviews/stage-04/ADR_0001_REVIEW.md`（结论 **REVISE**，ADR-001~005）
+ADR：`docs/adr/0001-delivery-receipt-ambiguity-and-idempotency.md`（保持 **Proposed**）
+
+## 修订对照（ADR-001 ~ ADR-005）
+
+| Finding | 修订 v2 方案 |
+|---|---|
+| ADR-001 REGISTERED→SENT 并发双发窗口 | **删除可恢复 REGISTERED**；外部调用前原子创建 operation 于 `IN_FLIGHT_OR_MAY_HAVE_SENT`（与 DELIVERING journal 同事务、ON CONFLICT 仅一方成功）；既有行阻止一切自动调用方；claim 后调用前崩溃 = 假歧义 → 人工（显式 availability 取舍）；不采用 lease/fencing（§4） |
+| ADR-002 不可变 failed 与同 key 重试矛盾 | **DeliveryOperation（每 key 一行）与 DeliveryAttempt（append-only 不可变）分离**；failed 为 operation terminal（不覆盖不可变收据、不自动重试）；人工确认未投递后以新 generation key（`<run>:<channel>:<gen>`）开新 operation 并绑定原 run（§5） |
+| ADR-003 ambiguous 无人工 resolution | 新增 **append-only `delivery_resolution`**（run/operation/key/attempt/actor/time/reason），outcome ∈ {CONFIRMED_DELIVERED → 提交历史不重推；CONFIRMED_NOT_DELIVERED → abandon/新操作；STILL_UNKNOWN → 保持阻塞}（§6） |
+| ADR-004 持久化 API/事务边界未指定 | 语义级原子 Port 方法：`begin_delivery_operation`（journal+operation 同事务、网络前 commit）/ `finalize_delivery_attempt`（CAS 期望 state+version）/ `record_delivery_resolution`；payload digest=SHA-256，同 key 异 digest 网络前 fail-closed；SQLite v1→v2 DDL 草案（operation/attempt/resolution 三表 + CHECK/UNIQUE/FK 约束）、两独立连接并发行为（BEGIN IMMEDIATE + ON CONFLICT）、迁移/回滚（§7/§8） |
+| ADR-005 4xx 全重试无依据 | **取消笼统 4xx 重试**；类型化 transport（ProviderSuccess / ProviderDefinitiveRejection / `NoBytesSentError` / AmbiguousFailure）；唯一自动重试类别 = `NoBytesSentError`（可证明未发送任何字节，有界）；未知响应/5xx/解析失败/写后异常/未知业务码 → ambiguous no-retry；认证/参数拒绝 = CONFIRMED_FAILED terminal 非重试循环（§9） |
+
+## 保证边界（§10）
+
+- OMDA 保证 **每个 delivery operation 至多一次自动外部请求**（原子 claim +
+  无歧义自动重试）。
+- **不宣称** provider 端 exactly-once（PushPlus 无服务端幂等键）。
+- 不宣称 PushPlus 与 SQLite 跨系统原子（SPEC §4）。
+
+## 验收（§12）
+
+纳入 Reviewer 全部 10 项验收测试（两连接并发 race / claim-send 窗口 /
+两类崩溃 / 异 digest fail-closed / 既有证据永不重发 / failed 终态基数 /
+人工裁决三结果 / schema v2 + 迁移 v2 兼容 v1 / 类型化 provider 响应全表）。
+
+## 明确声明
+
+- 本轮**未修改任何 production code**；ADR 保持 **Proposed**（未改 Accepted）；
+- 未处理 G4-005 / G4-007；未 merge、未打 tag、**未进入 G5**。
+- 下一步：等待 GPT-5.6 Sol 复审修订 v2。
