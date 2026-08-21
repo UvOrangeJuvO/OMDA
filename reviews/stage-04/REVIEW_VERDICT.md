@@ -643,3 +643,202 @@ Candidate `1a197d9ceb95acd4e8214a28cd52c8172a4a02a0` must not be merged or marke
 real concrete transport, SQLite bindings, real `RunEngine` recovery and public CLI route.
 The Accepted ADR is sufficient for these repairs; a new ADR is needed only if the Executor
 proposes changing its binding semantics rather than implementing them.
+
+---
+
+# G4 Re-review 4 — Production-boundary audit (2026-08-22)
+
+## Reviewed object
+
+- Reviewer: GPT-5.6 Sol in Codex
+- Gate: G4 — Agent & Delivery
+- Exact original base SHA: `68e3d453c7b803d2090cb1318f48e58eb18d6390`
+- Exact candidate SHA: `8b1f7c9ad73f60b3288cd1f4fff941cc37e38f51`
+- Previous reviewer commit: `50ce635ede960265dc60927e6bc09e0ffd9745bf`
+- Candidate branch observed: `exec/g4-agent-delivery`
+- Executor repair report: `reviews/stage-04/REPAIR_REPORT.md`
+
+The candidate was a clean descendant of the supplied original base, with the exact supplied
+candidate checked out and a clean worktree at review start. This review inspected both the
+repair delta after the previous reviewer commit and the complete base-to-candidate behavior.
+
+The four concrete counterexamples from re-review 3 are substantially repaired: unknown HTTP
+4xx responses now become ambiguous, cross-bound resolutions are rejected, the real
+`RunEngine` consumes the human-confirmed-delivered decision, and the public `--deliver` route
+can now reach an injected PushPlus boundary. The bounded narrative archive also closes the
+specific discarded-value finding.
+
+The candidate nevertheless cannot be accepted. An independent public-entrypoint probe showed
+that the newly reachable external-delivery route sends fabricated illustrative Album records
+(`Sample Artist`, `<genre> Sample 1/2/3`) and then commits those identifiers to permanent
+official history. No production `AlbumSource` implementation exists in `src/`; the only Album
+source reachable from the CLI is `_sample_album_source`. Choosing where real Album candidates
+come from crosses the already accepted G3/G4 boundary and is not specified by an open task.
+This is an architecture blocker, not a reason for the Executor to improvise another scraper.
+
+## Previous findings disposition
+
+| Previous finding | Re-review 4 status | Evidence |
+|---|---|---|
+| G4-002A unknown HTTP 4xx | **CLOSED** | Concrete unknown 418/499 outcomes are ambiguous and are not retried. |
+| G4-002B resolution/receipt binding | **PARTIAL** | Resolution and finalized receipts are bound, but begin/replay and the public legacy receipt write still accept unbound fields; see G4-002C. |
+| G4-004R human-confirmed recovery | **CLOSED** | Real engine claim/crash/confirm/recover reaches COMPLETE without a second external call. |
+| G4-007 unreachable public route | **CLOSED only for reachability** | `--config` reaches an injected PushPlus transport, but the reached route is not a valid production recommendation route; see G4-007B. |
+| G4-008 discarded narrative | **CLOSED mechanically** | Generated text is stored in a bounded journal field and is excluded from the delivered fact-only report. |
+
+## Blocking findings
+
+### [P1] G4-007B — `--deliver` pushes illustrative Albums and commits them as official history
+
+- Location: `src/omda/cli.py:165-198`, especially `:178-193`;
+  `src/omda/cli.py:245-275`; `data/genres/README.md:41-42`.
+- The public route always constructs `_sample_album_source(genres)`. That source hard-codes
+  three invented records for every selected Genre:
+
+  ```text
+  <genre>-1 / <genre> Sample 1 / Sample Artist / 2015
+  <genre>-2 / <genre> Sample 2 / Sample Artist / 2000
+  <genre>-3 / <genre> Sample 3 / Sample Artist / 1990
+  ```
+
+- Independent probe called public `cli.main()` with a PushPlus config, temporary official
+  SQLite store, runtime token and injected fake network transport. The run returned COMPLETE,
+  made exactly one external call, and its outbound Markdown contained entries such as
+  `tuareg Sample 1 — Sample Artist (2015)`. The official history then contained nine IDs such
+  as `ambient-1`, `bebop-2` and `tuareg-3`.
+- The packaged Genre directory is itself documented as an illustrative four-record subset,
+  not a full source. Repository search found no concrete production `AlbumSource`; G3's
+  Browser Companion extracts bounded Genre metadata, not Album candidates.
+- Impact: a user who deliberately unlocks the supposedly real PushPlus route receives fake
+  recommendations. Because delivery succeeds, fake Album identifiers are permanently excluded
+  and Genre cooldown advances. This is a direct product-data corruption path, not a cosmetic
+  demo limitation.
+- Violated contract: Master Plan MVP steps 4-9 and Album invariants; the G4-007 claim of a
+  production Agent/PushPlus composition; the rule that insufficient or unavailable real
+  candidates must fail/report rather than be filled with unrelated Albums.
+- Required disposition: the external route MUST fail closed while only sample/demo Album data
+  is available. To complete G4, first submit an ADR/plan amendment that selects the v0.1
+  production Album-candidate source, its provenance/licensing boundary, on-demand access
+  policy, canonical identity/enrichment path, and whether the missing work belongs to reopened
+  G3 or G4. Do not silently add broad RYM crawling, Album-detail fan-out, anti-bot bypass or
+  another architecture not authorized by the baseline.
+- Required acceptance: drive the public CLI through an injected network boundary and assert
+  exact outbound facts and exact committed identities originate from a production source with
+  auditable provenance. Add a negative test proving sample/demo sources cannot be used with
+  external delivery and leave official history unchanged.
+
+### [P1] G4-002C — Accepted ADR's full storage binding is still not enforced
+
+- Location: `src/omda/storage/sqlite_history.py:436-480`, `:510-576`;
+  Accepted ADR-0001 §15-5 (`docs/adr/0001-delivery-receipt-ambiguity-and-idempotency.md:371-374`).
+- `begin_delivery_operation()` returns an existing row for the same operation key without
+  verifying that the caller's `run_id` and `channel` match that row. Independent probe began
+  `run-a/shared/markdown/digest-a`, then began `run-b/shared/pushplus/digest-a`; the second call
+  was accepted as `created=False` and returned the first operation.
+- `save_delivery_receipt()` still inserts any caller-supplied non-null `attempt_id` without
+  checking that the attempt exists or belongs to the matching operation. Independent probe
+  stored `shared-key#999` successfully despite there being no such attempt.
+- Digest replay protection in the orchestrator and the repaired resolution method do not
+  satisfy the ADR's storage-level requirement that operation, attempt, receipt and resolution
+  run/key/channel/digest/attempt associations fail closed in the same storage transaction.
+- Impact: malformed, stale or cross-run evidence can enter the durable authority boundary.
+  Correctness currently depends on every caller pre-validating fields that the Accepted ADR
+  explicitly assigns to persistence.
+- Required acceptance: both SQLite and in-memory parity tests must reject an existing-key
+  begin with any mismatched run/channel/digest binding, before any external call. Receipt writes
+  with a non-null attempt must verify operation/key/run/channel/attempt in one transaction;
+  define and test the narrow compatibility rule for legacy v1 null-attempt receipts.
+
+## Non-blocking but required findings
+
+### [P2] G4-007C — Configured token variable is ignored unless the CLI override is repeated
+
+- Location: `src/omda/cli.py:35-80`, `:184-193`.
+- `--token-env` has a non-null default (`PUSHPLUS_TOKEN`), so
+  `args.token_env or config.delivery.pushplus_token_env` always chooses the parser default.
+- Independent probe configured `pushplus_token_env=OMDA_PP_TOKEN`, set only that environment
+  variable, and omitted `--token-env`; the route exited non-zero before the fake transport was
+  called.
+- Required acceptance: distinguish “CLI option omitted” from an explicit override, honor the
+  config value first when omitted, and test config-only, CLI-override and missing-token cases
+  through the public entrypoint without logging the secret.
+
+### [P2] G4-002D — SQLite version 3 silently diverges from the Accepted version-2 boundary
+
+- Location: `src/omda/storage/sqlite_history.py:50-54`; Accepted ADR-0001
+  `:207-250`, `:296`, `:371-374`.
+- Candidate now sets `_SCHEMA_VERSION = 3` so a receipt-attempt column omitted from its earlier
+  v2 implementation can be added in a later migration. The Accepted ADR explicitly defines
+  `user_version=2`, including that nullable column, as the G4 boundary. Tests and module
+  comments still describe the v2 contract while fresh databases end at v3.
+- Required disposition: either implement the Accepted v2 layout faithfully for the supported
+  base migration, or amend the ADR with an explicit, backward-compatible v3 rollout and tests.
+  Do not silently change an Accepted persistent version boundary inside a repair commit.
+
+### [P2] G4-002E — Production transport documentation still classifies every HTTP 4xx as definitive
+
+- Location: `src/omda/production.py:1-14`.
+- The implementation was correctly repaired to make undocumented 4xx ambiguous, but the
+  module-level production contract still says “HTTP 4xx” is terminal rejection.
+- Required acceptance: document the same exact provider classification table that code and
+  tests enforce; stale safety documentation must not instruct a future adapter to restore the
+  rejected behavior.
+
+### [P2] G4-009 — Real LLM runtime composition has no owned milestone
+
+- Location: `src/omda/cli.py:184-193`, `:256-260`;
+  `reviews/stage-04/REPAIR_REPORT.md:211-223`;
+  `governance/IMPLEMENTATION_PLAN.md:351-364`, `:410-445`, `:530-532`.
+- The external route uses `_LocalEchoTransport`, which always returns one constant local
+  sentence. The repair report defers a real LLM client to G5, but G5 is a release-audit Gate
+  containing installation, E2E/failure injection, security/licensing and release work—there is
+  no runtime-provider implementation task. OD-2 assigns replaceable provider selection to G4.
+- This does not authorize embedding unconstrained prose in delivery; the existing mechanical
+  fact-only payload remains the safer boundary. The unresolved issue is that a demo echo is
+  being called the production Agent composition.
+- Required disposition in the same architecture decision: either select/configure a concrete
+  replaceable v0.1 provider in G4, or explicitly define v0.1 as deterministic/no-LLM runtime
+  and amend the MVP/plan accordingly. Do not defer implementation to a nonexistent G5 task.
+
+## Acceptance matrix
+
+| G4 criterion | Re-review 4 status |
+|---|---|
+| Deterministic selection remains outside LLM | **PASS** |
+| Fact-only Markdown prevents LLM from changing recommendations | **PASS** |
+| Unknown provider outcomes are ambiguous/no blind retry | **PASS** |
+| Human-confirmed delivery recovers without re-push | **PASS** |
+| Public explicit-delivery route is technically reachable | **PASS** |
+| Public route delivers real, provenance-bearing Album candidates | **FAIL — P1 / architecture** |
+| Official history contains only genuine selected Album identities | **FAIL — P1** |
+| Full operation/attempt/receipt/resolution persistence binding | **FAIL — P1** |
+| Config-only PushPlus token selection | **FAIL — P2** |
+| Accepted persistent schema version boundary | **FAIL — P2 / governance** |
+| G4 owns a truthful LLM/runtime boundary | **FAIL — P2 / architecture** |
+| Default dry-run remains local and history-neutral | **PASS** |
+| Full regression, lint and whitespace checks | **PASS** |
+
+## Checks performed and limits
+
+- Exact SHA, merge-base, branch, clean-worktree and complete repair-delta inspection: passed.
+- Full suite: **630 passed in 4.31s**, 0 failed, 0 skipped.
+- `ruff check src tests browser_companion`: passed.
+- `git diff --check` for the supplied base-to-candidate range: passed.
+- Independent probes: public external route with captured payload/official history, config-only
+  token selection, cross-bound existing-operation begin, and unbound receipt attempt write.
+- Previous probes were rerun/inspected for unknown 4xx classification, human-confirmed real
+  engine recovery and resolution binding.
+- Tracked secret/private-key pattern scan: no match.
+- No live PushPlus, LLM, RYM or other network request was made. No production code, merge, tag
+  or push was performed.
+
+## Re-review 4 verdict
+
+**BLOCKED_ARCHITECTURE / ADR_REQUIRED**
+
+Candidate `8b1f7c9ad73f60b3288cd1f4fff941cc37e38f51` MUST NOT be merged, marked
+`ACCEPTED`, or used to begin G5. The Executor must stop feature implementation and submit the
+production-source/runtime ADR described in G4-007B/G4-009. The ADR must preserve all rejected
+architecture constraints and make external delivery fail closed until genuine candidates are
+available. After Reviewer acceptance of that decision, implement it and repair G4-002C plus
+the P2 findings, then return one new cumulative candidate against the same original base.
