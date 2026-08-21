@@ -49,16 +49,18 @@ class ScriptedLLMTransport:
 def _run_with_llm_text(text: str, delivery: FakeDelivery | None = None):
     history = InMemoryHistory()
     llm = LLMAdapter(transport=ScriptedLLMTransport(text))
+    if delivery is None:
+        delivery = FakeDelivery()
     engine = RunEngine(
         config=load_config(),
         history=history,
         genre_source=FakeGenreSource(_genres()),
         album_source=FakeAlbumSource({g.genre_id: _albums(g.genre_id) for g in _genres()}),
         llm=llm,
-        delivery=delivery or FakeDelivery(),
+        delivery=delivery,
         seed="g4-001",
     )
-    return engine, history, delivery or FakeDelivery()
+    return engine, history, delivery
 
 
 def test_production_run_delivers_structured_markdown_not_raw_llm_text() -> None:

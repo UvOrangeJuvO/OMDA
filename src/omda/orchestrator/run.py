@@ -462,19 +462,19 @@ class RunEngine:
         )
 
     def _generate(self, plan: Plan) -> str:
-        # G4-001: the LLM only explains from the fact packet; the DELIVERED
-        # payload is a deterministic structured Markdown report whose facts come
-        # exclusively from the selected plan. The raw LLM response is embedded
-        # as untrusted narrative inside that structure — it can never change the
-        # recommendation facts (SPEC §3.5, MP §3.6, T4.2).
+        # G4-001 + G4-005: the LLM only explains from the fact packet, and its
+        # free-text narrative is NEVER part of the delivered payload (there is
+        # no free-text slot, so an off-packet Album/Genre reference can never
+        # be delivered). The payload is a deterministic structured Markdown
+        # report whose facts come exclusively from the selected plan.
         packet = FactPacket(run_id=plan.run_id, plan=plan)
         try:
-            narrative = self._llm.generate_narrative(_packet_dict(packet))
+            self._llm.generate_narrative(_packet_dict(packet))
         except DomainError:
             raise
         except Exception as exc:  # provider-side generation failure
             raise GenerationFailureError(f"narrative generation failed: {exc}") from exc
-        return render_markdown(self._report_data(plan), narrative)
+        return render_markdown(self._report_data(plan))
 
     def _validate_payload(self, payload: str, plan: Plan) -> None:
         # G4-001: full structure/length/fact-reference validation of the

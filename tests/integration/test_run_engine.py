@@ -133,9 +133,11 @@ class FailingLLM:
         raise GenerationFailureError("simulated llm failure")
 
 
-class EmptyLLM:
+class ExplodingLLM:
+    """A provider that fails outright -> generation failure (G4-005)."""
+
     def generate_narrative(self, fact_packet):
-        return "   "
+        raise GenerationFailureError("provider unavailable")
 
 
 class FailingDelivery:
@@ -168,9 +170,12 @@ def test_generation_failure_does_not_pollute_history(factory) -> None:
 
 
 @pytest.mark.parametrize("factory", HISTORY_FACTORIES)
-def test_validation_failure_does_not_pollute_history(factory) -> None:
+def test_llm_provider_failure_does_not_pollute_history(factory) -> None:
+    # G4-005: a FAILED LLM generation is a hard failure; nothing is delivered
+    # and official history stays untouched. (An empty narrative string is no
+    # longer a failure — it is never part of the delivered payload.)
     history = factory()
-    outcome = _engine(history, llm=EmptyLLM()).run("run-1")
+    outcome = _engine(history, llm=ExplodingLLM()).run("run-1")
     assert outcome.state == FAILED
     _assert_history_untouched(history, "run-1")
 

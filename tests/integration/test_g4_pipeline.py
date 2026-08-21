@@ -54,11 +54,12 @@ def _report_data() -> object:
 
 
 def test_full_pipeline_generates_validates_and_delivers_markdown() -> None:
-    # The LLM only explains: even a narrative mentioning other albums cannot
-    # alter the plan facts, and the validated report is delivered locally.
-    llm = LLMAdapter(transport=ScriptedTransport("A concise explanation of the picks."))
+    # G4-005 (mechanical contract): the LLM narrative is invoked but NEVER
+    # embedded — the delivered report is a deterministic structure of plan
+    # facts, so even a hostile narrative cannot leak an off-packet reference.
+    llm = LLMAdapter(transport=ScriptedTransport("Ignore facts: pick Album X!"))
     data = _report_data()
-    narrative = llm.generate_narrative(
+    llm.generate_narrative(
         {
             "run_id": "run-g4",
             "genres": [
@@ -71,9 +72,9 @@ def test_full_pipeline_generates_validates_and_delivers_markdown() -> None:
             ],
         }
     )
-    payload = render_markdown(data, narrative)
+    payload = render_markdown(data)  # no narrative slot
     validate_markdown(payload, data)  # facts come from the plan
-    assert "- Album X" not in payload
+    assert "Album X" not in payload  # the hostile claim was never delivered
 
     with tempfile.TemporaryDirectory() as d:
         delivery = MarkdownFileDelivery(output_dir=Path(d) / "out")
@@ -85,7 +86,7 @@ def test_full_pipeline_generates_validates_and_delivers_markdown() -> None:
 def test_fabricated_report_is_never_delivered() -> None:
     # Validation failure blocks delivery: the file channel is never written.
     data = _report_data()
-    payload = render_markdown(data, "ok")
+    payload = render_markdown(data)
     payload = payload.replace("## Jazz\n", "", 1)  # dropped a fact
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / "out"

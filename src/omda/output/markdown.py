@@ -1,23 +1,24 @@
 """Markdown report generation and validation (G4 T4.2, G4-005).
 
 Renders a deterministic, structured Markdown report from the already-selected
-plan facts (the LLM narrative is embedded as an untrusted, clearly-marked
-quote block) and validates structure, length and FACT REFERENCES before
-anything is delivered (SPEC §3.5, §8; MP §3.6). A payload that fails
-validation MUST NOT be delivered.
+plan facts and validates structure, length and FACT REFERENCES before anything
+is delivered (SPEC §3.5, §8; MP §3.6). A payload that fails validation MUST
+NOT be delivered.
 
-Validation is machine-verifiable against the fact packet (G4-005):
+G4-005 (mechanical output contract): the deliverable contains NO unconstrained
+LLM prose. Every Genre heading and every complete Album bullet is generated
+from the deterministic fact packet, so an off-packet Album/Genre reference can
+never appear in the delivered report — there is no free-text slot to smuggle
+one through. The LLM narrative (if any) is produced by the Orchestrator for
+archival purposes only and is NOT part of the delivered payload.
 
-- every selected Genre heading and EVERY complete Album bullet must be present,
-  with the FULL bullet text (title — artist (year)) matching the plan and the
-  bullet appearing under its own Genre section;
-- the run id must match;
+Validation is machine-verifiable against the fact packet:
+
+- the title and run id must match exactly;
+- every selected Genre heading and EVERY complete Album bullet
+  (``title — artist (year)``) must be present under its own Genre section;
 - a Genre heading / Album bullet not in the plan is a fabrication and fails
-  closed;
-- the LLM narrative lives in a ``>`` quote block: it may not smuggle `- `
-  bullets, `## ` headings, em-dash album assertions, or directive verbs such
-  as "recommend"/"suggest"/"choose"/"pick"/"ignore" — prose that claims to
-  change or extend the selection cannot pass merely because it is prose.
+  closed.
 
 The module depends only on plain report data (run id, genres, albums), not on
 the Orchestrator's Plan type, so it stays a leaf dependency.
@@ -25,30 +26,19 @@ the Orchestrator's Plan type, so it stays a leaf dependency.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from omda.ports.errors import ValidationFailureError
 
 MAX_MARKDOWN_LENGTH = 4000
-MAX_NARRATIVE_LENGTH = 1500
 
 # Required structural markers of a rendered report.
 _TITLE_PREFIX = "# 每日音乐发现"
 _RUN_PREFIX = "Run: "
 _GENRE_HEADING_PREFIX = "## "
 _ALBUM_BULLET_PREFIX = "- "
-_QUOTE_PREFIX = "> "
-
-# Directive verbs that would mean the LLM is trying to change/extend the
-# selection instead of explaining it (SPEC §3.5; MP §3.6).
-_DIRECTIVE_VERBS = re.compile(
-    r"\b(?:recommend|suggest|choose|pick|ignore|instead|replace|remove|add)\b",
-    re.IGNORECASE,
-)
-# An em-dash album assertion: "Title — Artist".
-_EMDASH_ASSERTION = re.compile(r"([^—\n]+) — ([^\n]+)")
+_NOTE_HEADING = "## 说明"
 
 
 class ReportData:
@@ -66,26 +56,16 @@ class ReportData:
         self.albums = list(albums)
 
 
-def render_markdown(data: ReportData, narrative: str) -> str:
+def render_markdown(data: ReportData) -> str:
     """Render a deterministic structured Markdown report.
 
-    The narrative is embedded as an untrusted quote block; all Genre and Album
-    facts come from ``data`` (the deterministic selection), so the LLM cannot
-    alter the recommendation through its text.
+    All Genre and Album facts come from ``data`` (the deterministic selection);
+    no LLM text is embedded, so nothing outside the plan can be delivered.
     """
-    if not isinstance(narrative, str) or len(narrative) > MAX_NARRATIVE_LENGTH:
-        raise ValidationFailureError(
-            f"narrative must be a string of at most {MAX_NARRATIVE_LENGTH} characters"
-        )
-    stripped = narrative.strip()
-    if not stripped:
-        raise ValidationFailureError("narrative is empty")  # G2: empty -> failure
     lines: list[str] = [_TITLE_PREFIX, "", f"{_RUN_PREFIX}{data.run_id}", ""]
-    lines.append("## 说明")
+    lines.append(_NOTE_HEADING)
     lines.append("")
-    # Quote block: the LLM prose is untrusted data, clearly delimited.
-    for quote_line in stripped.splitlines():
-        lines.append(f"{_QUOTE_PREFIX}{quote_line}")
+    lines.append("（本次推荐由已确定的选择计划生成：以下流派与专辑为每日发现结果。）")
     lines.append("")
     for genre in data.genres:
         name = genre.get("name", genre.get("genre_id", "?"))
@@ -140,7 +120,6 @@ def validate_markdown(payload: str, data: ReportData) -> None:
     # 1) STRUCTURE + FACT REFERENCES: every selected Genre section and every
     #    COMPLETE Album bullet must appear under its own Genre section.
     known_genres = {g.get("name", g.get("genre_id", "?")) for g in data.genres}
-    # Map genre name -> exact set of complete bullet texts for that genre.
     albums_by_genre: dict[str, set[str]] = {}
     for album in data.albums:
         genre_key = album.get("genre_id") or album.get("genre")
@@ -165,9 +144,6 @@ def validate_markdown(payload: str, data: ReportData) -> None:
             if heading not in known_genres:
                 raise ValidationFailureError(f"unknown genre heading in payload: {heading!r}")
             current_genre = heading
-            continue
-        if line.startswith(_QUOTE_PREFIX):
-            _validate_narrative_quote(line[len(_QUOTE_PREFIX):], data)
             continue
         if line.startswith(_ALBUM_BULLET_PREFIX):
             bullet = line[len(_ALBUM_BULLET_PREFIX):].strip()
@@ -197,31 +173,6 @@ def validate_markdown(payload: str, data: ReportData) -> None:
         raise ValidationFailureError(f"missing genre section: {sorted(missing_genres)[0]!r}")
 
 
-def _validate_narrative_quote(quote_line: str, data: ReportData) -> None:
-    """The LLM prose is untrusted: reject directive verbs, injected structure
-    and fabricated em-dash album assertions (G4-005)."""
-    if quote_line.startswith(_ALBUM_BULLET_PREFIX) or quote_line.startswith(
-        _GENRE_HEADING_PREFIX
-    ):
-        raise ValidationFailureError("narrative injected report structure")
-    if _DIRECTIVE_VERBS.search(quote_line):
-        raise ValidationFailureError(
-            "narrative contains a directive verb (recommend/suggest/choose/pick/"
-            "ignore/...): the LLM must only explain, never change the selection"
-        )
-    # Any "Title — Artist" assertion inside prose must be grounded in the plan.
-    for match in _EMDASH_ASSERTION.finditer(quote_line):
-        title = match.group(1).strip()
-        artist = match.group(2).strip()
-        grounded = any(
-            a.get("title") == title and a.get("artist") == artist for a in data.albums
-        )
-        if not grounded:
-            raise ValidationFailureError(
-                f"narrative asserts an album not in the fact packet: {title!r} — {artist!r}"
-            )
-
-
 def build_report_data(
     *,
     run_id: str,
@@ -234,7 +185,6 @@ def build_report_data(
 
 __all__ = [
     "MAX_MARKDOWN_LENGTH",
-    "MAX_NARRATIVE_LENGTH",
     "ReportData",
     "build_report_data",
     "render_markdown",
