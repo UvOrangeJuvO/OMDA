@@ -71,3 +71,39 @@
 ## 6. Executor Conclusion
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G4 Re-review 1 Repair（2026-08-21）
+
+对应 Reviewer commit：`754a140562dcb36dacf77b56d1d6505996a0c490`
+上一 candidate：`10275ed04a66ed50631edb0d43a3505f18d2a5b7`
+本轮修复 commits：`f5f02d2`、`66c7ee4`、`460a518`、`aedff3f`、`958a32b`、`343d3ed`
+详细逐项修复记录见 `reviews/stage-04/REPAIR_REPORT.md`。
+
+## Re-review 1 finding 修复对照
+
+| Finding | 严重度 | 修复 commit | 状态 |
+|---|---|---|---|
+| G4-001 生产 RunEngine 绕过渲染器与事实校验 | P1 | `f5f02d2` | CLOSED |
+| G4-002 PushPlus 盲目重试歧义发送 | P1 | `66c7ee4` | CLOSED |
+| G4-003 dry-run 只是选择器且污染历史 | P1 | `460a518`+`343d3ed` | CLOSED |
+| G4-004 recovery 接受未绑定收据 | P1 | `aedff3f` | CLOSED |
+| G4-005 Markdown 校验只查 title 前缀 | P1 | `f5f02d2` | CLOSED |
+| G4-006 事实包未全字段有界 | P1 | `958a32b` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **566 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 566 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| `python -m omda.cli --dry-run` | COMPLETE + 生成预览 |
+| 既有测试未删除/弱化/skip | 确认（539 → 566；2 个 G4 新增测试按新验收语义升级并披露） |
+| 未 merge / 未 tag / 未进入 G5 / 未改 verdict / 未写 ACCEPTED | 确认 |
+
+## Executor Conclusion（G4 Re-review 1 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
