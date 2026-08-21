@@ -107,3 +107,29 @@ def test_production_run_never_commits_history_for_invalid_payload() -> None:
     else:
         assert outcome.state == COMPLETE
         assert outcome.payload.startswith("# 每日音乐发现")
+
+
+# --- G4-008 re-review 3: the LLM narrative is archived (bounded), not discarded --
+
+
+def test_generated_narrative_is_archived_bounded_in_journal() -> None:
+    # The LLM output is invoked once and its result is PERSISTED (bounded)
+    # into the GENERATED journal entry — it is never discarded (G4-008), and
+    # it is still never part of the delivered payload.
+
+    engine, history, delivery = _run_with_llm_text("Some archival explanation.")
+    outcome = engine.run("run-1")
+    assert outcome.state == COMPLETE
+    generated = next(e for e in history.journal_after("run-1", 0) if e.transition == "GENERATED")
+    assert generated.detail is not None
+    assert generated.detail["narrative"] == "Some archival explanation."
+    # The delivered payload has no free-text slot (mechanical contract).
+    assert "Some archival explanation" not in outcome.payload
+
+
+def test_generated_narrative_is_truncated_to_bounded_length() -> None:
+    engine, history, delivery = _run_with_llm_text("x" * 10_000)
+    outcome = engine.run("run-1")
+    assert outcome.state == COMPLETE
+    generated = next(e for e in history.journal_after("run-1", 0) if e.transition == "GENERATED")
+    assert len(generated.detail["narrative"]) <= 1500

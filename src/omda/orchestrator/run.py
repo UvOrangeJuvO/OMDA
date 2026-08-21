@@ -74,6 +74,8 @@ from omda.seed import make_rng
 
 MAX_PAYLOAD_LENGTH = 4000
 MAX_RUN_ATTEMPTS = 2
+# G4-008: bounded archival length for the LLM narrative in the GENERATED entry.
+NARRATIVE_ARCHIVE_LENGTH = 1500
 
 # Run transitions (SPEC §4).
 PLANNED = "PLANNED"
@@ -397,8 +399,7 @@ class RunEngine:
             self._append(run_id, SELECTED, plan.digest())
 
             # GENERATE + VALIDATE.
-            payload = self._generate(plan)
-            self._append(run_id, GENERATED)
+            payload = self._generate(plan)  # appends GENERATED with the narrative
             self._validate_payload(payload, plan)
             self._append(run_id, VALIDATED)
 
@@ -472,11 +473,11 @@ class RunEngine:
         # G4-001 + G4-005: the LLM only explains from the fact packet, and its
         # free-text narrative is NEVER part of the delivered payload (there is
         # no free-text slot, so an off-packet Album/Genre reference can never
-        # be delivered). The payload is a deterministic structured Markdown
-        # report whose facts come exclusively from the selected plan.
+        # be delivered). G4-008: the narrative IS archived — bounded — in the
+        # GENERATED journal entry so the provider cost has a durable purpose.
         packet = FactPacket(run_id=plan.run_id, plan=plan)
         try:
-            self._llm.generate_narrative(
+            narrative = self._llm.generate_narrative(
                 _packet_dict(packet),
                 expected_genres=len(plan.genres),
                 expected_albums=len(plan.albums),
@@ -485,6 +486,11 @@ class RunEngine:
             raise
         except Exception as exc:  # provider-side generation failure
             raise GenerationFailureError(f"narrative generation failed: {exc}") from exc
+        self._append(
+            plan.run_id,
+            GENERATED,
+            {"narrative": (narrative or "")[:NARRATIVE_ARCHIVE_LENGTH]},
+        )
         return render_markdown(self._report_data(plan))
 
     def _validate_payload(self, payload: str, plan: Plan) -> None:
