@@ -417,3 +417,229 @@ Candidate `13a659d741e70df5e7b3faa561ffc822dd4efb5c` must not be merged or marke
 `ACCEPTED`. G5 must not begin. The Executor should first resolve G4-002 and its accepted
 Port/Schema decision (ADR if required), replace the narrative blacklist with a mechanically
 grounded output contract, and provide the missing production Agent/PushPlus composition.
+
+---
+
+## Re-review 3 — ADR-0001 implementation candidate
+
+### Reviewed range and repository state
+
+- Gate: **G4 — Agent & Delivery**
+- Base: `68e3d453c7b803d2090cb1318f48e58eb18d6390`
+- Candidate: `1a197d9ceb95acd4e8214a28cd52c8172a4a02a0`
+- Branch at review start: `exec/g4-agent-delivery`
+- HEAD at review start: exact candidate
+- Merge-base: exact supplied base
+- Worktree at review start: clean
+- Accepted architecture in the reviewed chain: ADR-0001 revision v2, accepted by
+  `1349a0fd53116335d372c89684d83f1d556b63ac`; its section 15 constraints are binding.
+- Candidate state/report: G4 / `READY_FOR_REVIEW`; `candidate_commit=null` follows the
+  repository's documented anti-self-reference convention.
+
+The complete 38-file base-to-candidate delta, the prior findings, the Accepted ADR, the
+Executor/repair reports, the ten claimed ADR acceptance tests, production composition,
+storage implementation and recovery path were inspected. The full ordinary suite is green,
+but independent counterexamples show that several binding assertions are not actually tested.
+
+### Prior finding status
+
+| Finding | Re-review 3 status | Evidence |
+|---|---|---|
+| G4-001 production render/validate path | **CLOSED** | Real `RunEngine` renders and validates deterministic Markdown before Delivery. |
+| G4-002 delivery ambiguity/idempotency | **OPEN P1** | ADR classification and persistence-binding constraints are not fully implemented; see G4-002A/B. |
+| G4-003 dry-run and CLI usability | **CLOSED except G4-007 deliver route** | Dry-run is isolated, CWD-independent and returns outcome-sensitive status. |
+| G4-004 bound recovery | **REOPENED P1** | Human-confirmed delivery without a receipt cannot complete in the real `RunEngine`; see G4-004R. |
+| G4-005 unconstrained LLM prose | **CLOSED for delivery safety** | No LLM free-text slot exists in the delivered Markdown. |
+| G4-006 packet byte/cardinality bounds | **CLOSED** | UTF-8 bytes and actual plan cardinality are enforced. |
+| G4-007 executable Agent/PushPlus route | **OPEN P1** | `--deliver` still deterministically exits before composition. |
+
+### [P1] G4-002A — production classifies every HTTP 4xx as definitive despite the Accepted ADR
+
+- Location: `src/omda/production.py:81-117`;
+  `tests/unit/test_adr_acceptance.py:498-543`.
+- Reproduction: inject an HTTP 418 response into the concrete
+  `PushPlusHttpTransport`. It raises `ProviderRejection`, not `AmbiguousFailure`:
+
+  ```text
+  UNKNOWN_418_CLASS= ProviderRejection
+  ```
+
+- The test labelled `unknown 4xx (undocumented) -> ambiguous` has the opposite executable
+  assertion: it supplies `ProviderRejection("499", ...)` and expects `failed`. It therefore
+  makes the binding acceptance matrix green while proving the forbidden behavior.
+- Accepted ADR-0001 §9 and §15-3 require exact documented no-side-effect categories; unknown
+  4xx must be ambiguous/no-retry. The current concrete transport has no allow-list of exact
+  PushPlus categories and turns the entire 400-499 range into confirmed failure.
+- Current official PushPlus message documentation describes business `code == 200` as the
+  server having received the asynchronous request; it does not document a blanket HTTP-4xx
+  guarantee that no message was queued:
+  <https://www.pushplus.plus/doc/guide/api.html>.
+- Impact: uncertain provider outcomes become terminal `CONFIRMED_FAILED`. A later human
+  generation retry can duplicate a notification that the system incorrectly declared absent,
+  and the audit trail overstates its evidence.
+- Required acceptance:
+  - unknown 4xx, 5xx, malformed response and undocumented business codes all produce
+    `AmbiguousFailure` and exactly one transport call;
+  - any definitive-rejection allow-list cites an exact provider contract proving no side
+    effect; otherwise omit the category;
+  - correct the `unknown-4xx` acceptance test so it would fail on the current implementation,
+    and exercise the concrete `PushPlusHttpTransport`, not only a preclassified fake exception.
+
+### [P1] G4-002B — receipt/resolution persistence does not validate the binding required by §15-5
+
+- Location: `src/omda/storage/sqlite_history.py:90-153`, `:477-527`, `:540-698`;
+  `src/omda/ports/domain.py:117-130`; `data/schemas/delivery_receipt.schema.json:1-13`;
+  `src/omda/ports/delivery.py:13-23`.
+- Independent reproduction created two ambiguous operations and then recorded a resolution
+  against operation A while supplying run/key/attempt fields belonging to operation B. The
+  real SQLite adapter accepted it and advanced operation A:
+
+  ```text
+  CROSS_BOUND_RESOLUTION_ACCEPTED= RESOLVED_DELIVERED
+  ('run-a:pushplus', 'run-b', 'run-b:pushplus', 'run-b:pushplus#1')
+  ```
+
+- `record_delivery_resolution` inserts caller-supplied redundant fields without comparing
+  them to `delivery_operation`; `attempt_id` has no foreign key and is not checked to belong
+  to that operation. This directly violates ADR-0001 §15-5.
+- JSON receipt schema v2 declares `attempt_id`, but the migrated SQLite
+  `delivery_receipt` table still has only the v1 columns and `DeliveryReceipt` has no
+  `attempt_id`. `finalize_delivery_attempt` creates an attempt id but cannot bind it to the
+  receipt. The claimed dual JSON/SQLite v2 boundary is therefore incomplete.
+- `begin_delivery_operation` is required to journal key **and payload digest** atomically; its
+  `DELIVERING` detail records only the key. The Delivery Port docstring also still advertises
+  only `ok|failed` and places replay prevention on the adapter, rather than documenting the
+  accepted three-state/pre-claim protocol.
+- Impact: a malformed or operator-supplied resolution can authorize history for the wrong
+  run/evidence, and an auditor cannot prove which immutable attempt a receipt represents.
+- Required acceptance:
+  - migrate the SQLite receipt association promised by ADR-0001 (old v1 rows may remain null;
+    new finalized receipts bind their generated attempt id) and expose the association through
+    the domain/Port consistently;
+  - in the same resolution transaction, fail closed unless operation key, run id,
+    idempotency key and optional attempt all refer to the same operation; add cross-binding
+    negative tests to both SQLite and the parity fake;
+  - journal key + payload digest atomically and update the Delivery Port contract to the
+    Accepted ADR semantics;
+  - make the ADR acceptance-9 test inspect the real v2 columns/relations, not merely
+    `PRAGMA user_version` and an ambiguous status value.
+
+### [P1] G4-004R — human-confirmed delivered evidence is not wired into real recovery
+
+- Location: `src/omda/orchestrator/run.py:700-757`;
+  `src/omda/orchestrator/recovery.py:56-155`;
+  `tests/unit/test_adr_acceptance.py:302-405`.
+- The pure `resolve_recovery_action` helper correctly treats
+  `RESOLVED_DELIVERED` as authoritative without requiring an automatic receipt. The real
+  `RunEngine._finish_after_delivery`, however, groups `SUCCEEDED` and
+  `RESOLVED_DELIVERED` together and requires a receipt for both.
+- Independent crash probe:
+  1. run reaches a durable claim and the simulated process dies after the external-call point
+     but before attempt/receipt finalization;
+  2. operation has `IN_FLIGHT_OR_MAY_HAVE_SENT`, no receipt;
+  3. owner records `CONFIRMED_DELIVERED`;
+  4. restarting the real engine returns `RECOVERING`, leaves history index at zero and never
+     completes.
+
+  ```text
+  AFTER_CRASH= IN_FLIGHT_OR_MAY_HAVE_SENT receipt= None
+  AFTER_HUMAN_CONFIRMED= RECOVERING history_index= 0 tail= RECOVERING
+  ```
+
+- ADR-0001 §6/§11 and binding acceptance item 8 require human-confirmed delivery to commit
+  official history without a second push. The acceptance test calls only the unused decision
+  helper; production code never calls that helper, so the test does not prove the required
+  path.
+- Impact: the principal manual recovery for the crash-after-call/before-evidence window is a
+  permanent dead end. The owner cannot safely finish the run despite having supplied the exact
+  decision the ADR defines.
+- Required acceptance: drive the real `RunEngine` through claim -> crash/no receipt ->
+  `CONFIRMED_DELIVERED` -> restart and assert `COMPLETE`, one external effect and one atomic
+  history commit. Use one production recovery decision path so helper and engine cannot diverge.
+
+### [P1] G4-007 remains open — `--deliver` is still an unreachable route
+
+- Location: `src/omda/cli.py:35-74`, `:138-190`; `src/omda/config.py:208-235`;
+  `tests/integration/test_production_composition.py:84-156`.
+- Reproduction from the exact candidate:
+
+  ```text
+  python -m omda.cli --deliver --run-id reviewer-probe
+  --deliver requires delivery.channel == 'pushplus' in config ...
+  exit=1
+  ```
+
+- `_main` calls `load_config()` with no config path or overrides. Its default delivery channel
+  is always `markdown`, while the CLI exposes no `--config` option. The subsequent pushplus
+  check therefore always fails. Parsed `--token-env` is also never applied. The production
+  composition tests call `build_production_engine` directly with a hand-built pushplus Config,
+  so none exercises the public CLI route that the repair claims to close.
+- The route also supplies `_LocalEchoTransport` as its LLM transport. This may be acceptable
+  for a no-narrative local mode, but it is not the concrete configurable LLM provider implied
+  by the repair claim; the implementation/report must state the intended product boundary
+  accurately.
+- Impact: the Owner still cannot explicitly approve and execute a PushPlus recommendation.
+  G5 remains a release audit and has no authorized milestone for implementing this missing G4
+  feature.
+- Required acceptance: execute the public CLI in a subprocess with injected fake network
+  boundaries and prove that explicit `--deliver` reaches composition, uses the chosen token
+  variable, remains off by default, and preserves controlled failure/history ordering. Provide
+  a usable config/override path and a truthful LLM/runtime composition boundary.
+
+### [P2] G4-008 — discarded LLM output creates cost/availability with no archived or delivered value
+
+- Location: `src/omda/orchestrator/run.py:464-481`;
+  `src/omda/output/markdown.py:1-24`.
+- `_generate` invokes `generate_narrative`, discards its return value, and fails the whole run
+  if that unused provider call fails. The Markdown module says the narrative is for archival
+  purposes, but no archive or journal field stores it.
+- Impact: once a real provider is configured, OMDA can spend tokens and lose availability
+  without producing any user-visible or durable explanation. This does not permit fabricated
+  facts, so it is P2 rather than P1.
+- Required acceptance: either remove/bypass narrative generation while the mechanical
+  no-free-text deliverable is the selected policy, or persist a bounded purpose for the result.
+  Any reintroduction into the delivered payload must remain mechanically fact-bound and may
+  require an ADR rather than a keyword filter.
+
+### Acceptance matrix
+
+| G4 criterion | Status | Evidence |
+|---|---|---|
+| Deterministic selection remains outside LLM | **PASS** | Core unchanged; LLM does not alter plan. |
+| Render and complete fact validation before delivery | **PASS** | G4-001/G4-005 deterministic payload path. |
+| Unconstrained LLM prose cannot add recommendations | **PASS for delivered payload** | No free-text slot; G4-008 remains an efficiency/semantics issue. |
+| Atomic pre-network operation claim; same operation does not automatically re-send | **PASS for tested automatic path** | Two-connection claim and replay probes pass. |
+| Provider ambiguity classification matches Accepted ADR | **FAIL** | All HTTP 4xx become definitive; acceptance test asserts the inverse of its comment. |
+| Operation/attempt/receipt/resolution binding is complete | **FAIL** | Cross-bound resolution accepted; receipt has no attempt association; journal lacks digest. |
+| Human-confirmed delivery completes without re-push | **FAIL** | Real engine remains RECOVERING when receipt is absent. |
+| JSON schema v2 + SQLite migration v2 | **PARTIAL** | Version/tables exist, but promised receipt-attempt association is missing. |
+| Default dry-run is isolated and external delivery needs explicit approval | **PASS for safety** | Default remains local and history-neutral. |
+| Explicitly approved PushPlus route is executable | **FAIL** | Public `--deliver` always exits before composition. |
+| UTF-8 packet bounds and plan cardinality | **PASS** | G4-006 closure inspected and tested. |
+| No live calls/secrets/new runtime dependencies in ordinary tests | **PASS** | No live service used; secret scan empty; runtime dependencies remain empty. |
+| Full regression/lint/diff checks | **PASS** | 617 tests, Ruff and diff check all pass. |
+| Open blocking findings | **FOUR P1** | G4-002A, G4-002B, G4-004R, G4-007. |
+
+### Checks performed and limits
+
+- `git rev-parse`, exact merge-base, branch and clean-worktree verification: passed.
+- Complete `base..candidate` name/status/stat and relevant source/test/schema review.
+- Full suite: **617 passed in 3.49s**, 0 failed, 0 skipped.
+- `ruff check src tests browser_companion`: passed.
+- `git diff --check base..candidate`: passed.
+- Targeted independent probes: unknown HTTP 418 classification, cross-operation resolution
+  binding, receipt table columns, immediate-close migration durability, public CLI delivery,
+  and real-engine crash -> human-confirmed-delivery recovery.
+- Tracked secret/private-key pattern scan: no match.
+- Latest official PushPlus message documentation was read; no live PushPlus or LLM request was
+  made. No production code, merge, tag or push was performed.
+
+### Re-review 3 verdict
+
+**CHANGES_REQUESTED**
+
+Candidate `1a197d9ceb95acd4e8214a28cd52c8172a4a02a0` must not be merged or marked
+`ACCEPTED`, and G5 must not begin. Repair the four P1 findings with tests that exercise the
+real concrete transport, SQLite bindings, real `RunEngine` recovery and public CLI route.
+The Accepted ADR is sufficient for these repairs; a new ADR is needed only if the Executor
+proposes changing its binding semantics rather than implementing them.
