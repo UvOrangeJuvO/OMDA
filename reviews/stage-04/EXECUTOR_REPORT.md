@@ -186,3 +186,39 @@ ADR：`docs/adr/0001-delivery-receipt-ambiguity-and-idempotency.md`（保持 **P
 - 本轮**未修改任何 production code**；ADR 保持 **Proposed**（未改 Accepted）；
 - 未处理 G4-005 / G4-007；未 merge、未打 tag、**未进入 G5**。
 - 下一步：等待 GPT-5.6 Sol 复审修订 v2。
+
+---
+
+# G4 Re-review 2 Repair（2026-08-21，ADR-0001 Accepted 后恢复实现）
+
+对应 Reviewer commit：`3977d62198750df8177452330b6c55986785229b`
+ADR-0001 接受 commit：`1349a0fd53116335d372c89684d83f1d556b63ac`
+上一 candidate：`13a659d741e70df5e7b3faa561ffc822dd4efb5c`
+本轮修复 commits：`701c203`、`606c859`、`4db6803`、`01f4506`、`c40d619`、`694a443`
+详细逐项修复记录见 `reviews/stage-04/REPAIR_REPORT.md`。
+
+## Re-review 2 finding 修复对照
+
+| Finding | 严重度 | 修复 commits | 状态 |
+|---|---|---|---|
+| G4-002 幂等/歧义/契约（ADR-0001 §15 六条） | P1 | `701c203`+`606c859`+`4db6803` | CLOSED |
+| G4-005 narrative 黑名单被绕过 | P1 | `01f4506` | CLOSED（机械契约） |
+| G4-007 无生产 Agent/PushPlus 组合 | P1 | `c40d619` | CLOSED |
+| G4-003 P2 CLI 路径/文件名/退出码 | P2 | `c40d619` | CLOSED |
+| G4-006 P2 UTF-8 byte cap / cardinality | P2 | `694a443` | CLOSED |
+
+## 本轮验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **617 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 617 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| ADR §12 十项验收 | 全部通过（含两独立连接并发） |
+| 既有测试未删除/弱化/skip | 确认（566 → 617；2 处语义演进已披露） |
+| 未 merge / 未 tag / 未进入 G5 / 未改 verdict / 未写 ACCEPTED | 确认 |
+
+## Executor Conclusion（G4 Re-review 2 repair）
+
+**READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）

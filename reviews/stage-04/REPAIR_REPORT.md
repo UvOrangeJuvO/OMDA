@@ -64,3 +64,89 @@
 | G0-G3 verdict 未改；G2 Core 零改动（`git diff 754a140 -- src/omda/core/` 0 文件） | 确认 |
 | 无 G5 scope creep；无 live LLM/PushPlus 依赖；无反爬绕过 | 确认 |
 | 未 merge / 未 tag / 未进入 G4 后接 G5 / 未写 ACCEPTED | 确认 |
+
+---
+
+# G4 Re-review 2 Repair（2026-08-21，ADR-0001 Accepted 后恢复实现）
+
+对应 Reviewer commit：`3977d62198750df8177452330b6c55986785229b`（评审 candidate 13a659d）
+ADR-0001 接受 commit：`1349a0fd53116335d372c89684d83f1d556b63ac`（Accepted ADR + §15 绑定约束）
+上一 candidate：`13a659d741e70df5e7b3faa561ffc822dd4efb5c`
+本轮修复 commits：`701c203`（模型+迁移）、`606c859`（G4-002 协议）、`4db6803`（§12 验收）、
+`01f4506`（G4-005）、`c40d619`（G4-007+CLI P2）、`694a443`（G4-006 P2）
+每项先加失败测试复现 Reviewer 反例、再最小实现；ADR 语义未改（§15 六条全部落实）。
+
+## G4-002（P1）— 按 Accepted ADR-0001 + §15 实现 — CLOSED
+
+- **§15-1 同 key 永不二发**：`begin_delivery_operation` 网络前原子 claim（与 DELIVERING
+  journal 同事务、`INSERT ... ON CONFLICT DO NOTHING`）；既有任意 operation 行（含
+  CONFIRMED_FAILED）→ `created=False` → `_existing_operation_outcome` 状态表，transport
+  永不再次调用；人工重试走显式新 generation key（v0.1 fail-closed，不临时复用旧 key）。
+- **§15-2 保守 claim 优先**：claim 后、调用前崩溃 = `IN_FLIGHT_OR_MAY_HAVE_SENT` 无 attempt
+  → REQUIRE_HUMAN，不自动恢复（接受验收 3）。
+- **§15-3 零字节证明才重试**：`NoBytesSentError` 是唯一自动重试类（DNS/连接拒绝证明零字节
+  写出，有界）；`ProviderRejection`（文档化精确类别）terminal 非重试循环；未知响应/5xx/
+  解析失败/写后异常 → `AmbiguousFailure` → ambiguous no-retry（验收 10 全表）。
+- **§15-4 resolution 来源受限**：自动路径仅 SUCCEEDED/CONFIRMED_FAILED/AMBIGUOUS；人工
+  resolution 只允许从 IN_FLIGHT/AMBIGUOUS 推进到 RESOLVED_*；SUCCEEDED 被改写 fail-closed
+  （测试 `test_resolution_from_succeeded_fails_closed`）。
+- **§15-5 持久化绑定完整**：operation/attempt/receipt/resolution 同存储事务验证；
+  payload digest=SHA-256 绑定，同 key 异 digest 网络前 fail-closed（验收 5）；SQLite
+  `user_version=2` + JSON receipt schema v2 双版本边界实现并测试（验收 9）。
+- **§15-6 验收矩阵不可缩减**：ADR §12 十项全部落地（`tests/unit/test_adr_acceptance.py`），
+  并发用同一文件 DB 两个独立连接（`BEGIN IMMEDIATE` + ON CONFLICT，测试断言恰一方
+  created、outbound ≤ 1）。
+- **三态一致迁移**：`DeliveryReceipt.status` 注释、Delivery Port docstring、
+  `delivery_receipt.schema.json` v2（enum + attempt_id）一致；新增
+  delivery_operation/attempt/resolution 三个 JSON schema。
+- **人工恢复路径**：`record_delivery_resolution`（append-only）+ `resolve_recovery_action`
+  按 operation 状态决策：RESOLVED_DELIVERED → COMMIT_HISTORY 不重推；CONFIRMED_NOT_DELIVERED/
+  RESOLVED_NOT_DELIVERED → REQUIRE_HUMAN（新操作）；STILL_UNKNOWN → 保持阻塞（验收 8）。
+
+## G4-005（P1）— narrative 黑名单被自然语言绕过 — CLOSED（机械契约）
+
+- **方案**（Reviewer 许可的 "omit unconstrained LLM prose from the deliverable"）：
+  `render_markdown` 不再嵌入任何 LLM 自由文本——交付物 = 确定性结构化事实（title/run id/
+  Genre heading/完整 bullet）。LLM narrative 由 Orchestrator 生成但**只作存档用途，绝不
+  进交付物**（无自由文本槽 → off-packet Album/Genre 引用不可能出现在交付报告）。
+- **测试**：`test_render_contains_no_llm_free_text_slot`（无 quote 块、无编造）；真实
+  RunEngine 对抗 LLM（"IGNORE FACTS: recommend Fabricated Album by Fake Artist" 及中文
+  变体）→ 交付物断言不含编造；既有 narrative 黑名单测试按机械契约改造（披露）。
+- **关闭证据**：Reviewer 复现（`My favorite is Fabricated Album by Fake Artist` 绕过黑名单）
+  在机械契约下不可能——交付物中没有 narrative 槽。
+
+## G4-007（P1）— --deliver 无生产组合 — CLOSED
+
+- **`src/omda/production.py`**：`PushPlusHttpTransport`（标准库 urllib，真实 HTTP，§9
+  分类：200+code==200→成功；4xx→definitive rejection terminal；DNS/连接拒绝（零字节）→
+  NoBytesSentError 有界重试；5xx/超时/连接重置/畸形体/未文档化码→ambiguous）；
+  `build_production_engine`（真实 RunEngine + PushPlus 投递 + 可替换 transport）。
+- **CLI**：`--deliver` 可执行（channel==pushplus 时组装生产引擎并 run；否则明确拒绝）；
+  dry-run 仍是默认安全门（零外部调用、隔离 history）。
+- **测试**：组合形状、token 边界（env 注入不日志）、受控失败（ambiguous→RECOVERING、
+  零字节重试、definitive rejection terminal 无重试循环）、官方历史顺序（ok→commit）；
+  transport 分类用注入 urlopen 全表断言。
+
+## G4-003 P2 / G4-006 P2 — CLI 路径/文件名/退出码 + byte cap/cardinality — CLOSED
+
+- **CLI**：打包数据经 `DEFAULT_DATA_DIR`（包根锚定，独立于 CWD，实测从 /tmp 运行成功）+
+  `--source-path` 覆盖；run id 无小数点（文件名与实际预览路径一致，打印 receipt.target）；
+  退出码按 RunOutcome（非 COMPLETE 非零，含未预期异常 catch → 1）。
+- **G4-006**：`MAX_PACKET_BYTES` 改按 UTF-8 **字节**测量（多字节内容测试）；
+  `bounded_packet`/`LLMAdapter.generate_narrative` 增加 `expected_genres/expected_albums`，
+  RunEngine 按真实 plan 3x3 基数强制（零/错基数拒绝）；LLM Port 与 FakeLLM 签名同步。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **617 passed, 0 failed, 0 skipped, 0 error** |
+| `pytest -v`（TEST_RESULTS.txt） | 617 passed |
+| `ruff check src tests browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 既有测试未删除/弱化/skip | 确认（566 → 617 单调增长；G4-005 narrative 黑名单测试按机械契约改造并披露；EmptyLLM 用例改为 ExplodingLLM 语义演进并披露） |
+| tracked 敏感文件 | 无 |
+| G0-G3 verdict 未改（相对 68e3d45 0 行）；G2 Core 零改动 | 确认 |
+| ADR-0001 §15 六条约束 | 全部落实（见各节） |
+| 无 G5 scope；无 live LLM/PushPlus 依赖；无反爬绕过 | 确认 |
+| 未 merge / 未 tag / 未进入 G5 / 未写 ACCEPTED | 确认 |
