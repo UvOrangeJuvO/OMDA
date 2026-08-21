@@ -256,3 +256,29 @@ ADR-0001 接受 commit：`1349a0fd53116335d372c89684d83f1d556b63ac`
 ## Executor Conclusion（G4 Re-review 3 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G4 Re-review 4 — 架构阻断响应（2026-08-22，只提交 Proposed ADR）
+
+对应 Reviewer commit：`790f36f99a859da3b2578462d76e6b2cac4051ad`
+verdict：**BLOCKED_ARCHITECTURE / ADR_REQUIRED**（评审 candidate `8b1f7c9…`）
+本轮动作：**停止生产代码实现；不 merge、不 tag、不进 G5**；只提交
+`docs/adr/0002-production-album-source-and-runtime-boundary.md`（Status: **Proposed**）
+及其影响分析、验收测试设计（§5）与阶段状态。
+
+## 本轮交付
+
+| 项 | 值 |
+|---|---|
+| ADR | `docs/adr/0002-production-album-source-and-runtime-boundary.md`（Proposed） |
+| 覆盖 finding | G4-007B（P1 架构）、G4-002C（P1）、G4-007C（P2）、G4-002D（P2）、G4-002E（P2）、G4-009（P2） |
+| 7 项决策 | D1 MusicBrainz WS/2 release-group 作为 v0.1 生产 AlbumSource；D2 CC0 许可 + provenance（Git JSONL 快照）+ MBID canonical；D3 按需有界（limit/run budget/pacing/UA/缓存）+ 禁令（无 RYM 抓取/fan-out/反爬/无界）；D4 归属 G4 补充任务 G4-010（不重开 G3）；D5 `--deliver` production-source gate fail-closed（transport.calls==0、历史零变更）；D6 v0.1 正式定义 deterministic/no-LLM（保留 Port + llm.mode，provider 留 v0.2）；D7 正式批准 SQLite v3 rollout（amend ADR-0001，additive attempt_id 列）；D8 G4-002C/G4-007C/G4-002E 修复方案 |
+| 验收测试设计 | AC-1..AC-9（§5，映射各 finding Required acceptance） |
+| 状态 | `BLOCKED_ARCHITECTURE / ADR_PENDING`（PROJECT_STATE.json，blocking_adr=ADR-0002） |
+
+## 明确声明
+
+- 本轮**未修改任何 production code**（仅新增 ADR 文档 + 状态/报告）；ADR 保持
+  **Proposed**（未写 Accepted）；未处理 G5；未 merge / 未 tag。
+- 下一步：交 GPT-5.6 Sol 评审 ADR-0002；接受后按 D1-D8 实施并返回完整 candidate。
