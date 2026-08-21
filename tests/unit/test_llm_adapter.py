@@ -223,3 +223,58 @@ def test_bounded_packet_enforces_real_plan_cardinality() -> None:
     packet["genres"] = [{"genre_id": f"g{i}", "name": f"G{i}"} for i in range(MAX_GENRES + 1)]
     with pytest.raises(FactPacketError):
         bounded_packet(packet)
+
+
+# --- G4-006 P2: UTF-8 byte cap and real-plan cardinality -----------------------
+
+
+def test_packet_cap_is_measured_in_utf8_bytes_not_characters() -> None:
+    # Reviewer counter-example: a packet whose CHARACTER length is under the
+    # cap but whose UTF-8 ENCODING exceeds the declared byte bound must fail.
+    from omda.adapters.llm import MAX_PACKET_BYTES
+
+    # 1000 multibyte chars encode to 3000+ bytes per field; many fields together
+    # far exceed the byte cap while the character count looks small.
+    ch = "音" * 1000  # 3 bytes per char
+    packet = {
+        "run_id": "r",
+        "genres": [{"genre_id": "g", "name": ch}],
+        "albums": [
+            {"album_id": f"a{i}", "title": ch, "artist": ch, "year": 2000}
+            for i in range(8)
+        ],
+    }
+    assert len(json.dumps(packet, ensure_ascii=False)) < MAX_PACKET_BYTES  # chars under
+    assert (
+        len(json.dumps(packet, ensure_ascii=False).encode("utf-8")) > MAX_PACKET_BYTES
+    )  # bytes over
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet)
+
+
+def test_bounded_packet_enforces_expected_plan_cardinality() -> None:
+    # A real 3x3 plan: when the caller declares the expected cardinality, the
+    # packet must match it exactly (zero or wrong counts are rejected).
+    packet = _packet()
+    packet["genres"] = [{"genre_id": "g1", "name": "G1"}, {"genre_id": "g2", "name": "G2"}]
+    packet["albums"] = [
+        {"album_id": f"a{i}", "title": f"T{i}", "artist": "A", "year": 2000}
+        for i in range(9)
+    ]
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet, expected_genres=3, expected_albums=9)
+
+    packet["genres"].append({"genre_id": "g3", "name": "G3"})
+    packet["albums"] = packet["albums"][:8]  # now 8 albums
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet, expected_genres=3, expected_albums=9)
+
+    packet["albums"].append({"album_id": "a9", "title": "T9", "artist": "A", "year": 1990})
+    bounded = bounded_packet(packet, expected_genres=3, expected_albums=9)  # exact match
+    assert len(bounded["genres"]) == 3 and len(bounded["albums"]) == 9
+
+
+def test_bounded_packet_rejects_empty_plan_when_cardinality_declared() -> None:
+    packet = {"run_id": "r", "genres": [], "albums": []}
+    with pytest.raises(FactPacketError):
+        bounded_packet(packet, expected_genres=3, expected_albums=9)

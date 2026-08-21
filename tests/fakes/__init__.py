@@ -317,7 +317,13 @@ class FakeLLM:
     def __init__(self, text: str = "Fake narrative.") -> None:
         self._text = text
 
-    def generate_narrative(self, fact_packet: dict) -> str:
+    def generate_narrative(
+        self,
+        fact_packet: dict,
+        *,
+        expected_genres: int | None = None,
+        expected_albums: int | None = None,
+    ) -> str:
         return self._text
 
 

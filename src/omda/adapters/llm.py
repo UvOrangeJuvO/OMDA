@@ -72,14 +72,27 @@ class LLMAdapter:
         self._transport = transport
         self._system_prompt = system_prompt
 
-    def generate_narrative(self, fact_packet: dict[str, Any]) -> str:
+    def generate_narrative(
+        self,
+        fact_packet: dict[str, Any],
+        *,
+        expected_genres: int | None = None,
+        expected_albums: int | None = None,
+    ) -> str:
         """Return narrative text for a bounded, validated fact packet.
 
         The packet is normalized/frozen first; every field is serialized into
         the USER slot as untrusted data — the SYSTEM prompt stays constant, so
         external text can never override instructions (SPEC §7-13).
+        ``expected_genres``/``expected_albums`` optionally pin the real plan
+        cardinality (G4-006): a packet that does not match the declared plan
+        shape is rejected before the transport is called.
         """
-        bounded = bounded_packet(fact_packet)
+        bounded = bounded_packet(
+            fact_packet,
+            expected_genres=expected_genres,
+            expected_albums=expected_albums,
+        )
         user_payload = json.dumps(
             _plain(bounded), ensure_ascii=False, sort_keys=True
         )
@@ -95,11 +108,19 @@ class DomainTransportError(GenerationFailureError):
     """Marker so already-domain errors pass through unchanged (internal)."""
 
 
-def bounded_packet(packet: Mapping[str, Any]) -> Mapping[str, Any]:
+def bounded_packet(
+    packet: Mapping[str, Any],
+    *,
+    expected_genres: int | None = None,
+    expected_albums: int | None = None,
+) -> Mapping[str, Any]:
     """Validate + freeze a fact packet into the bounded shape.
 
     Raises ``FactPacketError`` on malformed shapes or oversized fields; the
-    returned mapping is recursively immutable.
+    returned mapping is recursively immutable. ``expected_genres`` /
+    ``expected_albums`` (when given) pin the REAL plan cardinality — a packet
+    with a different number of genres/albums (including zero) is rejected
+    before the transport is called (G4-006).
     """
     if not isinstance(packet, Mapping):
         raise FactPacketError("fact packet must be a mapping")
@@ -114,6 +135,16 @@ def bounded_packet(packet: Mapping[str, Any]) -> Mapping[str, Any]:
     albums = packet.get("albums")
     if not isinstance(albums, (list, tuple)) or len(albums) > MAX_ALBUMS:
         raise FactPacketError(f"fact packet albums must be a list of <= {MAX_ALBUMS}")
+    if expected_genres is not None and len(genres) != expected_genres:
+        raise FactPacketError(
+            f"fact packet genres cardinality mismatch: expected {expected_genres}, "
+            f"got {len(genres)}"
+        )
+    if expected_albums is not None and len(albums) != expected_albums:
+        raise FactPacketError(
+            f"fact packet albums cardinality mismatch: expected {expected_albums}, "
+            f"got {len(albums)}"
+        )
     normalized = {"run_id": run_id, "genres": [], "albums": []}
     for genre in genres:
         if not isinstance(genre, Mapping):
@@ -151,7 +182,10 @@ def bounded_packet(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         )
     # G4-006: the final serialized packet must stay within the aggregate cap —
     # many in-limit fields together must not create an unbounded provider blast.
-    if len(json.dumps(_plain(normalized), ensure_ascii=False, sort_keys=True)) > MAX_PACKET_BYTES:
+    # G4-006: the aggregate cap is measured in UTF-8 BYTES (not characters) so
+    # multibyte content cannot exceed the declared provider bound.
+    serialized = json.dumps(_plain(normalized), ensure_ascii=False, sort_keys=True)
+    if len(serialized.encode("utf-8")) > MAX_PACKET_BYTES:
         raise FactPacketError(f"fact packet exceeds {MAX_PACKET_BYTES} serialized bytes")
     return freeze_json(normalized)
 

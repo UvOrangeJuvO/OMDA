@@ -8,6 +8,7 @@ no live LLM, no PushPlus token in the repository.
 
 from __future__ import annotations
 
+import io
 import os
 import urllib.error
 from dataclasses import replace
@@ -179,21 +180,10 @@ def _urlopen_returning(status: int, body: bytes):
     def urlopen(request, timeout):
         if status >= 400:
             raise urllib.error.HTTPError(
-                request.full_url, status, "err", {}, _BytesIO(body)
+                request.full_url, status, "err", {}, io.BytesIO(body)
             )
         return FakeResponse(status, body)
     return urlopen
-
-
-class _BytesIO:
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-
-    def read(self) -> bytes:
-        return self._data
-
-    def decode(self, encoding: str, errors: str) -> str:
-        return self._data.decode(encoding, errors)
 
 
 def test_http_transport_classifies_200_success() -> None:

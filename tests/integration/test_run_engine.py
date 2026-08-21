@@ -129,14 +129,14 @@ class FailingAlbumSource:
 
 
 class FailingLLM:
-    def generate_narrative(self, fact_packet):
+    def generate_narrative(self, fact_packet, *, expected_genres=None, expected_albums=None):
         raise GenerationFailureError("simulated llm failure")
 
 
 class ExplodingLLM:
     """A provider that fails outright -> generation failure (G4-005)."""
 
-    def generate_narrative(self, fact_packet):
+    def generate_narrative(self, fact_packet, *, expected_genres=None, expected_albums=None):
         raise GenerationFailureError("provider unavailable")
 
 

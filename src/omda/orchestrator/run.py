@@ -469,7 +469,11 @@ class RunEngine:
         # report whose facts come exclusively from the selected plan.
         packet = FactPacket(run_id=plan.run_id, plan=plan)
         try:
-            self._llm.generate_narrative(_packet_dict(packet))
+            self._llm.generate_narrative(
+                _packet_dict(packet),
+                expected_genres=len(plan.genres),
+                expected_albums=len(plan.albums),
+            )
         except DomainError:
             raise
         except Exception as exc:  # provider-side generation failure
