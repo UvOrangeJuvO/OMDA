@@ -128,6 +128,7 @@ class DeliveryReceipt:
     channel: str
     status: str  # "ok" | "failed" | "ambiguous" (ADR-0001 v2)
     target: str | None = None
+    attempt_id: str | None = None  # bound immutable attempt (G4-002B)
 
 
 # Delivery operation states (ADR-0001 v2, §5).

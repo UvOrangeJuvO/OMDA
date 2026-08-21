@@ -162,7 +162,7 @@ class InMemoryHistory:
             run_id,
             "DELIVERING",
             operation.created_at,
-            {"idempotency_key": idempotency_key},
+            {"idempotency_key": idempotency_key, "payload_digest": payload_digest},
         )
         return DeliveryOperationSnapshot(created=True, operation=operation)
 
@@ -208,6 +208,7 @@ class InMemoryHistory:
             channel=op.channel,
             status=outcome,
             target=evidence,
+            attempt_id=f"{operation_key}#{seq}",
         )
         updated = DeliveryOperation(
             idempotency_key=op.idempotency_key,
@@ -233,6 +234,27 @@ class InMemoryHistory:
         reason: str,
         decided_at: str,
     ) -> DeliveryOperation:
+        op = self._operations.get(operation_key)
+        if op is None:
+            raise InvariantFailureError(f"no delivery operation for key {operation_key!r}")
+        # G4-002B (§15-5): redundant fields must bind to the SAME operation.
+        if op.run_id != run_id:
+            raise InvariantFailureError(
+                f"resolution run_id {run_id!r} does not match operation {operation_key!r}"
+            )
+        if idempotency_key != operation_key:
+            raise InvariantFailureError(
+                f"resolution idempotency_key {idempotency_key!r} does not match "
+                f"operation_key {operation_key!r}"
+            )
+        if attempt_id is not None and not any(
+            a.attempt_id == attempt_id and a.operation_key == operation_key
+            for a in self._attempts
+        ):
+            raise InvariantFailureError(
+                f"resolution attempt_id {attempt_id!r} does not belong to "
+                f"operation {operation_key!r}"
+            )
         self._resolutions.append(
             {
                 "operation_key": operation_key,
@@ -245,9 +267,6 @@ class InMemoryHistory:
                 "decided_at": decided_at,
             }
         )
-        op = self._operations.get(operation_key)
-        if op is None:
-            raise InvariantFailureError(f"no delivery operation for key {operation_key!r}")
         new_state = {
             RESOLUTION_CONFIRMED_DELIVERED: OP_RESOLVED_DELIVERED,
             RESOLUTION_CONFIRMED_NOT_DELIVERED: OP_RESOLVED_NOT_DELIVERED,

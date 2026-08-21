@@ -47,7 +47,11 @@ from omda.ports.errors import (
     StateCommitFailureError,
 )
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
+
+# Marker statement for the idempotent receipt-attempt column addition (G4-002B);
+# handled specially by ``_migrate`` so it is a no-op when the column exists.
+_ALTER_RECEIPT_ATTEMPT_ID = "ALTER TABLE delivery_receipt ADD COLUMN attempt_id TEXT"
 
 
 def _utc_now() -> str:
@@ -151,6 +155,11 @@ _MIGRATIONS: dict[int, list[str]] = {
             ON delivery_resolution (operation_key)
         """,
     ],
+    # G4-002B: the immutable receipt binds its generated attempt id (v1 rows
+    # stay NULL); the migration is a plain additive column (idempotent marker).
+    3: [
+        _ALTER_RECEIPT_ATTEMPT_ID,
+    ],
 }
 
 
@@ -202,12 +211,32 @@ class SqliteHistory:
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
-        current = conn.execute("PRAGMA user_version").fetchone()[0]
-        for version in range(current + 1, _SCHEMA_VERSION + 1):
-            statements = _MIGRATIONS[version]
-            for statement in statements:
-                conn.execute(statement)
-            conn.execute(f"PRAGMA user_version = {version}")
+        # BEGIN IMMEDIATE serializes concurrent migrations on the same file:
+        # the second connection waits for the first to commit, then observes
+        # the updated user_version and skips the (already applied) steps —
+        # so non-idempotent steps such as ALTER TABLE ADD COLUMN run exactly
+        # once even under two independent connections (ADR acceptance 1/9).
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = conn.execute("PRAGMA user_version").fetchone()[0]
+            for version in range(current + 1, _SCHEMA_VERSION + 1):
+                statements = _MIGRATIONS[version]
+                for statement in statements:
+                    if statement == _ALTER_RECEIPT_ATTEMPT_ID:
+                        cols = {
+                            row[1]
+                            for row in conn.execute(
+                                "PRAGMA table_info(delivery_receipt)"
+                            )
+                        }
+                        if "attempt_id" in cols:
+                            continue
+                    conn.execute(statement)
+                conn.execute(f"PRAGMA user_version = {version}")
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
     # -- run journal -----------------------------------------------------------
 
@@ -408,15 +437,15 @@ class SqliteHistory:
         try:
             with self._conn as conn:
                 row = conn.execute(
-                    "SELECT run_id, delivered_at, channel, status, target "
+                    "SELECT run_id, delivered_at, channel, status, target, attempt_id "
                     "FROM delivery_receipt WHERE idempotency_key = ?",
                     (receipt.idempotency_key,),
                 ).fetchone()
                 if row is None:
                     conn.execute(
                         "INSERT INTO delivery_receipt "
-                        "(idempotency_key, run_id, delivered_at, channel, status, target) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        "(idempotency_key, run_id, delivered_at, channel, status, target, "
+                        " attempt_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (
                             receipt.idempotency_key,
                             receipt.run_id,
@@ -424,6 +453,7 @@ class SqliteHistory:
                             receipt.channel,
                             receipt.status,
                             receipt.target,
+                            receipt.attempt_id,
                         ),
                     )
                     return receipt
@@ -434,6 +464,7 @@ class SqliteHistory:
                     channel=row["channel"],
                     status=row["status"],
                     target=row["target"],
+                    attempt_id=row["attempt_id"],
                 )
                 if existing == receipt:
                     return existing  # exact replay: no-op
@@ -452,7 +483,8 @@ class SqliteHistory:
         try:
             with self._conn as conn:
                 row = conn.execute(
-                    "SELECT idempotency_key, run_id, delivered_at, channel, status, target "
+                    "SELECT idempotency_key, run_id, delivered_at, channel, status, target, "
+                    "       attempt_id "
                     "FROM delivery_receipt WHERE idempotency_key = ?",
                     (idempotency_key,),
                 ).fetchone()
@@ -470,6 +502,7 @@ class SqliteHistory:
             channel=row["channel"],
             status=row["status"],
             target=row["target"],
+            attempt_id=row["attempt_id"],
         )
 
     # -- delivery operations (ADR-0001 v2: atomic claim / CAS / resolution) ----
@@ -514,7 +547,12 @@ class SqliteHistory:
                             run_id,
                             "DELIVERING",
                             _utc_now(),
-                            json.dumps({"idempotency_key": idempotency_key}),
+                            json.dumps(
+                                {
+                                    "idempotency_key": idempotency_key,
+                                    "payload_digest": payload_digest,  # G4-002B
+                                }
+                            ),
                         ),
                     )
                 row = conn.execute(
@@ -593,8 +631,8 @@ class SqliteHistory:
                     )
                 conn.execute(
                     "INSERT INTO delivery_receipt "
-                    "(idempotency_key, run_id, delivered_at, channel, status, target) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "(idempotency_key, run_id, delivered_at, channel, status, target, "
+                    " attempt_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         operation_key,
                         op_row["run_id"],
@@ -602,6 +640,7 @@ class SqliteHistory:
                         op_row["channel"],
                         outcome,
                         evidence,
+                        attempt_id,
                     ),
                 )
                 cursor = conn.execute(
@@ -646,6 +685,38 @@ class SqliteHistory:
             raise InvariantFailureError(f"invalid resolution outcome {outcome!r}")
         try:
             with self._conn as conn:
+                op_row = conn.execute(
+                    "SELECT run_id, channel FROM delivery_operation "
+                    "WHERE operation_key = ?",
+                    (operation_key,),
+                ).fetchone()
+                if op_row is None:
+                    raise InvariantFailureError(
+                        f"no delivery operation for key {operation_key!r}"
+                    )
+                # G4-002B (§15-5): the resolution's redundant fields must bind to
+                # the SAME operation — a cross-bound resolution fails closed.
+                if op_row["run_id"] != run_id:
+                    raise InvariantFailureError(
+                        f"resolution run_id {run_id!r} does not match operation "
+                        f"{operation_key!r} (stored {op_row['run_id']!r})"
+                    )
+                if idempotency_key != operation_key:
+                    raise InvariantFailureError(
+                        f"resolution idempotency_key {idempotency_key!r} does not match "
+                        f"operation_key {operation_key!r}"
+                    )
+                if attempt_id is not None:
+                    bound = conn.execute(
+                        "SELECT 1 FROM delivery_attempt "
+                        "WHERE attempt_id = ? AND operation_key = ?",
+                        (attempt_id, operation_key),
+                    ).fetchone()
+                    if bound is None:
+                        raise InvariantFailureError(
+                            f"resolution attempt_id {attempt_id!r} does not belong to "
+                            f"operation {operation_key!r}"
+                        )
                 conn.execute(
                     "INSERT INTO delivery_resolution "
                     "(operation_key, run_id, idempotency_key, attempt_id, outcome, "

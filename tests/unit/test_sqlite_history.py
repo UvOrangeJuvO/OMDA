@@ -35,10 +35,10 @@ def _albums(*album_ids: str) -> list[AlbumIdentity]:
 # --- migration ---
 
 
-def test_fresh_database_migrates_to_v2(tmp_path) -> None:
+def test_fresh_database_migrates_to_v3(tmp_path) -> None:
     # ADR-0001 v2: delivery_operation/attempt/resolution tables join the store.
     db = SqliteHistory(tmp_path / "state.sqlite3")
-    assert db.schema_version() == 2
+    assert db.schema_version() == 3
     assert set(db.table_names()) >= EXPECTED_TABLES
 
 
@@ -46,7 +46,7 @@ def test_migration_is_idempotent_on_reopen(tmp_path) -> None:
     path = tmp_path / "state.sqlite3"
     SqliteHistory(path)
     reopened = SqliteHistory(path)  # must not raise
-    assert reopened.schema_version() == 2
+    assert reopened.schema_version() == 3
 
 
 def test_memory_database_works() -> None:

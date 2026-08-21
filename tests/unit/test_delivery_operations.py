@@ -30,11 +30,11 @@ def _begin(history, run_id="run-1", key="run-1:pushplus", channel="pushplus"):
     )
 
 
-def test_sqlite_migrates_to_v2_with_new_tables() -> None:
+def test_sqlite_migrates_to_v3_with_new_tables() -> None:
     with tempfile.TemporaryDirectory() as d:
         store = SqliteHistory(Path(d) / "runtime.db")
         try:
-            assert store.schema_version() == 2
+            assert store.schema_version() == 3
             names = set(store.table_names())
             assert {"delivery_operation", "delivery_attempt", "delivery_resolution"} <= names
             assert "delivery_receipt" in names  # v1 table preserved
@@ -63,7 +63,7 @@ def test_v1_database_migrates_and_preserves_rows() -> None:
 
         store = SqliteHistory(path)
         try:
-            assert store.schema_version() == 2
+            assert store.schema_version() == 3
             old = store.find_delivery_receipt("old:markdown")
             assert old is not None and old.status == "ok" and old.run_id == "old"
         finally:
@@ -301,4 +301,155 @@ def test_in_memory_history_matches_semantics() -> None:
             outcome="ok",
             evidence="x",
             attempted_at="2026-08-21T00:00:02Z",
+        )
+
+
+# --- G4-002B re-review 3: §15-5 binding + receipt-attempt association ----------
+
+
+def test_cross_bound_resolution_fails_closed() -> None:
+    # Reviewer reproduction: a resolution for operation A carrying run/key/
+    # attempt fields belonging to operation B must FAIL CLOSED (ADR §15-5).
+    with tempfile.TemporaryDirectory() as d:
+        store = SqliteHistory(Path(d) / "runtime.db")
+        try:
+            for key in ("run-a:pushplus", "run-b:pushplus"):
+                snap = store.begin_delivery_operation(
+                    run_id=key.partition(":")[0],
+                    idempotency_key=key,
+                    channel="pushplus",
+                    payload_digest=_digest(key),
+                )
+                store.finalize_delivery_attempt(
+                    operation_key=key,
+                    expected_version=snap.operation.version,
+                    outcome="ambiguous",
+                    evidence="timeout",
+                    attempted_at="2026-08-21T00:00:01Z",
+                )
+            # Operation A resolved with operation B's run/key/attempt fields.
+            with pytest.raises(InvariantFailureError):
+                store.record_delivery_resolution(
+                    operation_key="run-a:pushplus",
+                    run_id="run-b",
+                    idempotency_key="run-b:pushplus",
+                    attempt_id="run-b:pushplus#1",
+                    outcome="CONFIRMED_DELIVERED",
+                    actor="owner",
+                    reason="cross-bound",
+                    decided_at="2026-08-21T12:00:00Z",
+                )
+            assert store.find_delivery_operation("run-a:pushplus").state == "AMBIGUOUS"
+        finally:
+            store.close()
+
+
+def test_resolution_attempt_must_belong_to_operation() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        store = SqliteHistory(Path(d) / "runtime.db")
+        try:
+            snap = store.begin_delivery_operation(
+                run_id="run-a",
+                idempotency_key="run-a:pushplus",
+                channel="pushplus",
+                payload_digest=_digest(),
+            )
+            store.finalize_delivery_attempt(
+                operation_key="run-a:pushplus",
+                expected_version=snap.operation.version,
+                outcome="ambiguous",
+                evidence="timeout",
+                attempted_at="2026-08-21T00:00:01Z",
+            )
+            # attempt id from a DIFFERENT operation -> fail closed.
+            with pytest.raises(InvariantFailureError):
+                store.record_delivery_resolution(
+                    operation_key="run-a:pushplus",
+                    run_id="run-a",
+                    idempotency_key="run-a:pushplus",
+                    attempt_id="run-other:pushplus#1",
+                    outcome="CONFIRMED_DELIVERED",
+                    actor="owner",
+                    reason="wrong attempt",
+                    decided_at="2026-08-21T12:00:00Z",
+                )
+        finally:
+            store.close()
+
+
+def test_finalized_receipt_binds_generated_attempt_id() -> None:
+    # ADR-0001: new finalized receipts bind their generated attempt id; the
+    # migrated SQLite table exposes the association (v1 rows may stay null).
+    with tempfile.TemporaryDirectory() as d:
+        store = SqliteHistory(Path(d) / "runtime.db")
+        try:
+            assert store.schema_version() == 3  # v3 migration adds the column
+            snap = store.begin_delivery_operation(
+                run_id="run-a",
+                idempotency_key="run-a:pushplus",
+                channel="pushplus",
+                payload_digest=_digest(),
+            )
+            store.finalize_delivery_attempt(
+                operation_key="run-a:pushplus",
+                expected_version=snap.operation.version,
+                outcome="ok",
+                evidence="ok",
+                attempted_at="2026-08-21T00:00:01Z",
+            )
+            receipt = store.find_delivery_receipt("run-a:pushplus")
+            assert receipt is not None
+            assert receipt.attempt_id == "run-a:pushplus#1"
+        finally:
+            store.close()
+
+
+def test_delivering_journal_records_key_and_digest() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        store = SqliteHistory(Path(d) / "runtime.db")
+        try:
+            store.begin_delivery_operation(
+                run_id="run-a",
+                idempotency_key="run-a:pushplus",
+                channel="pushplus",
+                payload_digest=_digest(),
+            )
+            delivering = next(
+                e for e in store.journal_after("run-a", 0) if e.transition == "DELIVERING"
+            )
+            assert delivering.detail is not None
+            assert delivering.detail.get("idempotency_key") == "run-a:pushplus"
+            assert delivering.detail.get("payload_digest") == _digest()
+        finally:
+            store.close()
+
+
+def test_in_memory_cross_bound_resolution_fails_closed() -> None:
+    from tests.fakes import InMemoryHistory
+
+    history = InMemoryHistory()
+    for key in ("run-a:pushplus", "run-b:pushplus"):
+        snap = history.begin_delivery_operation(
+            run_id=key.partition(":")[0],
+            idempotency_key=key,
+            channel="pushplus",
+            payload_digest=_digest(key),
+        )
+        history.finalize_delivery_attempt(
+            operation_key=key,
+            expected_version=snap.operation.version,
+            outcome="ambiguous",
+            evidence="timeout",
+            attempted_at="2026-08-21T00:00:01Z",
+        )
+    with pytest.raises(InvariantFailureError):
+        history.record_delivery_resolution(
+            operation_key="run-a:pushplus",
+            run_id="run-b",
+            idempotency_key="run-b:pushplus",
+            attempt_id="run-b:pushplus#1",
+            outcome="CONFIRMED_DELIVERED",
+            actor="owner",
+            reason="cross-bound",
+            decided_at="2026-08-21T12:00:00Z",
         )

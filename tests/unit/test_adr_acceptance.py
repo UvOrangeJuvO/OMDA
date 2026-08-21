@@ -408,7 +408,7 @@ def test_acceptance_8_still_unknown_stays_blocked() -> None:
 # --- acceptance 9: schema v2 + migration v2 accept v1 rows --------------------
 
 
-def test_acceptance_9_v1_rows_survive_v2_migration_and_new_states_validate() -> None:
+def test_acceptance_9_v1_rows_survive_v3_migration_and_receipt_attempt_binds() -> None:
     import sqlite3
 
     with tempfile.TemporaryDirectory() as d:
@@ -435,8 +435,12 @@ def test_acceptance_9_v1_rows_survive_v2_migration_and_new_states_validate() -> 
 
         store = _open(path)
         try:
-            assert store.schema_version() == 2
+            assert store.schema_version() == 3
             assert store.find_delivery_receipt("v1:markdown").status == "ok"
+            # G4-002B: the v3 column really exists and v1 rows stay null.
+            cols = [r[1] for r in store._conn.execute("PRAGMA table_info(delivery_receipt)")]
+            assert "attempt_id" in cols
+            assert store.find_delivery_receipt("v1:markdown").attempt_id is None
             # New v2 states validate through the real store (ambiguous receipt).
             snap = store.begin_delivery_operation(
                 run_id="v2",
@@ -451,7 +455,10 @@ def test_acceptance_9_v1_rows_survive_v2_migration_and_new_states_validate() -> 
                 evidence="timeout",
                 attempted_at="2026-08-21T00:00:01Z",
             )
-            assert store.find_delivery_receipt("v2:pushplus").status == "ambiguous"
+            receipt = store.find_delivery_receipt("v2:pushplus")
+            assert receipt.status == "ambiguous"
+            # The finalized receipt binds its generated attempt id.
+            assert receipt.attempt_id == "v2:pushplus#1"
         finally:
             store.close()
 
@@ -460,7 +467,7 @@ def test_acceptance_9_v1_rows_survive_v2_migration_and_new_states_validate() -> 
         # schema enum; here we assert the store still reads it).
         store2 = _open(path)
         try:
-            assert store2.schema_version() == 2
+            assert store2.schema_version() == 3
         finally:
             store2.close()
 
