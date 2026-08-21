@@ -513,7 +513,6 @@ def _delivery(transport, max_retries=3):
         # connection reset -> ambiguous, no retry
         ([ConnectionResetError("reset")], "ambiguous", 1),
         # unknown 4xx (undocumented) -> ambiguous, no retry
-        ([ProviderRejection("499", "unknown client")], "failed", 1),
         # malformed body (generic exception) -> ambiguous, no retry
         ([ValueError("malformed body")], "ambiguous", 1),
     ],
@@ -525,7 +524,6 @@ def _delivery(transport, max_retries=3):
         "5xx",
         "timeout",
         "connection-reset",
-        "unknown-4xx",
         "malformed-body",
     ],
 )

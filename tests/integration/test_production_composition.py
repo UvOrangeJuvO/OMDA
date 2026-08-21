@@ -194,9 +194,11 @@ def test_http_transport_classifies_200_success() -> None:
     assert isinstance(result, ProviderSuccess)
 
 
-def test_http_transport_classifies_401_definitive_rejection() -> None:
+def test_http_transport_classifies_401_as_ambiguous() -> None:
+    # G4-002A: no documented PushPlus contract proves a 401 produced no side
+    # effect, so even authentication failures are AMBIGUOUS (no retry).
     transport = _transport_with(_urlopen_returning(401, b"unauthorized"))
-    with pytest.raises(ProviderRejection):
+    with pytest.raises(AmbiguousFailure):
         transport.post("https://x/send", {"a": 1})
 
 
@@ -238,3 +240,30 @@ def test_http_transport_classifies_undocumented_business_code_ambiguous() -> Non
     transport = _transport_with(_urlopen_returning(200, b'{"code":999,"msg":"?"}'))
     with pytest.raises(AmbiguousFailure):
         transport.post("https://x/send", {"a": 1})
+
+
+# --- G4-002A re-review 3: unknown HTTP 4xx is AMBIGUOUS, not definitive ---------
+
+
+def test_http_transport_unknown_418_is_ambiguous() -> None:
+    # Reviewer reproduction: an undocumented HTTP 418 must be AMBIGUOUS (the
+    # provider may have queued the message) — never a confirmed failure.
+    transport = _transport_with(_urlopen_returning(418, b"teapot"))
+    with pytest.raises(AmbiguousFailure):
+        transport.post("https://x/send", {"a": 1})
+
+
+def test_http_transport_unknown_499_is_ambiguous() -> None:
+    transport = _transport_with(_urlopen_returning(499, b"client closed"))
+    with pytest.raises(AmbiguousFailure):
+        transport.post("https://x/send", {"a": 1})
+
+
+def test_http_transport_no_definitive_4xx_category_without_documented_contract() -> None:
+    # ADR-0001 §9/§15-3: without a documented provider contract proving no
+    # side effect, NO 4xx category may be treated as definitive. The concrete
+    # transport therefore produces NO ProviderRejection for the whole 4xx range.
+    for status in (400, 401, 403, 404, 418, 422, 429, 499):
+        transport = _transport_with(_urlopen_returning(status, b"err"))
+        with pytest.raises(AmbiguousFailure):
+            transport.post("https://x/send", {"a": 1})

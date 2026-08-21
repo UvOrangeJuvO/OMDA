@@ -35,7 +35,6 @@ from omda.adapters.delivery import (
     PUSHPLUS_API_URL,
     AmbiguousFailure,
     NoBytesSentError,
-    ProviderRejection,
     ProviderSuccess,
     PushPlusDelivery,
 )
@@ -108,13 +107,15 @@ class PushPlusHttpTransport:
             if _business_code(decoded) == 200:
                 return ProviderSuccess(decoded)
             raise AmbiguousFailure(f"undocumented provider business code: {body!r}")
-        if 400 <= status < 500:
-            # Definitive client rejection (authentication / parameters): the
-            # provider did NOT accept the request -> terminal (ADR-0001 §9).
-            raise ProviderRejection(str(status), body)
-        if status >= 500:
+        if status != 200:
+            # G4-002A (ADR-0001 §9/§15-3): NO HTTP class may be treated as a
+            # definitive rejection without a DOCUMENTED provider contract
+            # proving no message was queued. The current PushPlus API
+            # documentation only defines business code 200; it does not prove
+            # "no side effect" for any HTTP 4xx/5xx, so EVERY non-200 status
+            # (including undocumented 4xx) is AMBIGUOUS — the provider may
+            # have queued the message, and a retry could duplicate a push.
             raise AmbiguousFailure(f"provider http {status}: {body!r}")
-        raise AmbiguousFailure(f"unexpected http status {status}: {body!r}")
 
 
 def _business_code(decoded: dict) -> int:
