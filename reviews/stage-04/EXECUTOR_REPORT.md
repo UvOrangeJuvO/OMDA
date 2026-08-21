@@ -107,3 +107,45 @@
 ## Executor Conclusion（G4 Re-review 1 repair）
 
 **READY_FOR_REVIEW**（待 GPT-5.6 Sol 对本轮新 candidate SHA 复审；verdict 仅对新 SHA 有效）
+
+---
+
+# G4 Re-review 2 — BLOCKED_ARCHITECTURE（2026-08-21）
+
+对应 Reviewer commit：`3977d62198750df8177452330b6c55986785229b`
+被审 candidate：`13a659d741e70df5e7b3faa561ffc822dd4efb5c`
+
+## 触发
+
+Reviewer 判定 G4-002（P1）仍开放，且明确指出：`ambiguous` 状态违反已接受的
+Delivery Port / `DeliveryReceipt` / `delivery_receipt.schema.json` v1 契约；
+同 key 直接重放产生第二次外部推送；provider 非成功响应被一律当"明确拒绝"
+重试；并要求"stop and submit an ADR"（若现有 Port 无法安全表达交付歧义）。
+Executor 按用户指令进入 **BLOCKED_ARCHITECTURE**，暂不修改 production code。
+
+## 已提交
+
+- **Proposed ADR**：`docs/adr/0001-delivery-receipt-ambiguity-and-idempotency.md`
+  （首个正式 ADR 文件），完整覆盖 8 个设计点：
+  1. attempt / confirmed failure / ambiguous / receipt 概念区分；
+  2. Port 与版本化 Schema（v1→v2 enum 增项 + attempt_id）及迁移兼容方案；
+  3. 同 key 直接重放 / 进程重启 / 并发调用防二次推送
+     （durable intent outbox + UNIQUE 键 reserve-before-send）；
+  4. provider 非成功响应分类表（仅可证明"未接受"才是明确拒绝；
+     5xx/超时/响应丢失/未文档化业务码一律歧义）；
+  5. durable intent / receipt 写入顺序与崩溃窗口表；
+  6. 明确不宣称 PushPlus 与 SQLite 跨系统原子；
+  7. rollout / rollback / 恢复语义 / 验收测试矩阵；
+  8. 三方案比较（A 保持 ok/failed；B 版本化增加 ambiguous/attempt —— 推荐；
+     C 无安全保证时禁用真实 PushPlus），并给出推荐理由与备选触发条件。
+- **PROJECT_STATE.json**：`status=BLOCKED_ARCHITECTURE`，
+  `adr_status=ADR_PENDING`，`blocking_adr` 指向 ADR 文件。
+
+## 明确声明
+
+- 本轮**未修改任何 production code**（`git diff 3977d62 -- src/ tests/`
+  为空；仅新增 ADR + 状态 + 报告）。
+- **未修复** G4-005 / G4-007（按用户指令等待 ADR 评审后统一处理）。
+- 未 merge、未打 tag、**未进入 G5**、未写 ACCEPTED。
+- 下一步：等待 GPT-5.6 Sol 评审本 Proposed ADR；评审通过后按 ADR 实现
+  G4-002 修复（T4.3/T4.4），随后处理 G4-005/G4-007。
