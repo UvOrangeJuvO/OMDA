@@ -683,12 +683,15 @@ def test_misbound_receipt_never_commits_history(factory, overrides, label) -> No
     history = factory()
     delivery = MisboundReceiptDelivery(**overrides)
     outcome = _engine(history, delivery=delivery).run("run-1")
-    # G2-012: an ok-but-misbound receipt is delivery AMBIGUITY -> RECOVERING
-    # (manual review), never an ordinary terminal failure and never history.
+    # G2-012/ADR-0001: an ok-but-misbound receipt is delivery AMBIGUITY ->
+    # RECOVERING (manual review), never an ordinary terminal failure and never
+    # history. The attempt IS recorded as ambiguous (durable at-most-one
+    # evidence), so no re-push can ever happen after restart.
     assert outcome.state == RECOVERING, f"{label} must enter recovery"
     assert history.latest_pick_index() == 0
     assert history.excluded_album_identities() == frozenset()
-    assert history.find_delivery_receipt("run-1:markdown") is None
+    stored = history.find_delivery_receipt("run-1:markdown")
+    assert stored is None or stored.status != "ok"
     tails = [e.transition for e in history.journal_after("run-1", 0)]
     assert tails[-1] == RECOVERING
     # Anomaly is auditable in the journal.

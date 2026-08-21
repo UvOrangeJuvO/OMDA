@@ -12,6 +12,8 @@ import pytest
 
 from omda.adapters.delivery import (
     MarkdownFileDelivery,
+    NoBytesSentError,
+    ProviderSuccess,
     PushPlusDelivery,
 )
 from omda.ports.errors import DeliveryFailureError
@@ -26,7 +28,7 @@ class ScriptedHttp:
         self.last_url = None
         self.last_payload = None
 
-    def post(self, url: str, payload: dict) -> dict:
+    def post(self, url: str, payload: dict) -> ProviderSuccess:
         self.calls += 1
         self.last_url = url
         self.last_payload = payload
@@ -44,8 +46,8 @@ class RecordingSleeper:
         self.delays.append(seconds)
 
 
-def _ok_response() -> dict:
-    return {"code": 200, "msg": "成功", "data": "ok"}
+def _ok_response() -> ProviderSuccess:
+    return ProviderSuccess({"code": 200, "msg": "成功", "data": "ok"})
 
 
 def _fail_response() -> dict:
@@ -101,9 +103,11 @@ def test_pushplus_delivery_success_receipt() -> None:
     assert "payload" in transport.last_payload["content"]
 
 
-def test_pushplus_retries_on_transient_failure_then_succeeds() -> None:
+def test_pushplus_retries_zero_bytes_then_succeeds() -> None:
+    # ADR-0001 §9/§15-3: NoBytesSentError (proven zero request bytes written)
+    # is the ONLY class allowed a bounded automatic retry.
     sleeper = RecordingSleeper()
-    transport = ScriptedHttp(_fail_response(), _ok_response())
+    transport = ScriptedHttp(NoBytesSentError("dns fail"), _ok_response())
     delivery = PushPlusDelivery(
         token_env="PUSHPLUS_TOKEN",
         transport=transport,
@@ -119,9 +123,11 @@ def test_pushplus_retries_on_transient_failure_then_succeeds() -> None:
     assert sleeper.delays[0] > 0
 
 
-def test_pushplus_exhausts_retries_and_returns_failed_receipt() -> None:
+def test_pushplus_exhausts_zero_bytes_retries_as_failed() -> None:
+    # Zero bytes were never written, so exhaustion is a CONFIRMED failure
+    # (never sent) — not an ambiguous outcome.
     sleeper = RecordingSleeper()
-    transport = ScriptedHttp(_fail_response())
+    transport = ScriptedHttp(NoBytesSentError("dns fail"))
     delivery = PushPlusDelivery(
         token_env="PUSHPLUS_TOKEN",
         transport=transport,

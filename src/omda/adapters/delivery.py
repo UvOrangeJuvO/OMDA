@@ -1,24 +1,33 @@
-"""Delivery Adapters — Markdown file and PushPlus (G4 T4.3).
+"""Delivery Adapters — Markdown file and PushPlus (G4 T4.3; ADR-0001 v2).
 
 Implements the EXISTING ``Delivery`` Port with a stable idempotency key derived
 from the run id, bounded retry/backoff, and durable receipts (SPEC §4; MP §3.7).
-Idempotency: an adapter that delivers a payload for a key that was already
-delivered MUST NOT cause a second external side effect — the caller (Orchestrator
-/ recovery) holds the durable receipt and decides; these adapters additionally
-never silently re-send on ambiguous evidence.
+The Orchestrator drives the ADR-0001 protocol around the adapter: an atomic
+``begin_delivery_operation`` claim is persisted BEFORE the transport is called,
+so a replay/concurrent caller can never produce a second external push.
 
-PushPlus specifics (OPH §12): the token is injected via an explicit
-``token_provider`` callable (or the named environment variable), never
-hard-coded or logged; payload length is bounded BEFORE any external call;
-transient failures are retried with bounded exponential backoff; exhaustion
-returns a ``failed`` receipt instead of raising (so the Orchestrator can journal
-it), while payload/config errors raise ``DeliveryFailureError``.
+PushPlus specifics (ADR-0001 §9): the transport returns a TYPED result so the
+adapter can distinguish definitive provider rejection from delivery ambiguity:
+
+- ``ProviderSuccess`` -> ok;
+- ``ProviderRejection`` (definitive, documented: the request was NOT accepted)
+  -> confirmed failure, TERMINAL for this operation (no retry loop);
+- ``NoBytesSentError`` (proven zero request bytes were written) -> the ONLY
+  class allowed a bounded automatic retry; exhaustion is a confirmed failure;
+- anything else (5xx, parse failure, timeout, connection reset, lost response,
+  unknown business codes) -> ``AmbiguousFailure`` / generic exception ->
+  ``ambiguous`` receipt with NO retry.
+
+The token is injected via an explicit ``token_provider`` callable (or the named
+environment variable), never hard-coded or logged; payload length is bounded
+BEFORE any external call.
 """
 
 from __future__ import annotations
 
 import time as _time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -37,11 +46,53 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-class HttpTransport(Protocol):
-    """Injectable HTTP boundary for PushPlus (no socket/HTTP imports here)."""
+@dataclass(frozen=True)
+class ProviderSuccess:
+    """A definitively successful provider response (payload parsed)."""
 
-    def post(self, url: str, payload: dict) -> dict:
-        """POST a JSON payload; provider exceptions are classified by callers."""
+    body: Mapping
+
+
+class ProviderRejection(Exception):
+    """DEFINITIVE rejection: the provider did NOT accept/queue the request.
+
+    Only documented categories (e.g. authentication / parameter rejection that
+    provably produced no side effect) may raise this — it is terminal for the
+    operation, never an automatic retry loop (ADR-0001 §9).
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"provider definitive rejection {code}: {message}")
+        self.code = code
+        self.message = message
+
+
+class NoBytesSentError(Exception):
+    """Proven: ZERO request bytes were written to the wire.
+
+    Raised only when the concrete transport can prove no bytes left the
+    process (e.g. DNS failure or connection-establishment failure before the
+    first write). This is the ONLY class that may be automatically retried,
+    with a bounded count (ADR-0001 §15-3).
+    """
+
+
+class AmbiguousFailure(Exception):
+    """The provider outcome is UNKNOWN (5xx, parse failure, timeout, reset,
+    lost response, undocumented business code). NEVER automatically retried;
+    the outcome may already have produced a push (ADR-0001 §9)."""
+
+
+class HttpTransport(Protocol):
+    """Injectable typed HTTP boundary for PushPlus (no socket/HTTP imports here).
+
+    ``post`` returns ``ProviderSuccess`` or raises one of:
+    ``ProviderRejection`` (definitive), ``NoBytesSentError`` (zero bytes,
+    retryable) or ``AmbiguousFailure``/other exceptions (ambiguous).
+    """
+
+    def post(self, url: str, payload: dict) -> ProviderSuccess:
+        """POST a JSON payload; provider outcomes are classified by the caller."""
         ...
 
 
@@ -148,45 +199,82 @@ class PushPlusDelivery:
         token = self._resolve_token(token_provider)
         title = f"{self._title_prefix} · {run_id}"
         body = {"token": token, "title": title, "content": payload, "template": "markdown"}
+        # ADR-0001 §9: ONLY NoBytesSentError (proven zero bytes written) may be
+        # retried, with a bounded count. Everything else is either terminal
+        # (ProviderRejection) or ambiguous (no retry) — a lost/unknown response
+        # may already have produced a push.
         for attempt in range(self._max_retries + 1):
             try:
-                response = self._transport.post(self._api_url, body)
-            except Exception:  # G4-002: response lost / timeout / transport error
-                # The provider MAY have accepted the request (the response was
-                # lost), so the outcome is AMBIGUOUS. We must NOT blindly retry
-                # (that would cause a second external push) and must NOT label
-                # it a confirmed failure. The caller journals RECOVERING.
+                result = self._transport.post(self._api_url, body)
+            except NoBytesSentError:
+                # Proven: no request bytes left this process. Safe to retry; a
+                # bounded exhaustion is a CONFIRMED failure (never sent).
+                if attempt < self._max_retries:
+                    self._backoff(attempt)
+                    continue
+                return DeliveryReceipt(
+                    run_id=run_id,
+                    idempotency_key=idempotency_key,
+                    delivered_at=self._clock(),
+                    channel=channel,
+                    status="failed",
+                    target=self._api_url,
+                )
+            except ProviderRejection as exc:
+                # Definitive rejection (documented): NOT accepted -> terminal,
+                # never an automatic retry loop (ADR-0001 §9 / §15-3).
+                return DeliveryReceipt(
+                    run_id=run_id,
+                    idempotency_key=idempotency_key,
+                    delivered_at=self._clock(),
+                    channel=channel,
+                    status="failed",
+                    target=f"{self._api_url} [{exc.code}] {exc.message}",
+                )
+            except AmbiguousFailure as exc:
+                # 5xx / parse failure / timeout / reset / lost response /
+                # undocumented business code: the outcome is UNKNOWN and the
+                # provider MAY have queued the push -> ambiguous, no retry.
                 return DeliveryReceipt(
                     run_id=run_id,
                     idempotency_key=idempotency_key,
                     delivered_at=self._clock(),
                     channel=channel,
                     status="ambiguous",
-                    target=self._api_url,
+                    target=str(exc),
                 )
-            if _is_success_response(response):
+            except Exception as exc:
+                # Any unclassified transport exception is treated as ambiguous
+                # (no proof the request was not accepted), never blindly retried.
                 return DeliveryReceipt(
                     run_id=run_id,
                     idempotency_key=idempotency_key,
                     delivered_at=self._clock(),
                     channel=channel,
-                    status="ok",
-                    target=self._api_url,
+                    status="ambiguous",
+                    target=str(exc),
                 )
-            # A definite HTTP failure response (provider explicitly rejected)
-            # is a confirmed non-delivery: bounded retry is safe here because
-            # the provider never accepted the first attempt.
-            if attempt < self._max_retries:
-                self._backoff(attempt)
-        # Exhausted confirmed failures -> failed receipt (no raise; journaled).
-        return DeliveryReceipt(
-            run_id=run_id,
-            idempotency_key=idempotency_key,
-            delivered_at=self._clock(),
-            channel=channel,
-            status="failed",
-            target=self._api_url,
-        )
+            if not isinstance(result, ProviderSuccess):
+                # An unclassified (e.g. raw dict) response is NOT proof of
+                # success -> ambiguous, no retry (ADR-0001 §9).
+                return DeliveryReceipt(
+                    run_id=run_id,
+                    idempotency_key=idempotency_key,
+                    delivered_at=self._clock(),
+                    channel=channel,
+                    status="ambiguous",
+                    target=repr(result),
+                )
+            return DeliveryReceipt(
+                run_id=run_id,
+                idempotency_key=idempotency_key,
+                delivered_at=self._clock(),
+                channel=channel,
+                status="ok",
+                target=self._api_url,
+            )
+        # Unreachable: the NoBytesSent exhaustion branch returns inside the loop.
+        raise DeliveryFailureError("unreachable pushplus delivery state")
 
     def _resolve_token(self, token_provider: Callable[[], str] | None) -> str:
         if token_provider is not None:
@@ -206,23 +294,16 @@ class PushPlusDelivery:
         self._sleeper(delay)
 
 
-def _is_success_response(response: Mapping) -> bool:
-    """PushPlus returns ``code == 200`` on success (string or int)."""
-    try:
-        code = response.get("code")
-    except AttributeError:
-        return False
-    if isinstance(code, str):
-        return code.strip() == "200"
-    return code == 200
-
-
 __all__ = [
+    "AmbiguousFailure",
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_MAX_BACKOFF",
     "DEFAULT_BASE_DELAY",
     "MarkdownFileDelivery",
     "MAX_PUSHPLUS_CONTENT",
+    "NoBytesSentError",
     "PUSHPLUS_API_URL",
+    "ProviderRejection",
+    "ProviderSuccess",
     "PushPlusDelivery",
 ]

@@ -38,8 +38,13 @@ from omda.ports.album import AlbumSource
 from omda.ports.critic import CriticRatingRow
 from omda.ports.delivery import Delivery
 from omda.ports.domain import (
+    OP_CONFIRMED_FAILED,
+    OP_RESOLVED_DELIVERED,
+    OP_RESOLVED_NOT_DELIVERED,
+    OP_SUCCEEDED,
     AlbumCandidate,
     AlbumIdentity,
+    DeliveryOperation,
     DeliveryReceipt,
     GenrePickRecord,
     GenreRef,
@@ -511,14 +516,60 @@ class RunEngine:
 
     def _deliver_and_commit(self, run_id: str, plan: Plan, payload: str) -> RunOutcome:
         key = self._idempotency_key(run_id)
-        self._append(run_id, DELIVERING, {"idempotency_key": key})
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        # ADR-0001 v2: the atomic claim is persisted (with the DELIVERING
+        # journal entry) BEFORE any network call. An existing operation row
+        # blocks every other automatic caller (at-most-one outbound request).
+        try:
+            snapshot = self._history.begin_delivery_operation(
+                run_id=run_id,
+                idempotency_key=key,
+                channel=self._config.delivery.channel,
+                payload_digest=digest,
+            )
+        except (StateCommitFailureError, InvariantFailureError) as exc:
+            self._append(
+                run_id,
+                RECOVERING,
+                {"reason": "delivery claim failed", "message": str(exc)},
+            )
+            return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan, payload=payload)
+        if not snapshot.created:
+            return self._existing_operation_outcome(
+                run_id, plan, payload, snapshot.operation, digest
+            )
+
+        # Won the claim: perform the (single) external call.
         receipt = self._delivery.deliver(payload, key)
-        # G2-012: validate run/key/channel binding FIRST, then interpret status.
-        # A receipt that does not belong to this run/key/channel cannot confirm
-        # anything about the CURRENT operation — even a `failed` status for
-        # another operation is malformed/ambiguous evidence, because the external
-        # call may already have delivered. Such ambiguity enters RECOVERING.
-        if not self._receipt_matches(receipt, run_id, key):
+        # G2-012/ADR-0001: a receipt that does not bind to this run/key/channel
+        # cannot confirm anything about the CURRENT operation — even an "ok"
+        # status for another operation is malformed evidence. The external call
+        # DID happen, so the attempt is recorded as AMBIGUOUS (never re-push,
+        # never commit history), and only a bound receipt's status is trusted.
+        bound = self._receipt_matches(receipt, run_id, key)
+        outcome = receipt.status if bound else "ambiguous"
+        if outcome not in ("ok", "failed", "ambiguous"):
+            outcome = "ambiguous"  # unknown/pending/empty -> ambiguous (G2-012)
+        try:
+            self._history.finalize_delivery_attempt(
+                operation_key=key,
+                expected_version=snapshot.operation.version,
+                outcome=outcome,
+                evidence=receipt.target or "",
+                attempted_at=receipt.delivered_at,
+            )
+        except (StateCommitFailureError, InvariantFailureError) as exc:
+            # The external call MAY have happened and the evidence write failed
+            # -> ambiguous; never an ordinary terminal failure (G2-012).
+            self._append(
+                run_id,
+                RECOVERING,
+                {"reason": "delivery finalize failed after external call", "message": str(exc)},
+            )
+            return RunOutcome(
+                run_id=run_id, state=RECOVERING, plan=plan, payload=payload, receipt=receipt
+            )
+        if not bound:
             self._append(
                 run_id,
                 RECOVERING,
@@ -546,10 +597,8 @@ class RunEngine:
             )
             return RunOutcome(run_id=run_id, state=FAILED, payload=payload)
         if receipt.status != "ok":
-            # G2-012: exactly three status classes — "ok" proceeds, "failed"
-            # (bound) confirms failure, and EVERY OTHER value (unknown/pending/
-            # empty/malformed) is ambiguous: the adapter never confirmed either
-            # success or failure, so preserve the anomaly and enter RECOVERING.
+            # ambiguous (or any non-ok value): the adapter never confirmed
+            # success or failure -> preserve the anomaly and enter RECOVERING.
             self._append(
                 run_id,
                 RECOVERING,
@@ -557,20 +606,6 @@ class RunEngine:
                     "reason": "delivery receipt has unrecognized status",
                     "receipt_status": receipt.status,
                 },
-            )
-            return RunOutcome(
-                run_id=run_id, state=RECOVERING, plan=plan, payload=payload, receipt=receipt
-            )
-        try:
-            self._history.save_delivery_receipt(receipt)  # durable evidence first
-        except InvariantFailureError as exc:
-            # G2-012: a receipt-storage conflict AFTER the external call is
-            # ambiguous (the side effect may have happened) -> RECOVERING, never
-            # an ordinary terminal failure; original evidence stays intact.
-            self._append(
-                run_id,
-                RECOVERING,
-                {"reason": "delivery receipt conflict after external call", "message": str(exc)},
             )
             return RunOutcome(
                 run_id=run_id, state=RECOVERING, plan=plan, payload=payload, receipt=receipt
@@ -587,6 +622,68 @@ class RunEngine:
         return RunOutcome(
             run_id=run_id, state=COMPLETE, plan=plan, payload=payload, receipt=receipt
         )
+
+    def _existing_operation_outcome(
+        self,
+        run_id: str,
+        plan: Plan,
+        payload: str,
+        operation: DeliveryOperation,
+        digest: str,
+    ) -> RunOutcome:
+        """Handle a replay/concurrent call whose operation row already exists.
+
+        Per ADR-0001 §5/§15-1 the transport is NEVER called again: the state
+        table decides the outcome. A digest mismatch fails closed (no network).
+        """
+        if operation.payload_digest != digest:
+            # §15-5: the same key cannot be replayed with different content.
+            self._append(
+                run_id,
+                RECOVERING,
+                {
+                    "reason": "idempotency key replay with different payload digest",
+                    "stored_digest": operation.payload_digest,
+                },
+            )
+            return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan, payload=payload)
+        state = operation.state
+        if state in (OP_SUCCEEDED, OP_RESOLVED_DELIVERED):
+            # Delivered-but-not-committed (or human-confirmed delivered):
+            # commit local history, NEVER re-push.
+            try:
+                self._commit_history(run_id, plan)
+            except StateCommitFailureError:
+                self._append(
+                    run_id, RECOVERING, {"reason": "history commit failed after delivery"}
+                )
+                return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan, payload=payload)
+            self._append(run_id, COMPLETE)
+            return RunOutcome(run_id=run_id, state=COMPLETE, plan=plan, payload=payload)
+        if state in (OP_CONFIRMED_FAILED, OP_RESOLVED_NOT_DELIVERED):
+            # Confirmed not delivered: terminal failure, no re-send, no history.
+            self._append(
+                run_id,
+                FAILED,
+                {"reason": "delivery confirmed not delivered", "operation_state": state},
+            )
+            return RunOutcome(run_id=run_id, state=FAILED, plan=plan, payload=payload)
+        # IN_FLIGHT_OR_MAY_HAVE_SENT or AMBIGUOUS: never auto-resume (the claim
+        # was committed before the call, so the call MAY have happened) -> the
+        # conservative protocol requires human review (ADR-0001 §15-2).
+        # Idempotent (G2-012): unchanged evidence never grows the journal.
+        entries = self._journal(run_id)
+        if entries and entries[-1].transition == RECOVERING:
+            return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan, payload=payload)
+        self._append(
+            run_id,
+            RECOVERING,
+            {
+                "reason": "existing delivery operation is in-flight/ambiguous; human required",
+                "operation_state": state,
+            },
+        )
+        return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan, payload=payload)
 
     def _commit_history(self, run_id: str, plan: Plan) -> None:
         self._history.commit_history(
@@ -612,30 +709,48 @@ class RunEngine:
 
         plan = Plan.from_digest(run_id, digest)
         key = self._idempotency_key(run_id)
-        receipt = self._history.find_delivery_receipt(key)
-        if (
-            receipt is None
-            or receipt.status != "ok"
-            or not self._receipt_matches(receipt, run_id, key)
+        operation = self._history.find_delivery_operation(key)
+        # ADR-0001 v2 recovery: the durable operation state decides. Only a
+        # delivered (SUCCEEDED / RESOLVED_DELIVERED) operation may commit
+        # history; ambiguous/in-flight evidence requires human review and is
+        # NEVER re-pushed; confirmed-not-delivered never commits history.
+        if operation is not None and operation.state in (
+            OP_SUCCEEDED,
+            OP_RESOLVED_DELIVERED,
         ):
-            # G2-009/G2-012: missing, failed OR unbound evidence -> do NOT re-push;
-            # fail closed for human review; no official history mutation.
-            # G2-012 idempotency: unchanged evidence never appends another
-            # RECOVERING entry — the durable tail stays bounded under retries.
+            receipt = self._history.find_delivery_receipt(key)
+            if receipt is not None and self._receipt_matches(receipt, run_id, key):
+                try:
+                    self._commit_history(run_id, plan)
+                except StateCommitFailureError:
+                    if entries[-1].transition == RECOVERING:
+                        return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
+                    self._append(run_id, RECOVERING, {"reason": "history commit still failing"})
+                    return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
+                self._append(run_id, COMPLETE)
+                return RunOutcome(run_id=run_id, state=COMPLETE, plan=plan, receipt=receipt)
+            # delivered operation but unbound receipt -> ambiguous, human.
             if entries[-1].transition == RECOVERING:
                 return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
             self._append(run_id, RECOVERING, {"reason": "delivery evidence missing or mismatched"})
             return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
-        try:
-            self._commit_history(run_id, plan)
-        except StateCommitFailureError:
-            # Idempotent: unchanged failing evidence does not grow the journal.
-            if entries[-1].transition == RECOVERING:
-                return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
-            self._append(run_id, RECOVERING, {"reason": "history commit still failing"})
+        if operation is not None and operation.state in (
+            OP_CONFIRMED_FAILED,
+            OP_RESOLVED_NOT_DELIVERED,
+        ):
+            # Confirmed not delivered: terminal, no history commit.
+            if entries[-1].transition != FAILED:
+                self._append(
+                    run_id, FAILED, {"reason": "delivery confirmed not delivered"}
+                )
+            return RunOutcome(run_id=run_id, state=FAILED, plan=plan)
+        # No operation, or in-flight/ambiguous: fail closed for human review;
+        # never re-push. Idempotent under retries (G2-012): unchanged evidence
+        # does not grow the journal.
+        if entries[-1].transition == RECOVERING:
             return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
-        self._append(run_id, COMPLETE)
-        return RunOutcome(run_id=run_id, state=COMPLETE, plan=plan, receipt=receipt)
+        self._append(run_id, RECOVERING, {"reason": "delivery evidence missing or mismatched"})
+        return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
 
 
 def _packet_dict(packet: FactPacket) -> dict[str, Any]:

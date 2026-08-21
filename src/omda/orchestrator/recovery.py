@@ -24,7 +24,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from omda.ports.domain import DeliveryReceipt
+from omda.ports.domain import (
+    OP_AMBIGUOUS,
+    OP_CONFIRMED_FAILED,
+    OP_IN_FLIGHT_OR_MAY_HAVE_SENT,
+    OP_RESOLVED_DELIVERED,
+    OP_RESOLVED_NOT_DELIVERED,
+    OP_SUCCEEDED,
+    DeliveryReceipt,
+)
 from omda.ports.history import HistoryPort
 
 # Recovery actions (decisions, not new transitions).
@@ -80,6 +88,44 @@ def resolve_recovery_action(
 
     key = idempotency_key or f"{run_id}:markdown"
     expected_channel = key.partition(":")[2]
+
+    # ADR-0001 v2: the durable OPERATION state is the primary authority.
+    operation = history.find_delivery_operation(key)
+    if operation is not None:
+        if operation.state in (OP_SUCCEEDED, OP_RESOLVED_DELIVERED):
+            receipt = history.find_delivery_receipt(key)
+            if (
+                receipt is not None
+                and receipt.status == "ok"
+                and receipt.run_id == run_id
+                and receipt.idempotency_key == key
+                and receipt.channel == expected_channel
+            ):
+                return RecoveryDecision(
+                    action=COMMIT_HISTORY,
+                    reason="delivered-but-not-committed",
+                    receipt=receipt,
+                    journal_tail=tail,
+                )
+            return RecoveryDecision(
+                action=REQUIRE_HUMAN,
+                reason="delivered operation without bound ok receipt",
+                journal_tail=tail,
+            )
+        if operation.state in (OP_CONFIRMED_FAILED, OP_RESOLVED_NOT_DELIVERED):
+            return RecoveryDecision(
+                action=REQUIRE_HUMAN,
+                reason="delivery confirmed not delivered; new operation required",
+                journal_tail=tail,
+            )
+        if operation.state in (OP_AMBIGUOUS, OP_IN_FLIGHT_OR_MAY_HAVE_SENT):
+            return RecoveryDecision(
+                action=REQUIRE_HUMAN,
+                reason="delivery ambiguous/in-flight; human resolution required, no re-push",
+                journal_tail=tail,
+            )
+
+    # Fallback (legacy/no-operation evidence): the bound receipt alone decides.
     receipt = history.find_delivery_receipt(key)
     if (
         receipt is not None
