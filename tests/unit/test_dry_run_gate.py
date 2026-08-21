@@ -8,6 +8,8 @@ never resolves a token.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from omda.cli import DeliveryMode, parse_args, select_delivery
@@ -139,3 +141,102 @@ def test_main_deliver_rejects_non_pushplus_channel(monkeypatch) -> None:
     # Default config uses channel == "markdown": --deliver must refuse loudly.
     with pytest.raises(SystemExit):
         cli.main(["--deliver", "--run-id", "cli-pp"])
+
+
+# --- G4-007 re-review 3: the PUBLIC --deliver route is reachable ----------------
+
+
+class _FakePushPlusTransport:
+    def __init__(self, *script):
+        self.script = list(script)
+        self.calls = 0
+        self.last_payload = None
+
+    def post(self, url: str, payload: dict):
+        self.calls += 1
+        self.last_payload = payload
+        step = self.script[min(self.calls - 1, len(self.script) - 1)]
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+def _pushplus_config(tmp_path) -> Path:
+    path = tmp_path / "config.json"
+    path.write_text(
+        '{"delivery": {"channel": "pushplus", "pushplus_token_env": "OMDA_PP_TOKEN"}}',
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_public_cli_deliver_reaches_composition_and_uses_chosen_token(
+    monkeypatch, tmp_path
+) -> None:
+    # The PUBLIC CLI route: --deliver + --config (pushplus channel) + explicit
+    # --token-env reaches the production composition with an injected fake
+    # network boundary; the chosen token variable is honoured.
+    import os
+
+    from omda import cli
+    from omda.adapters.delivery import ProviderSuccess
+
+    os.environ["OMDA_PP_TOKEN"] = "chosen-token"
+    try:
+        fake = _FakePushPlusTransport(ProviderSuccess({"code": 200}))
+        monkeypatch.setattr(cli, "_pushplus_transport", lambda: fake)
+        code = cli.main(
+            [
+                "--deliver",
+                "--config",
+                str(_pushplus_config(tmp_path)),
+                "--token-env",
+                "OMDA_PP_TOKEN",
+                "--run-id",
+                "cli-pp-1",
+                "--history",
+                str(tmp_path / "runtime.sqlite3"),
+            ]
+        )
+        assert code == 0  # COMPLETE
+        assert fake.calls == 1  # exactly one external push
+        assert fake.last_payload["token"] == "chosen-token"
+    finally:
+        os.environ.pop("OMDA_PP_TOKEN", None)
+
+
+def test_public_cli_deliver_ambiguous_exits_nonzero(monkeypatch, tmp_path) -> None:
+    import os
+
+    from omda import cli
+    from omda.adapters.delivery import AmbiguousFailure
+
+    os.environ["OMDA_PP_TOKEN"] = "chosen-token"
+    try:
+        fake = _FakePushPlusTransport(AmbiguousFailure("timeout"))
+        monkeypatch.setattr(cli, "_pushplus_transport", lambda: fake)
+        code = cli.main(
+            [
+                "--deliver",
+                "--config",
+                str(_pushplus_config(tmp_path)),
+                "--token-env",
+                "OMDA_PP_TOKEN",
+                "--run-id",
+                "cli-pp-amb",
+                "--history",
+                str(tmp_path / "runtime.sqlite3"),
+            ]
+        )
+        assert code != 0  # RECOVERING -> non-zero
+        assert fake.calls == 1  # ambiguous is never blindly retried
+    finally:
+        os.environ.pop("OMDA_PP_TOKEN", None)
+
+
+def test_public_cli_deliver_without_pushplus_config_still_refuses(monkeypatch, tmp_path) -> None:
+    # The safety gate stays: no config / markdown channel -> --deliver refuses.
+    from omda import cli
+
+    with pytest.raises(SystemExit):
+        cli.main(["--deliver", "--run-id", "cli-nope"])

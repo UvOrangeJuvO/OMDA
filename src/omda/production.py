@@ -134,6 +134,7 @@ def build_production_engine(
     album_source: Any,
     llm_transport: Any,
     transport: Any | None = None,
+    token_env: str | None = None,
     seed: str | None = None,
 ) -> RunEngine:
     """Compose the REAL production RunEngine for the ``--deliver`` path.
@@ -148,7 +149,7 @@ def build_production_engine(
             "--deliver requires config delivery.channel == 'pushplus'"
         )
     delivery = PushPlusDelivery(
-        token_env=config.delivery.pushplus_token_env,
+        token_env=token_env or config.delivery.pushplus_token_env,
         transport=transport or PushPlusHttpTransport(),
     )
     return RunEngine(

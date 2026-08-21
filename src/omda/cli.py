@@ -54,6 +54,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="directory for the dry-run Markdown report",
     )
     parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="JSON config file (see data/schemas/config.schema.json); defaults apply if absent",
+    )
+    parser.add_argument(
         "--history",
         type=Path,
         default=DEFAULT_HISTORY_PATH,
@@ -163,11 +169,11 @@ def _main(mode: DeliveryMode, args: argparse.Namespace) -> int:
         from omda.production import build_production_engine
         from omda.storage import SqliteHistory
 
-        config = load_config()
+        config = load_config(args.config)
         if config.delivery is None or config.delivery.channel != "pushplus":
             raise SystemExit(
                 "--deliver requires delivery.channel == 'pushplus' in config "
-                "(see data/schemas/config.schema.json)"
+                "(pass --config with a pushplus channel; see data/schemas/config.schema.json)"
             )
         genre_source = _sample_genre_source(args)
         genres = genre_source.list_eligible_genres()
@@ -181,6 +187,8 @@ def _main(mode: DeliveryMode, args: argparse.Namespace) -> int:
                 genre_source=genre_source,
                 album_source=album_source,
                 llm_transport=_LocalEchoTransport(),
+                transport=_pushplus_transport(),
+                token_env=args.token_env or config.delivery.pushplus_token_env,
                 seed=run_id,
             )
             outcome = engine.run(run_id)
@@ -213,6 +221,17 @@ def _main(mode: DeliveryMode, args: argparse.Namespace) -> int:
     from omda.orchestrator.run import COMPLETE
 
     return 0 if outcome.state == COMPLETE else 1
+
+
+def _pushplus_transport() -> object:
+    """Return the concrete PushPlus HTTP transport for the --deliver route.
+
+    Injectable for tests (fake network boundary) via monkeypatching; the
+    production default is the standard-library PushPlusHttpTransport.
+    """
+    from omda.production import PushPlusHttpTransport
+
+    return PushPlusHttpTransport()
 
 
 def _new_run_id(prefix: str) -> str:
