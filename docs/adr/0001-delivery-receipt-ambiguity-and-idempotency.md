@@ -1,7 +1,7 @@
 # ADR-0001 — Delivery 收据的歧义表示与幂等发送协议（修订版 v2）
 
-- Status: **Proposed**（修订版 v2，等待 GPT-5.6 Sol 复审；评审通过后改
-  Accepted，否则 Rejected/Superseded）
+- Status: **Accepted**（GPT-5.6 Sol 独立复审接受修订版 v2；实现须遵守
+  §15 Reviewer acceptance constraints）
 - Date: 2026-08-21（修订 v2：2026-08-21）
 - Gate: G4（Agent & Delivery），T4.3 / T4.4
 - 触发 Reviewer finding：G4-002（P1）——`ambiguous` 状态违反已接受的
@@ -100,9 +100,10 @@ G4-002 第一轮修复时，`PushPlusDelivery` 在 transport 异常（超时/响
    + `INSERT INTO delivery_operation`（state=`IN_FLIGHT_OR_MAY_HAVE_SENT`，
    version=1）。`INSERT ... ON CONFLICT DO NOTHING` + 事务内 `SELECT` 决定
    返回 `created` 或 `existing` 快照。
-2. **已有任意 operation 行 → 该键的权威快照返回给调用方，调用方必须按状态
-   决定（§5）：非 CONFIRMED_FAILED 的一切状态都阻止其调用 transport。**
-   即：任何已存在的行阻止任何其他自动调用方（含新进程、并发进程）。
+2. **已有任意 operation 行 → 该键的权威快照返回给调用方，且一律阻止该
+   operation key 的任何其他自动 transport 调用**（含新进程、并发进程，也含
+   CONFIRMED_FAILED）。如需在人工确认未投递后再次尝试，只能按 §5 创建并
+   显式关联一个新的 generation operation key；绝不复用旧 key。
 3. 网络调用前必须提交的写 = 上述事务（journal + operation 行）。
 4. 崩溃在 claim 提交后、外部调用前 → 恢复时该键为
    `IN_FLIGHT_OR_MAY_HAVE_SENT` 且无 attempt → **视为假歧义，要求人工**
@@ -173,8 +174,8 @@ DeliveryOperation（每稳定 key 一行）
      `INSERT ... ON CONFLICT DO NOTHING` operation 行（state=
      IN_FLIGHT_OR_MAY_HAVE_SENT, version=1）；
    - 返回 `created=True, snapshot` 或 `created=False, existing`；
-   - 调用方规则：`created=False` 时按 §5 状态表决定——除 CONFIRMED_FAILED
-     的"人工新操作路径"外，**一律不得调用 transport**。
+   - 调用方规则：`created=False` 时，当前 key **一律不得调用 transport**；
+     CONFIRMED_FAILED 后的人工新操作必须使用并关联新的 generation key。
 2. `finalize_delivery_attempt(operation_key, expected_version, attempt_id,
    outcome, evidence, attempted_at) -> DeliveryOperationSnapshot`
    - **CAS**：`UPDATE delivery_operation SET state=…, version=version+1
@@ -205,8 +206,9 @@ DeliveryOperation（每稳定 key 一行）
 
 ## 8. SQLite v1 → v2（ADR-004 修订）
 
-- `PRAGMA user_version` 1 → 2；v1 的 `delivery_receipt` 表**保留且只读兼容**
-  （旧 ok/failed 行仍有效；不改写——G1-002）。
+- `PRAGMA user_version` 1 → 2；v1 的 `delivery_receipt` 表保留，旧 ok/failed
+  行保持不可变并继续有效。迁移必须为 v2 新记录增加 nullable `attempt_id`
+  （或用等价关联表），而不是只更新 JSON schema 后向旧表写入不存在的字段。
 - 新增表（草案，实现时以迁移脚本为准）：
 
 ```sql
@@ -243,6 +245,9 @@ CREATE TABLE delivery_resolution (
   decided_at      TEXT NOT NULL
 );
 CREATE INDEX idx_resolution_op ON delivery_resolution(operation_key);
+
+-- 若采用 receipt 直接关联 attempt 的实现：
+ALTER TABLE delivery_receipt ADD COLUMN attempt_id TEXT;
 ```
 
 - 约束要点：`operation_key` PK 即并发唯一裁判；attempt 追加不可变；
@@ -341,7 +346,31 @@ begin；`begin 后、调用前崩溃`（IN_FLIGHT 无 attempt）→ 假歧义人
 
 - **决策**：采用**方案 B**（版本化增加 ambiguous + operation/attempt/
   resolution 模型 + 原子 claim + 保守 provider 分类）。
-- **本 ADR 为 Proposed（修订 v2）**：等待 GPT-5.6 Sol 复审。评审期间
-  Executor 不修改 production code，不修复 G4-005/G4-007，不进入 G5。
-- 评审通过 → 更新本 ADR 为 Accepted 并按其实现 G4-002 修复；
-  评审否决 → 按 Reviewer 意见再修订。
+- **本 ADR 已由 GPT-5.6 Sol 接受**。Executor 可按本 ADR 和 §15 的约束恢复
+  G4-002 production 实现；ADR 接受不等于 G4 Gate 接受。
+- G4-005/G4-007 仍为开放 finding；不得进入 G5，直到完整 G4 candidate 再次
+  通过 Reviewer Gate 复审。
+
+## 15. Reviewer acceptance constraints（接受约束）
+
+以下约束是本次 Accepted 决策的一部分，实现不得自行弱化：
+
+1. **同 key 永不二发**：任何已存在的 operation 行（包括
+   CONFIRMED_FAILED）都阻止同一 key 的 transport；人工重试只能使用显式关联
+   的新 generation key。若 v0.1 暂不实现 generation retry，应 fail-closed，
+   不得临时复用旧 key。
+2. **保守 claim 优先于可用性**：claim 在网络前提交；claim 后、调用前崩溃
+   也按 MAY_HAVE_SENT/人工处理，不得为了自动恢复而重开并发窗口。
+3. **零字节证明才可重试**：`NoBytesSentError` 只有在具体 transport 能证明
+   请求字节一个也未写出时才能产生；DNS/连接前失败可分类，任何写出后异常、
+   未知异常或无法证明的异常都必须 ambiguous/no-retry。
+4. **resolution 来源受限**：自动路径只有 SUCCEEDED / CONFIRMED_FAILED /
+   AMBIGUOUS；人工 resolution 只允许从 IN_FLIGHT_OR_MAY_HAVE_SENT 或
+   AMBIGUOUS 推进到 RESOLVED_*。SUCCEEDED/CONFIRMED_FAILED 不得被普通
+   resolution 静默改写；更正必须留下单独的审计决策。
+5. **持久化绑定完整**：operation、attempt、receipt、resolution 的
+   run/key/channel/digest/attempt 关联必须在同一存储事务中验证；冗余字段不一致
+   时 fail-closed。SQLite `user_version=2` 和 JSON receipt schema v2 是两个都要
+   实现与测试的版本边界。
+6. **验收矩阵不可缩减**：§12 十项测试全部为 G4-002 关闭条件；并发测试必须
+   使用同一文件数据库上的两个独立连接，不能用单连接或纯内存 fake 代替。

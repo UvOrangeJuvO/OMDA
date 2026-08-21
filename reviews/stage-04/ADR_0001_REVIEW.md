@@ -184,3 +184,44 @@ It must explicitly choose the guarantee:
 
 The recommended option B may remain the preferred direction, but its operation/attempt/
 receipt/resolution model and atomic claim semantics must be corrected before acceptance.
+
+---
+
+## Re-review 1 — revised ADR v2
+
+### Reviewed revision
+
+- Revised ADR commit: `a43908545d6a955ef677986d7c4ed3f5c9cde985`
+- Previous ADR review commit: `a699a4955e2e925641ee979a7dd8f26b74beef5f`
+- Production-code delta in the revision: none
+- Repository state at review start: `BLOCKED_ARCHITECTURE / ADR_PENDING`
+
+### Finding closure
+
+| Finding | Status | Revised evidence |
+|---|---|---|
+| ADR-001 REGISTERED/SENT race | **CLOSED** | recoverable REGISTERED was removed; one atomic pre-network claim enters conservative MAY_HAVE_SENT and every existing row blocks same-key transport. |
+| ADR-002 immutable failed/retry contradiction | **CLOSED** | operation and immutable attempts are separated; failed is terminal; any human retry uses a new generation operation key. |
+| ADR-003 no ambiguity resolution | **CLOSED** | append-only resolution records and delivered/not-delivered/unknown recovery actions are defined. |
+| ADR-004 persistence API/transaction gap | **CLOSED** | semantic atomic begin/finalize/resolution methods, CAS, payload digest, v2 DDL and two-connection tests are specified. |
+| ADR-005 unsafe 4xx retry | **CLOSED** | blanket 4xx retry was removed; only a proven zero-byte pre-send failure may retry; all unknown/post-write outcomes are ambiguous. |
+
+The revised design deliberately chooses at-most-one automatic outbound request over automatic
+recovery after a pre-send crash. That is the correct safety tradeoff for a provider without a
+usable server-side idempotency guarantee. It also accurately avoids claiming exactly-once
+remote delivery or cross-system atomicity.
+
+Before acceptance, the Reviewer clarified four implementation-sensitive points directly in
+the ADR: every existing operation blocks the same key including confirmed failure; a new
+receipt/attempt association requires a real SQLite v2 migration as well as JSON schema v2;
+resolution cannot silently rewrite terminal automatic evidence; and §12's independent-
+connection/crash/provider matrix is mandatory. These clarifications do not change option B;
+they remove remaining ambiguity in its implementation contract.
+
+### Decision
+
+**ACCEPT**
+
+ADR-0001 revision v2 is accepted with §15 as binding implementation constraints. This accepts
+the architecture decision only; it does not close G4-002 until the implementation and all ten
+tests pass, does not close G4-005/G4-007, and does not accept the G4 Gate or authorize G5.
