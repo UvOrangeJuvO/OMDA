@@ -18,6 +18,7 @@ from omda.adapters._miniyaml import load_flat_yaml
 from omda.ports.critic import CriticRatingRow
 from omda.ports.domain import GenreRef
 from omda.ports.errors import InvalidInputError
+from omda.ports.source import GenreSourceDescriptor
 from omda.schemas import validate
 from omda.schemas.validator import RecordValidationError
 
@@ -36,6 +37,8 @@ class DatasetProvenance:
     dataset_version: str
     data_scope: str
     records_file: str
+    demo: bool = False  # G3-007: demo policy flag (registry is the authority)
+    schema_version: str = "1"  # G3-007: package schema/query-policy version
 
 
 def _validate_record(schema_name: str, record: dict, location: str) -> None:
@@ -69,6 +72,8 @@ def _provenance_from_meta(meta: dict, records_file: str) -> DatasetProvenance:
         dataset_version=meta.get("dataset_version") or meta.get("scrape_date"),
         data_scope=meta.get("data_scope", ""),
         records_file=meta.get("records_file", records_file),
+        demo=bool(meta.get("demo", False)),
+        schema_version=str(meta.get("schema_version", "1")),
     )
 
 
@@ -127,6 +132,28 @@ class GenreDatasetAdapter:
 
     def provenance(self) -> DatasetProvenance:
         return _provenance_from_meta(self._source_meta(), "genres.jsonl")
+
+    def descriptor(self) -> GenreSourceDescriptor:
+        """G3-007: versioned GenreSourceDescriptor for registry verification.
+
+        The demo flag is read from the package (schema version 2); the reviewed
+        SourceRegistry remains the authority and any mismatch fails closed in
+        :func:`assemble_validated_source_set`.
+        """
+        prov = self.provenance()
+        return GenreSourceDescriptor(
+            source_id=prov.source_id,
+            kind="genre",
+            display_name=prov.display_name,
+            license=prov.license,
+            origin_url=prov.origin_url,
+            retrieved_at=prov.retrieved_at,
+            dataset_version=prov.dataset_version,
+            schema_version=prov.schema_version,
+            data_scope=prov.data_scope,
+            records_file=prov.records_file,
+            demo=prov.demo,
+        )
 
     # -- internals -------------------------------------------------------------
     def _source_meta(self) -> dict:

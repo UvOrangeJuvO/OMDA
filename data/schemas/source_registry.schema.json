@@ -1,0 +1,13 @@
+{
+  "schema_name": "source_registry",
+  "schema_version": 1,
+  "fields": {
+    "source_id": {"type": "string", "required": true, "pattern": "^[a-z0-9-]+$"},
+    "kind": {"type": "string", "required": true, "enum": ["genre", "album"]},
+    "origin_url": {"type": "string", "required": true, "pattern": "^https?://"},
+    "license": {"type": "string", "required": true, "min_length": 1},
+    "schema_version": {"type": "string", "required": true, "min_length": 1},
+    "demo": {"type": "boolean", "required": true},
+    "records_file": {"type": "string", "required": true, "min_length": 1}
+  }
+}

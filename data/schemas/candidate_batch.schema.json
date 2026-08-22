@@ -1,0 +1,22 @@
+{
+  "schema_name": "candidate_batch",
+  "schema_version": 1,
+  "fields": {
+    "schema_version": {"type": "string", "required": true, "min_length": 1},
+    "query_policy_version": {"type": "string", "required": true, "min_length": 1},
+    "digest": {"type": "string", "required": true, "pattern": "^[0-9a-f]{64}$"},
+    "candidates": {
+      "type": "array",
+      "required": true,
+      "items": {"type": "object", "fields": {
+        "album_id": {"type": "string", "required": true, "min_length": 1},
+        "title": {"type": "string", "required": true, "min_length": 1},
+        "artist": {"type": "string", "required": true, "min_length": 1},
+        "year": {"type": "integer", "required": false},
+        "mbid": {"type": "string", "required": false},
+        "release_type": {"type": "string", "required": true, "enum": ["album"]},
+        "score": {"type": "number", "required": false}
+      }}
+    }
+  }
+}

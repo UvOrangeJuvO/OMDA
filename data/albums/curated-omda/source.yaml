@@ -1,0 +1,17 @@
+# OMDA curated Album package (G3-007, ADR-0002).
+# Curated factual metadata: real album titles/artists/release years are public
+# factual information; canonical MBIDs are left empty and filled at run time by
+# the MusicBrainz enricher (G3 T3.3) under MusicBrainz's own data terms. The
+# data license (manifest) applies to this package's curation, separate from any
+# code license (ADR-0002 D1 licensing layers).
+source_id: "curated-omda"
+kind: "album"
+display_name: "OMDA Curated Albums"
+license: "CC0-1.0 (curated factual metadata; see data/albums/curated-omda/README.md)"
+origin_url: "https://musicbrainz.org/search?query=release-group"
+retrieved_at: "2026-08-22T00:00:00+00:00"
+dataset_version: "2026-08-22"
+schema_version: "1"
+data_scope: "20 reviewed, non-demo album candidates (4 per genre) sufficient for one 3x3 run"
+records_file: "albums.jsonl"
+demo: false

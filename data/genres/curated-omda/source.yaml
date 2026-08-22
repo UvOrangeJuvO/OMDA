@@ -1,0 +1,14 @@
+# OMDA curated Genre package (G3-007, ADR-0002).
+# Curated factual metadata: genre names/taxonomy are public factual information
+# assembled and reviewed for this repository. Data license (manifest) applies
+# to this package's curation, separate from any code license.
+source_id: "curated-omda"
+display_name: "OMDA Curated Genres"
+license: "CC0-1.0 (curated factual taxonomy; see data/genres/curated-omda/README.md)"
+origin_url: "https://en.wikipedia.org/wiki/List_of_music_genres_and_styles"
+retrieved_at: "2026-08-22T00:00:00+00:00"
+dataset_version: "2026-08-22"
+schema_version: "1"
+data_scope: "5 reviewed, non-demo genre records sufficient for one 3x3 run"
+records_file: "genres.jsonl"
+demo: false
