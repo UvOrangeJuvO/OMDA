@@ -245,3 +245,68 @@ license/source decision, runtime-vs-Git cache boundary, Gate ownership, query/pa
 contract, provenance schema and non-destructive v3 migration. Return one new documentation-only
 ADR candidate; do not begin G4-010 or any other production implementation before Reviewer
 acceptance.
+
+---
+
+## Re-review 1 — revised ADR v2
+
+### Reviewed revision
+
+- Revised ADR commit: `2fcb95555076215fef3928860f59ea4057b939c6`
+- Previous ADR review commit: `443f90a04951e6d360a69fa4446b4e3b34946589`
+- Production-code/test delta in the revision: none
+- Changed files before Reviewer acceptance edits: ADR-0002, Executor report and project state
+- Repository state at review start: `BLOCKED_ARCHITECTURE / ADR_PENDING`
+- Worktree at review start: clean
+- `git diff --check`: passed
+
+### Finding closure
+
+| Finding | Status | Revised evidence |
+|---|---|---|
+| ADR2-001 tag/search licensing incorrectly called CC0 | **CLOSED** | Four license/access layers are separated; tag associations/search index are correctly supplementary CC BY-NC-SA; live tag discovery is default-off behind ODP-1; curated packages carry per-source licensing. |
+| ADR2-002 runtime cache written as Git source | **CLOSED** | Runtime cache is local/Git-ignored; only explicit export/import plus validation and human review may create a tracked package. |
+| ADR2-003 source adapter assigned to G4 | **CLOSED** | Data/source implementation is moved to narrow G3-007; G4 retains composition/delivery ownership. |
+| ADR2-004 unsafe/unsustainable tag query | **CLOSED in architecture** | Versioned mapping, Lucene escaping, Album type filtering, bounded pagination, exhaustion behavior and no-popularity semantics are specified. Live implementation remains conditional on ODP-1. |
+| ADR2-005 pacing/budget not shared | **CLOSED in architecture** | One coordinator owns UA, host boundary, retry accounting and every-attempt budget across source/enricher; cross-process constraint is binding in §8. |
+| ADR2-006 inconsistent/self-asserted provenance | **CLOSED with §8 constraints** | CandidateBatch is the single versioned envelope; §8 binds it to a reviewed source registry, distinguishes integrity from authenticity, fixes validation timing and requires journal traceability. |
+| ADR2-007 destructive v3 rollback | **CLOSED** | Migration is forward-only with fingerprint checks, backup/forward-fix recovery, unknown-version fail-closed and no evidence-column deletion or synthesized association. |
+| ADR2-008 inactive provider advertised in v0.1 | **CLOSED** | v0.1 accepts deterministic only, rejects provider before side effects and stores no fake narrative. |
+
+The revised direction is deliberately conservative. A reviewed curated package is the v0.1
+default, so acceptance does not depend on the unresolved non-commercial live tag-search choice.
+No legally compatible/installed data means external delivery fails closed. MusicBrainz MBID
+continues to identify Albums, but tag-derived candidate relationships are no longer falsely
+described as CC0.
+
+Before acceptance, the Reviewer added §8 as binding implementation constraints. The material
+clarifications are:
+
+- ODP-1 remains undecided; this acceptance does not authorize a live tag-search source;
+- G3-007 must deliver `CuratedAlbumSource` plus reviewable non-demo Genre and Album packages
+  sufficient for a real 3×3 run; the existing `rym-sample` Genre package is not production.
+  G3-007 must pass its own Reviewer checkpoint before G4 resumes;
+- content digest proves integrity, not source authenticity; a reviewed source registry is the
+  trust anchor;
+- batch validation occurs after FETCH and before selection/delivery claim, and source/batch
+  evidence must be journaled;
+- provider pagination must use actual offset/limit semantics and any live limiter must work
+  across processes;
+- every unbound pre-v3 receipt remains null/immutable, not only rows originally labelled v1;
+  old binaries may safely reject v3, but the database must never be destructively downgraded.
+
+These constraints do not replace the selected architecture. They prevent the implementation
+from satisfying the ADR with an empty all-rejecting path, a self-asserted source string, an
+invented search cursor or a combined G3/G4 change that bypasses the dual-model Gate protocol.
+
+### Decision
+
+**ACCEPT**
+
+ADR-0002 revision v2 is accepted with §8 as binding implementation constraints. This accepts
+the architecture decision only. It does **not** decide ODP-1, accept any data package or code,
+close G4-007B/G4-002C, merge the branch, or authorize G5.
+
+The next authorized unit is **G3-007 only**. The Executor must stop at a dedicated G3-007
+`READY_FOR_REVIEW` checkpoint. G4 implementation resumes only after Reviewer acceptance of
+that checkpoint.

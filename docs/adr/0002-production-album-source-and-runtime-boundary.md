@@ -1,9 +1,9 @@
 # ADR-0002 — v0.1 生产 Album 候选来源、运行时边界与持久化版本对齐（修订版 v2）
 
-- Status: **Proposed**（修订版 v2，响应 ADR2-001 ~ ADR2-008；提交 GPT-5.6 Sol
-  复审；本 ADR Accepted 前不实施任何 production code 变更）
+- Status: **Accepted**（GPT-5.6 Sol 独立复审接受修订版 v2；实现必须遵守
+  §8 Reviewer acceptance constraints；ADR 接受不等于 G3-007 或 G4 Gate 接受）
 - Date: 2026-08-22（修订 v2：2026-08-22）
-- Gate: G4（Agent & Delivery）— 架构阻断（BLOCKED_ARCHITECTURE / ADR_PENDING）
+- Gate: G3-007 corrective checkpoint → G4（ADR 已接受；两个实现 Gate 均未接受）
 - 触发 Reviewer finding：G4 Re-review 4（Reviewer commit
   `790f36f99a859da3b2578462d76e6b2cac4051ad`，verdict **BLOCKED_ARCHITECTURE /
   ADR_REQUIRED**）：G4-007B（P1 架构）、G4-002C（P1）、G4-007C（P2）、G4-002D
@@ -18,7 +18,7 @@
 |---|---|
 | ADR2-001 所选 tag-search 来源不是无保留 CC0 数据集 | **许可四层分离**：①release-group core facts（title/artist/MBID/year，CC0）；②user tags/genre associations 与 search index（**supplementary data，CC BY-NC-SA 3.0**）；③web service 访问条款（免费仅限**非商业**，商业需 plan/contact）；④OMDA 派生候选包按"curated package + per-source license manifest"管理，**绝不整体标 CC0**。**候选发现 v0.1 首选 curated community Genre→release-group-MBID package**（Git source of truth、人工审核）；live tag-search 发现仅在 **Owner 明确决策（ODP-1）**接受非商业条款后作为可选补充，默认关闭；无合法兼容来源 → fail-closed（§2 D1/D2、§3） |
 | ADR2-002 runtime cache 与 Git community source of truth 混淆 | **两条独立路径**：①**runtime cache**——有界、本地、Git 忽略（`var/` 边界）、TTL/provenance aware、可安全删除，普通 run **永不写入 tracked 数据**；②**curated community package**——仅由**显式 export/import 贡献流程**产生：schema 校验 + 人工审核后才 commit，自带 license/source manifest。runtime cache hit 不得描述为 Git source of truth（§2 D2、§4） |
-| ADR2-003 D4 与已接受的 Gate 独占归属矛盾 | **窄幅重开 G3 corrective task（G3-007）**实现 `MusicBrainzAlbumSource` + source 契约/cache/provenance/错误映射测试（data/source adapter 完全归 G3，符合 IMPLEMENTATION_PLAN 已接受契约）；完成后**回到仍被阻断的 G4** 做生产组合与 delivery gating。本 ADR 不再声称"不改 G3 边界"，而是显式记录该窄幅重开（§2 D4、§4、§6） |
+| ADR2-003 D4 与已接受的 Gate 独占归属矛盾 | **窄幅重开 G3 corrective task（G3-007）**实现默认 `CuratedAlbumSource` + source 契约/cache/provenance/错误映射测试（data/source adapter 完全归 G3，符合 IMPLEMENTATION_PLAN 已接受契约）；live `MusicBrainzAlbumSource` 仍受 ODP-1 约束。G3-007 独立评审后才回 G4 做生产组合与 delivery gating（§2 D4、§6、§8） |
 | ADR2-004 tag 查询未定义安全/相关/可持续的 Album 池 | 补全：**escaped/quoted query 构造**（Lucene 保留字符转义 + 双引号包裹，hostile/special-char Genre name 测试）；**release-group 类型过滤**（允许 primary Album，排除 Single/EP 等，定义必填字段）；**versioned Genre→MusicBrainz query/tag 映射**（含"no mapping"/"insufficient candidates"可观测结果）；**有界分页/cursor 与 cache-key/query-version 失效**，永久历史可越过第一页而无无界爬取；**search score/tag evidence 仅用于相关性**，绝不成为 popularity filter 或改变 Genre 等权重（§2 D3、§5 AC-4/AC-9） |
 | ADR2-005 请求预算与 pacing 未跨 MusicBrainz clients 共享 | 定义 **composition-owned MusicBrainz request coordinator**：source 与 enricher **共用**——单一可联系 UA、host allowlist、pacing（整个 client 平均 ≤1 req/s）、retry accounting、**总尝试预算（每次 HTTP attempt 都计数，含失败与重试，不只成功）**；并发 run 行为：**单 run 锁 + 共享 limiter**（§2 D5、§5 AC-5/AC-9） |
 | ADR2-006 无单一可强制 provenance 契约 | 统一为**版本化 `CandidateBatch`/source envelope**：immutable source descriptor（origin_url/query、retrieved_at、query policy version、license identifier、demo flag、content digest）+ per-candidate MBID/事实；明确定义 **trusted composition 在 journal claim 与 delivery 之前**校验 batch；AC-1 证明 committed identity 与 outbound fact 都属该 validated batch；AC-2 覆盖 missing/contradictory/**forged** provenance（非仅 "sample" 字面标签）（§2 D6、§5 AC-1/AC-2/AC-6） |
@@ -122,6 +122,9 @@ MusicBrainz **tag-search 发现仅在 Owner 决策（ODP-1）明确接受非商�
 
 ### D3 — 按需获取、查询契约与禁令（修订：补全 ADR2-004）
 
+以下 provider-query/pagination 条款仅在 ODP-1 接受 live tag-search 后启用；默认
+curated path 读取版本化本地 package，不发 tag-search 请求。
+
 - **查询构造**：Genre→MusicBrainz 查询使用**版本化映射**（query-policy version，
   随匹配语义演进递增，cache-key 与 invalidate 同版本）；Genre name 必须经
   **Lucene 保留字符转义 + 双引号包裹**后嵌入 `tag:"<escaped>"`；hostile/
@@ -140,8 +143,9 @@ MusicBrainz **tag-search 发现仅在 Owner 决策（ODP-1）明确接受非商�
 
 ### D4 — 归属：窄幅重开 G3，而非 G4 补充（修订：ADR2-003）
 
-**决策：实现 `MusicBrainzAlbumSource`（及 source 契约/cache/provenance/错误映射
-测试）作为**窄幅重开 G3 的 corrective task（G3-007）**；G4 保持其独占所有权
+**决策：实现默认 `CuratedAlbumSource`（及 source 契约/cache/provenance/错误映射
+测试）作为**窄幅重开 G3 的 corrective task（G3-007）**；live
+`MusicBrainzAlbumSource` 仅在 ODP-1 由 Owner 接受后另行加入。G4 保持其独占所有权
 （LLM/Markdown/delivery），负责生产组合（production-source gate、`--deliver`
 接线、delivery 测试）。**
 
@@ -156,8 +160,9 @@ MusicBrainz **tag-search 发现仅在 Owner 决策（ODP-1）明确接受非商�
 
 ### D5 — 请求协调与预算（修订：ADR2-005 跨 client 共享）
 
-**决策：单一 composition-owned MusicBrainz request coordinator，source 与
-enricher 共用。**
+**条件决策：若 ODP-1 接受并加入 live `MusicBrainzAlbumSource`，必须使用单一
+composition-owned MusicBrainz request coordinator，由 live source 与 enricher
+共用；未启用第二个 live client 时不得为未来可能性先行扩大实现范围。**
 
 - coordinator 持有一个可联系 UA、host allowlist（仅 `musicbrainz.org` 官方
   WS/2 主机/路径）、pacing（**整个 client 平均 ≤1 req/s**，跨成功与失败）、
@@ -170,20 +175,25 @@ enricher 共用。**
 
 ### D6 — production-source gate 与统一 provenance 契约（修订：ADR2-006）
 
-**决策：统一为版本化 `CandidateBatch`/source envelope，作为唯一可强制来源契约。**
+**决策：Album 候选统一为版本化 `CandidateBatch`/source envelope；生产 gate 同时
+要求一个经过验证的非 demo `GenreSourceDescriptor`。两者共同组成可交付的
+`ValidatedSourceSet`，任一为 sample/demo 或 provenance 不完整都不得外部推送。**
 
 - `CandidateBatch` 结构（版本化 schema）：immutable **source descriptor**
   （source_id、origin_url/query、retrieved_at、query_policy_version、
   license identifier、demo flag、content digest）+ **per-candidate** 记录
   （MBID、title、artist、year、type、score 仅作相关性参考）。
+- `GenreSourceDescriptor` 绑定当前 Genre package 的 source_id、origin、license、
+  schema/package version、demo flag 与 content digest；现有 illustrative
+  `rym-sample` 必须在 `--deliver` 下被拒绝，不能因为 Genre 名称真实就视为生产源。
 - **trusted composition（`build_production_engine`）在 journal claim 与任何
   delivery 之前**校验 batch：schema 版本匹配、digest 自洽、license 齐全且允许、
   demo flag=false、来源在 allowlist；任一不符 → fail-closed（无外部调用、无历史
   变更）。
 - 校验必须是**内容级**（batch 与其证据绑定），不是字符串比较——自标 allowlist
   字符串的畸形/伪造 batch 同样失败。
-- `--deliver` 仅接受已通过校验的 `CandidateBatch`；dry-run 可继续用 sample
-  （本地、history-neutral）。
+- `--deliver` 仅接受已通过校验的 `ValidatedSourceSet`；dry-run 可继续用 sample
+  Genre/Album 数据（本地、history-neutral）。
 
 ### D7 — SQLite `user_version` 2/3 正式迁移决策（修订：ADR2-007 非破坏性）
 
@@ -198,14 +208,16 @@ enricher 共用。**
   2. 支持并测试四种物理布局：v1（旧四表，receipt 无新列）→ 建三新表 + 幂等加列；
      v2-with-column（intended 布局）→ 直接进 v3；v2-without-column（buggy
      布局）→ 幂等加列 → v3；v3 → no-op；
-  3. **仅真实 legacy 行（v1 迁移而来）保留 NULL `attempt_id`**；新 finalize 写
-     入生成的 attempt id；
+  3. **任何无法证明 attempt 关联的 pre-v3 既有行**（包括 v1、
+     v2-with-column 与 v2-without-column）保留 NULL 且继续不可变；不得猜测或
+     合成 attempt id；新 v3 finalize 必须写入生成的 attempt id；
   4. 完成加列后 `PRAGMA user_version = 3`；
   5. `user_version > 3` 或未知 schema fingerprint → **fail-closed**（raise，不
      改库）。
-- **回滚 = forward-fix（修复/重放）或备份恢复**，绝不删除 `attempt_id` 列
-  （它是 receipt↔attempt 证据绑定，删除将重开 ADR-0001 已关闭的歧义）；
-  文档化 old-binary 兼容性（旧二进制读取器忽略新列），而非声称无害降级。
+- **回滚 = forward-fix（修复/重放）或迁移前备份恢复**，绝不删除 `attempt_id`
+  列（它是 receipt↔attempt 证据绑定，删除将重开 ADR-0001 已关闭的歧义）。旧
+  二进制若因 `user_version=3` 拒绝打开属于安全的 fail-closed 行为；不得为了让
+  旧二进制继续写入而降低版本号或删列。
 - 文档/注释/测试统一为 v3（fresh=v3、v1→v3 保留旧行、v2 两布局→v3、>3
   fail-closed）。
 - 否决项：回退 v2 重做（破坏既有库与基线）；破坏性降级（销毁证据）；不决策
@@ -266,18 +278,20 @@ enricher 共用。**
 
 **代码影响（Accepted 后实施，不在本轮）**：
 
-- 新增：`src/omda/adapters/musicbrainz_source.py`（或并入 musicbrainz.py 的
-  `MusicBrainzAlbumSource`，G3-007）、`MusicBrainzRequestCoordinator`、
+- 新增：`CuratedAlbumSource`（G3-007）、
   `data/schemas/candidate_batch.schema.json`、curated package 目录
   （`data/albums/<source_id>/`，贡献流程产物）、runtime cache（`var/` 边界）；
+- 条件新增（仅 ODP-1 明确接受后）：live `MusicBrainzAlbumSource` 与跨 live clients
+  共享的 `MusicBrainzRequestCoordinator`；未定案前不得借 ADR Accepted 实现；
 - 修改：`cli.py`（production-source gate、token 三态）、`production.py`
   （docstring 分类表）、`sqlite_history.py`（begin/receipt 绑定 + v3 fingerprint
   迁移，G4-002C/G4-002D）、`config.py`（`llm.mode` 仅 deterministic、
   `album.*` 预算项）、MP/IP 文档。
 
-**测试影响（设计见 §5）**：新增 CandidateBatch 校验、gate 正/负、coordinator
-共享预算、查询转义/类型过滤/分页/映射缺失、v3 四布局迁移矩阵、token 三态、
-docstring 一致、deterministic marker；既有 630 项不删除不弱化。
+**测试影响（设计见 §5）**：新增 CandidateBatch/curated package 校验、gate 正/负、
+贡献导入/导出、v3 四布局迁移矩阵、token 三态、docstring 一致、deterministic
+marker；若 ODP-1 后加入 live path，再强制 coordinator 共享预算、查询转义/类型
+过滤/分页/映射缺失矩阵。既有 630 项不删除不弱化。
 
 **风险与缓解**：
 
@@ -285,8 +299,8 @@ docstring 一致、deterministic marker；既有 630 项不删除不弱化。
 |---|---|
 | 许可边界（supplementary/mixed/非商业） | 许可四层分离 + per-source manifest + ODP-1 Owner 决策；未定案 fail-closed（D1/D2） |
 | curated package 覆盖不足/陈旧 | 贡献流程 + 显式版本/retrieved_at；不足时显式失败不填充（D3） |
-| 限流/暂时封禁 | coordinator 共享 pacing（≤1 rps）+ 总尝试预算 + 缓存命中优先（D5） |
-| 候选池被永久历史耗尽 | 有界分页/cursor + 稳定化 + query-version 失效（D3） |
+| 限流/暂时封禁（仅获批 live path） | coordinator 共享 pacing（≤1 rps）+ 总尝试预算 + 缓存命中优先（D5） |
+| live 候选池被永久历史耗尽（仅获批 live path） | 有界 offset/limit 分页 + query-version 失效（D3/§8-6） |
 | 畸形/伪造来源自标生产 | CandidateBatch 内容级校验（digest/license/demo/allowlist）fail-closed（D6） |
 | 迁移破坏证据 | fingerprint 检查 + 幂等加列 + 无删列降级 + 备份恢复（D7） |
 
@@ -295,14 +309,15 @@ docstring 一致、deterministic marker；既有 630 项不删除不弱化。
 映射 G4 Re-review 4 与 ADR-0002 首轮评审的 Required acceptance：
 
 - **AC-1（G4-007B 正 / ADR2-006）**：经公共 `cli.main` + 注入 fake 网络边界，使用
-  已校验的 `CandidateBatch`（生产 provenance）→ 断言 outbound 事实与 committed
+  已校验的非 demo Genre package + `CandidateBatch`（生产 provenance）→ 断言
+  选中 Genre、outbound Album 事实与 committed
   官方历史中的 Album 标识**逐条**来自该 batch（batch digest 绑定：committed
   identity 与 outbound fact 都属于同一 validated batch），外部调用恰一次、官方
   历史原子提交。
-- **AC-2（G4-007B 负 / ADR2-006）**：sample/demo batch、**missing
-  provenance、自相矛盾的 provenance、伪造来源（自标 allowlist 字符串但 digest/
-  license 不符）** 全部 → `--deliver` 拒绝：非零退出、`transport.calls == 0`、
-  官方历史零变更。
+- **AC-2（G4-007B 负 / ADR2-006）**：sample/demo Genre package、sample/demo
+  CandidateBatch、**missing provenance、自相矛盾的 provenance、伪造来源（自标
+  allowlist 字符串但 digest/license 不符）** 全部 → `--deliver` 拒绝：非零退出、
+  `transport.calls == 0`、官方历史零变更。
 - **AC-3（G4-002C begin）**：SQLite 与 InMemory parity——对既有 key 以不匹配的
   run/channel/digest 调 `begin_delivery_operation` → `InvariantFailureError`，
   且发生在任何外部调用之前。
@@ -315,13 +330,19 @@ docstring 一致、deterministic marker；既有 630 项不删除不弱化。
   （全 4xx/5xx/未知 → ambiguous no-retry；仅 `NoBytesSentError` 有界重试）。
 - **AC-7（G4-002D / ADR2-007）**：fresh=v3；**v1、v2-with-column、
   v2-without-column、v3 四布局**在一个事务性迁移中正确且幂等收敛到 v3，旧行
-  attempt_id 仅真实 legacy 行保留 NULL；`user_version > 3` 或未知 fingerprint
+  attempt_id 在无法证明既有绑定时保留 NULL；`user_version > 3` 或未知 fingerprint
   fail-closed（不改库）；**无删列降级路径**。
 - **AC-8（G4-009 / ADR2-008）**：`llm.mode=deterministic` 全链路不调用外部 LLM，
   交付物为确定性事实报告，narrative 存档为 typed deterministic marker；
   `llm.mode=provider` 在 config validation 即 fail-closed（run/journal/network
   副作用前）。
-- **AC-9（D1/D3/D5）**：MusicBrainz 相关注入 transport 全表——200 正常 / 429
+- **AC-9A（D1/D2/D6，G3-007 必需）**：curated Genre/Album packages 的
+  manifest/schema/digest/registry binding、显式 import/export、普通 run 不写
+  tracked Git、缺失/过期/候选不足失败，以及至少一组经审核的非 demo Genre + Album
+  packages（足以完成真实 3×3）全部通过；永久历史排除后，本地数据按确定性顺序继续
+  提供尚未推荐的记录，耗尽时显式失败。
+- **AC-9B（D1/D3/D5，仅 ODP-1 接受并实现 live path 时启用）**：MusicBrainz
+  相关注入 transport 全表——200 正常 / 429
   退避 / 5xx / 畸形体 / 超时 / 预算耗尽显式失败；**Lucene 保留字符与多词 Genre
   name 不改变查询结构**；release-group 类型过滤（Single/EP 剔除）；**no-mapping
   与 insufficient-candidates 可观测**；**分页越过已入历史的第一页**且不无界爬取；
@@ -331,26 +352,26 @@ docstring 一致、deterministic marker；既有 630 项不删除不弱化。
 
 **ADR2 新增验收（Required revised acceptance additions）映射**：①许可/provenance
 fixtures 区分 CC0 core facts 与 supplementary tag/search evidence，生成的 package
-无有效依据不得整体标 CC0（AC-9/AC-1）；②普通 run 查询只写 Git 忽略缓存，显式
-export/import 是唯一产生可审 Git 数据的路径（AC-9/AC-1）；③保留字符/多词 Genre
-不能改查询结构，映射缺失与无关类型明确失败（AC-9）；④首页候选入永久历史后有界
-分页可发现后续页，耗尽/不稳定显式失败且无 sample 替代、无历史污染（AC-9/AC-2）；
-⑤source+enricher 共享 coordinator，每次尝试计入预算、时间戳满足 pacing（AC-9）；
+无有效依据不得整体标 CC0（AC-9A/AC-1）；②普通 run 查询只写 Git 忽略缓存，显式
+export/import 是唯一产生可审 Git 数据的路径（AC-9A/AC-1）；③保留字符/多词 Genre
+不能改查询结构，映射缺失与无关类型明确失败（条件 AC-9B）；④首页候选入永久历史
+后有界分页可发现后续页，耗尽/不稳定显式失败且无 sample 替代、无历史污染（条件
+AC-9B/AC-2）；⑤source+enricher 共享 coordinator，每次尝试计入预算、时间戳满足
+pacing（条件 AC-9B）；
 ⑥provenance schema 不一致、digest/origin/license 缺失、伪造生产状态都在 PushPlus
 前与官方历史变更前失败（AC-2/AC-1）；⑦v2-with-column / v2-without-column /
 future-version 库按修订后安全 v3 迁移/fail-closed 规则且不删交付证据（AC-7）。
 
 ## 6. 阶段状态与 Gate 流程
 
-- **当前（本轮）**：`BLOCKED_ARCHITECTURE / ADR_PENDING`——只提交本 Proposed
-  ADR（修订 v2）与阶段状态更新；无 production code / tests 变更；ADR 不标
-  Accepted。
-- **Reviewer 接受本 ADR 后**：Executor 按 D1-D9 实施——先窄幅重开 G3-007
-  （MusicBrainzAlbumSource + coordinator + CandidateBatch + 贡献流程），再回到
-  G4 做 production-source gate 与 `--deliver` 接线，并修复 G4-002C/G4-007C/
-  G4-002E、执行 v3 forward migration 对齐与 MP/IP 修订；完成 §5 全部验收测试后，
-  提交新的完整 candidate（相对同一 base `68e3d453…`）返回 Reviewer 复审。
-- 本 ADR 未被接受前：不实施、不 merge、不打 tag、不进入 G5。
+- **当前**：ADR 修订 v2 已由 Reviewer 接受；项目转为 `G3 / READY`，只授权下一
+  个窄幅 checkpoint，不代表实现或 Gate 已接受。
+- **下一步**：先进入窄幅重开的 G3-007，只实现并验证 §8 中适用于 source/data 的
+  工作；生成独立 G3-007 报告与 candidate 后停止，等待
+  Reviewer checkpoint。只有 G3-007 被接受后，才恢复 G4 的 production-source
+  gate、`--deliver` 接线、G4-002C/G4-007C/G4-002E、v3 forward migration 与
+  MP/IP 修订。
+- ADR 接受不授权 merge/tag/G5；G3-007 与随后完整 G4 candidate 仍须分别评审。
 
 ## 7. 引用
 
@@ -369,3 +390,62 @@ future-version 库按修订后安全 v3 迁移/fail-closed 规则且不删交付
 - MP §5 / §6 / §7 / §9；步骤 4-9。
 - IMPLEMENTATION_PLAN C.3（G3，增补 G3-007）、C.4（G4）、C.5（G5 范围）、
   OD-2 / OD-4 / OD-6 / OD-10。
+
+## 8. Reviewer acceptance constraints（接受约束）
+
+以下约束是本次 Accepted 决策的一部分，优先消除正文仍可能产生的实现歧义；
+Executor 不得自行弱化：
+
+1. **默认来源与 ODP-1 分离**：本次接受的 v0.1 默认生产来源是经过审核的
+   `CuratedAlbumSource`/curated package。ODP-1 仍未由 Owner 定案，因此本次接受
+   **不授权实现或启用 live MusicBrainz tag-search AlbumSource**；它只能在 Owner
+   将 ODP-1 的决定和许可影响写入治理记录后另行实现。既有 MusicBrainz canonical
+   enrichment 不因本条被移除。
+2. **不能用“安全拒绝一切”冒充完成**：G3-007/G4 最终验收必须包含至少一组
+   非 demo、人工审核、许可与 provenance 完整、足以完成一次真实 3×3 推荐的 curated
+   Genre + Album packages。现有 `rym-sample` Genre package 也是 demo，生产 gate
+   必须拒绝。没有真实数据时 `--deliver` 必须 fail-closed，但仅证明 fail-closed
+   不足以关闭 G4-007B。
+3. **G3-007 单独过 Gate**：G3-007 只实现 source-side 工作：
+   `CuratedAlbumSource`、`CandidateBatch` 与 `GenreSourceDescriptor` 契约/校验、
+   curated import/export 贡献流程、Git-ignored runtime cache，以及这些边界的
+   fixtures/许可/provenance 测试。
+   Executor 必须生成独立 G3-007 review package，置为 `READY_FOR_REVIEW` 后停止。
+   Reviewer 接受该 checkpoint 前，不得开始 G4 production composition、PushPlus
+   接线或把 G3/G4 改动混成一个不可分审计包。
+4. **source-set 校验位置与 Core 边界**：`build_production_engine` 只能在组装时
+   校验 source registry/config；运行期 `GenreSourceDescriptor` 与
+   `CandidateBatch` 必须在 FETCH/source adapter 返回后、进入选择与任何 delivery
+   claim 之前，由可信 application boundary 组成并校验为 `ValidatedSourceSet`。
+   Core 仍只处理候选事实与确定性选择，不承担许可、网络或 provenance 策略。
+5. **digest 是完整性，不是身份认证**：content digest 只能证明 batch 内容未在校验
+   后改变，不能证明 source_id/license 声明真实。可信度来自显式安装且经审核的
+   source registry：registry 将 Genre/Album source_id 绑定到预期 origin、license、
+   schema 和 demo policy；manifest/descriptor/batch 与 registry 任一不一致即
+   fail-closed。不得声称可抵抗已获本地仓库写权限的恶意代码/数据修改，除非未来
+   另有签名信任 ADR。
+6. **查询/分页仅属于获批 live 路径**：curated package 使用确定性、版本化本地记录，
+   不伪造 provider cursor。若 ODP-1 后启用 MusicBrainz search，只能使用其实际
+   `offset`/`limit` 能力；page size、max pages、总 attempts 都必须是有硬上限的正
+   整数。query/page/order/policy version 纳入 cache key；跨页重复、结果漂移或耗尽
+   必须显式失败。Lucene escaping、primary type=Album 和无 popularity weighting
+   约束保持不变。
+7. **限速必须跨进程有效**：若 live MusicBrainz 路径未来获批，单-run lock 和
+   request pacing 不能只是两个 adapter 各自的内存对象。v0.1 必须通过同一
+   process-independent 本地锁/协调状态阻止并发进程突破限制；source 与 enricher
+   的每个 HTTP attempt 共用预算与至少一秒的请求间隔。
+8. **provenance 必须可追溯到运行证据**：在 FETCH/SELECT journal 中记录经过验证的
+   Genre source_id/digest、Album source_id/CandidateBatch digest、schema/
+   query-policy version 与检索/包版本；outbound payload 的选中 Genre/Album 事实和
+   最终提交的 MBID 必须能回溯到同一 `ValidatedSourceSet`。不得把 delivery payload
+   digest 当作 candidate-source digest 的替代品。
+9. **v3 不合成、不降级**：任何 pre-v3、无法证明 attempt 关联的 receipt（不只 v1）
+   保持 NULL 且不可变；future/unknown schema fail-closed。旧二进制拒绝 v3 是允许的
+   安全结果，绝不得降低 `user_version`、删列或合成 attempt id 来换取兼容。
+10. **deterministic 就是真正零 LLM**：v0.1 config 只接受 deterministic；不得构造
+    `_LocalEchoTransport`、不得保存伪 narrative。未来 provider mode 仍需独立实现、
+    版本化配置与 Gate 接受。
+11. **验收矩阵不可缩减**：§5 AC-1～AC-8、AC-9A 和首轮 Reviewer 中适用于 curated
+    默认路径的验收全部是当前关闭条件；AC-9B 仅在 ODP-1 接受且 live path 被实现时
+    同步成为关闭条件。测试不得以空数据、全 fail-closed 或仅 fake “production”
+    标签替代一次真实、非 demo Genre + Album curated 3×3 端到端事实来源证明。
