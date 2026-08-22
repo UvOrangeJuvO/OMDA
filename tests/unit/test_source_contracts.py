@@ -1,10 +1,9 @@
-"""G3-007 source contracts: descriptors, CandidateBatch, digest, registry,
+"""G3-007 source contracts: descriptors, CandidateBatch, digests, registry,
 ValidatedSourceSet (ADR-0002 D2/D6, §8.4/§8.5/§8.6). Failure tests first."""
 
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 
@@ -21,67 +20,69 @@ from omda.ports.source import (
 )
 from omda.sources.registry import RegistryEntry, SourceRegistry
 
-GENRE_META = dict(
+_MBID1 = "11111111-1111-1111-1111-111111111111"
+_MBID2 = "22222222-2222-2222-2222-222222222222"
+
+BASE_FIELDS = dict(
     source_id="curated-omda",
-    kind="genre",
-    display_name="OMDA Curated Genres",
-    license="CC0-1.0 (curated facts)",
-    origin_url="https://example.org/genres",
+    display_name="OMDA Curated",
+    license="CC0-1.0 (independently curated factual metadata only)",
+    origin_url="https://example.org/source",
     retrieved_at="2026-08-22T00:00:00+00:00",
     dataset_version="2026-08-22",
     schema_version="1",
-    data_scope="curated genre list",
-    records_file="genres.jsonl",
+    data_scope="curated records",
+    records_file="records.jsonl",
     demo=False,
-)
-ALBUM_META = dict(
-    source_id="curated-omda",
-    kind="album",
-    display_name="OMDA Curated Albums",
-    license="CC0-1.0 (curated facts)",
-    origin_url="https://example.org/albums",
-    retrieved_at="2026-08-22T00:00:00+00:00",
-    dataset_version="2026-08-22",
-    schema_version="1",
-    data_scope="curated album candidates",
-    records_file="albums.jsonl",
-    demo=False,
+    data_derivation="independently_curated",
+    upstream_license="none incorporated",
+    license_core_facts="CC0-1.0",
+    license_supplementary_used="none",
+    license_service_terms="n/a",
+    license_derived_package="CC0-1.0",
 )
 
 
 def _genre_descriptor(**overrides) -> GenreSourceDescriptor:
-    return GenreSourceDescriptor(**({**GENRE_META, **overrides}))
+    base = {**BASE_FIELDS, "kind": "genre", "content_digest": "g" * 64}
+    base.update(overrides)
+    return GenreSourceDescriptor(**base)
 
 
 def _album_descriptor(**overrides) -> SourceDescriptor:
-    return SourceDescriptor(**({**ALBUM_META, **overrides}))
+    base = {**BASE_FIELDS, "kind": "album"}
+    base.update(overrides)
+    return SourceDescriptor(**base)
 
 
 def _records() -> tuple[AlbumCandidateRecord, ...]:
     return (
         AlbumCandidateRecord(
             album_id="curated-omda-ambient-0001",
+            genre_id="ambient",
             title="Ambient 1: Music for Airports",
             artist="Brian Eno",
             year=1978,
-            mbid=None,
+            mbid=_MBID1,
         ),
         AlbumCandidateRecord(
             album_id="curated-omda-ambient-0002",
+            genre_id="ambient",
             title="Selected Ambient Works 85-92",
             artist="Aphex Twin",
             year=1992,
-            mbid=None,
+            mbid=_MBID2,
         ),
     )
 
 
 def _batch(**overrides) -> CandidateBatch:
     base = dict(
-        schema_version="1",
+        schema_version="2",
         query_policy_version="1",
+        genre_id="ambient",
         source=_album_descriptor(),
-        digest="",  # filled below unless overridden
+        digest="",
         candidates=_records(),
     )
     base.update(overrides)
@@ -95,43 +96,42 @@ def _entry(**overrides) -> RegistryEntry:
     base = dict(
         source_id="curated-omda",
         kind="album",
-        origin_url=ALBUM_META["origin_url"],
-        license=ALBUM_META["license"],
+        origin_url=BASE_FIELDS["origin_url"],
+        license=BASE_FIELDS["license"],
         schema_version="1",
         demo=False,
-        records_file="albums.jsonl",
+        records_file="records.jsonl",
+        data_derivation="independently_curated",
+        upstream_license="none incorporated",
+        content_digest=None,
     )
     base.update(overrides)
     return RegistryEntry(**base)
 
 
 def test_batch_digest_is_stable_and_content_sensitive() -> None:
-    first = _batch()
-    second = _batch()
-    d1 = digest_batch(first)
-    assert d1 == digest_batch(second)  # deterministic
+    d1 = digest_batch(_batch())
+    assert d1 == digest_batch(_batch())  # deterministic
     assert len(d1) == 64  # SHA-256 hex
-    # Any content change (a candidate title) changes the digest.
+    # Genre binding is part of the digest (G3-007-001).
+    assert digest_batch(_batch(genre_id="bebop")) != d1
+    # A canonical MBID change is part of the digest (G3-007-002).
+    changed = _records()[0]
     altered = _batch(
         candidates=(
-            AlbumCandidateRecord(
-                album_id="curated-omda-ambient-0001",
-                title="Ambient 1: Music for Airports (tampered)",
-                artist="Brian Eno",
-                year=1978,
-                mbid=None,
-            ),
+            replace(changed, mbid="33333333-3333-3333-3333-333333333333"),
             _records()[1],
         )
     )
     assert digest_batch(altered) != d1
-    # The declared source license/origin are part of the digest envelope.
+    # License/origin derivation are part of the digest envelope.
     assert digest_batch(_batch(source=_album_descriptor(license="MIT"))) != d1
+    derived = _album_descriptor(data_derivation="derived_from_upstream")
+    assert digest_batch(_batch(source=derived)) != d1
 
 
 def test_verify_batch_integrity_rejects_tampered_digest() -> None:
-    batch = _batch(digest=digest_batch(_batch()))
-    verify_batch_integrity(batch)  # ok
+    verify_batch_integrity(_batch())  # ok
     with pytest.raises(InvalidInputError):
         verify_batch_integrity(_batch(digest="f" * 64))
     with pytest.raises(InvalidInputError):
@@ -140,8 +140,7 @@ def test_verify_batch_integrity_rejects_tampered_digest() -> None:
 
 def test_registry_load_and_lookup() -> None:
     registry = SourceRegistry({"curated-omda:album": _entry()})
-    entry = registry.get("curated-omda", "album")
-    assert entry.source_id == "curated-omda"
+    assert registry.get("curated-omda", "album").source_id == "curated-omda"
     assert registry.demo_policy("curated-omda", "album") is False
     with pytest.raises(InvalidInputError):
         registry.get("missing", "album")
@@ -149,7 +148,6 @@ def test_registry_load_and_lookup() -> None:
 
 def test_registry_verify_descriptor_mismatch_fails_closed() -> None:
     registry = SourceRegistry({"curated-omda:album": _entry()})
-    # Every field must match the reviewed registry entry.
     registry.verify_descriptor(_album_descriptor())
     with pytest.raises(InvalidInputError):
         registry.verify_descriptor(_album_descriptor(origin_url="https://evil.example"))
@@ -159,61 +157,140 @@ def test_registry_verify_descriptor_mismatch_fails_closed() -> None:
         registry.verify_descriptor(_album_descriptor(demo=True))
     with pytest.raises(InvalidInputError):
         registry.verify_descriptor(_album_descriptor(schema_version="999"))
+    # G3-007-005: a derivation/license-layer mismatch fails closed.
+    with pytest.raises(InvalidInputError):
+        registry.verify_descriptor(_album_descriptor(data_derivation="derived_from_upstream"))
+    with pytest.raises(InvalidInputError):
+        registry.verify_descriptor(_album_descriptor(upstream_license="CC BY-SA 4.0"))
+
+
+def test_genre_content_digest_is_bound_by_registry() -> None:
+    # G3-007-003: the registry records the digest reviewed at install time; a
+    # Genre descriptor carrying a different digest fails closed.
+    registry = SourceRegistry(
+        {
+            "curated-omda:genre": _entry(kind="genre", content_digest="a" * 64),
+            "curated-omda:album": _entry(),
+        }
+    )
+    registry.verify_descriptor(_genre_descriptor(content_digest="a" * 64))
+    with pytest.raises(InvalidInputError):
+        registry.verify_descriptor(_genre_descriptor(content_digest="b" * 64))  # tampered
 
 
 def test_assemble_validated_source_set() -> None:
     registry = SourceRegistry(
         {
-            "curated-omda:genre": RegistryEntry(
-                source_id="curated-omda", kind="genre",
-                origin_url=GENRE_META["origin_url"], license=GENRE_META["license"],
-                schema_version="1", demo=False, records_file="genres.jsonl",
+            "curated-omda:genre": _entry(
+                kind="genre", records_file="records.jsonl", content_digest="g" * 64
             ),
             "curated-omda:album": _entry(),
         }
     )
-    batch = _batch(digest=digest_batch(_batch()))
+    batch = _batch()
     result = assemble_validated_source_set(
         registry,
         genre_descriptors=(_genre_descriptor(),),
         batches=(batch,),
+        selected_genre_ids=("ambient",),
+        required_candidates_per_genre=2,
     )
     assert isinstance(result, ValidatedSourceSet)
-    assert result.genre_descriptors[0].source_id == "curated-omda"
     assert result.batches[0].digest == batch.digest
     assert result.is_demo is False
 
 
-def test_assemble_rejects_tampered_batch_or_forged_production_label() -> None:
-    registry = SourceRegistry({"curated-omda:album": _entry()})
-    # Tampered digest fails before any consumer sees the batch.
+def test_assemble_rejects_tampered_forged_or_unregistered_inputs() -> None:
+    registry = SourceRegistry(
+        {
+            "curated-omda:genre": _entry(
+                kind="genre", records_file="records.jsonl", content_digest="g" * 64
+            ),
+            "curated-omda:album": _entry(),
+        }
+    )
+    # Tampered batch digest fails before any consumer sees it.
     with pytest.raises(InvalidInputError):
         assemble_validated_source_set(
-            registry, genre_descriptors=(), batches=(_batch(digest="0" * 64),)
+            registry,
+            genre_descriptors=(),
+            batches=(_batch(digest="0" * 64),),
+            selected_genre_ids=("ambient",),
         )
-    # A package that falsely claims production (demo=False) while the reviewed
-    # registry says it is demo fails closed — a self-asserted label is not
-    # provenance (ADR-0002 §8.5).
+    # Forged production label: descriptor says demo=False but the reviewed
+    # registry says demo=True (self-asserted label is not provenance, §8.5).
     demo_registry = SourceRegistry({"curated-omda:album": _entry(demo=True)})
     with pytest.raises(InvalidInputError):
         assemble_validated_source_set(
             demo_registry,
             genre_descriptors=(),
-            batches=(_batch(digest=digest_batch(_batch())),),
+            batches=(_batch(),),
+            selected_genre_ids=("ambient",),
         )
-    # Unregistered source is rejected outright.
+    # Unregistered source rejected outright.
     with pytest.raises(InvalidInputError):
         assemble_validated_source_set(
             SourceRegistry({}),
             genre_descriptors=(),
-            batches=(_batch(digest=digest_batch(_batch())),),
+            batches=(_batch(),),
+            selected_genre_ids=("ambient",),
         )
 
 
-def test_demo_batch_is_exposed_but_never_mislabeled(tmp_path: Path) -> None:
-    demo_entry = _entry(demo=True)
-    registry = SourceRegistry({"curated-omda:album": demo_entry})
-    demo_descriptor = _album_descriptor(demo=True)
-    batch = _batch(source=demo_descriptor, digest=digest_batch(_batch(source=demo_descriptor)))
-    result = assemble_validated_source_set(registry, genre_descriptors=(), batches=(batch,))
-    assert result.is_demo is True  # exposed for the delivery gate to reject
+def test_assemble_rejects_empty_and_incomplete_source_sets() -> None:
+    registry = SourceRegistry({"curated-omda:album": _entry()})
+    # G3-007-003: empty assembly is never a validated production set.
+    with pytest.raises(InvalidInputError):
+        assemble_validated_source_set(
+            registry, genre_descriptors=(), batches=(), selected_genre_ids=("ambient",)
+        )
+    # A declared Genre with no album batch fails coverage.
+    with pytest.raises(InvalidInputError):
+        assemble_validated_source_set(
+            registry,
+            genre_descriptors=(_genre_descriptor(),),
+            batches=(_batch(genre_id="bebop"),),
+            selected_genre_ids=("ambient",),
+        )
+    # Below the required 3x3 coverage fails.
+    with pytest.raises(InvalidInputError):
+        assemble_validated_source_set(
+            registry,
+            genre_descriptors=(_genre_descriptor(),),
+            batches=(_batch(),),
+            selected_genre_ids=("ambient",),
+            required_candidates_per_genre=3,
+        )
+
+
+def test_demo_status_covers_genre_descriptors_too() -> None:
+    # G3-007-003: a registered demo Genre + production Albums must yield
+    # is_demo=True — the delivery gate could otherwise trust a demo package.
+    registry = SourceRegistry(
+        {
+            "curated-omda:genre": _entry(
+                kind="genre", demo=True, records_file="records.jsonl", content_digest="g" * 64
+            ),
+            "curated-omda:album": _entry(),
+        }
+    )
+    demo_genre = _genre_descriptor(demo=True)
+    result = assemble_validated_source_set(
+        registry,
+        genre_descriptors=(demo_genre,),
+        batches=(_batch(),),
+        selected_genre_ids=("ambient",),
+        required_candidates_per_genre=2,
+    )
+    assert result.is_demo is True
+
+
+def test_duplicate_album_batch_for_genre_is_rejected() -> None:
+    registry = SourceRegistry({"curated-omda:album": _entry()})
+    with pytest.raises(InvalidInputError):
+        assemble_validated_source_set(
+            registry,
+            genre_descriptors=(),
+            batches=(_batch(), _batch()),
+            selected_genre_ids=("ambient",),
+        )

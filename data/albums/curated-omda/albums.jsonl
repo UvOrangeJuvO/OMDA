@@ -1,20 +1,20 @@
-{"album_id": "curated-omda-ambient-0001", "title": "Ambient 1: Music for Airports", "artist": "Brian Eno", "year": 1978, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-ambient-0002", "title": "Selected Ambient Works 85-92", "artist": "Aphex Twin", "year": 1992, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-ambient-0003", "title": "And Their Refinement of the Decline", "artist": "Stars of the Lid", "year": 2007, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-ambient-0004", "title": "The Pearl", "artist": "Harold Budd & Brian Eno", "year": 1984, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-bebop-0001", "title": "Brilliant Corners", "artist": "Thelonious Monk", "year": 1957, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-bebop-0002", "title": "Birth of the Cool", "artist": "Miles Davis", "year": 1957, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-bebop-0003", "title": "Charlie Parker with Strings", "artist": "Charlie Parker", "year": 1950, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-bebop-0004", "title": "The Amazing Bud Powell", "artist": "Bud Powell", "year": 1951, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-krautrock-0001", "title": "Autobahn", "artist": "Kraftwerk", "year": 1974, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-krautrock-0002", "title": "Tago Mago", "artist": "Can", "year": 1971, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-krautrock-0003", "title": "Neu!", "artist": "Neu!", "year": 1972, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-krautrock-0004", "title": "Faust IV", "artist": "Faust", "year": 1973, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-tuareg-0001", "title": "Aman Iman", "artist": "Tinariwen", "year": 2007, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-tuareg-0002", "title": "Tassili", "artist": "Tinariwen", "year": 2011, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-tuareg-0003", "title": "Ilana: The Creator", "artist": "Mdou Moctar", "year": 2019, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-tuareg-0004", "title": "Chatma", "artist": "Tamikrest", "year": 2013, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-idm-0001", "title": "Tri Repetae", "artist": "Autechre", "year": 1995, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-idm-0002", "title": "Music Has the Right to Children", "artist": "Boards of Canada", "year": 1998, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-idm-0003", "title": "Hard Normal Daddy", "artist": "Squarepusher", "year": 1997, "release_type": "album", "source": "curated-omda"}
-{"album_id": "curated-omda-idm-0004", "title": "Los Angeles", "artist": "Flying Lotus", "year": 2008, "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-ambient-0001", "genre_id": "ambient", "title": "Ambient 1: Music for Airports", "artist": "Brian Eno", "year": 1978, "mbid": "5fdd6ba8-83c1-3a87-b378-d5f61dec5ddd", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-ambient-0002", "genre_id": "ambient", "title": "Selected Ambient Works 85-92", "artist": "Aphex Twin", "year": 1992, "mbid": "6842c81d-ea77-3dfd-abf7-4323add3f4d4", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-ambient-0003", "genre_id": "ambient", "title": "And Their Refinement of the Decline", "artist": "Stars of the Lid", "year": 2007, "mbid": "dd0cae7b-5bf2-3db1-b028-87472215400a", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-ambient-0004", "genre_id": "ambient", "title": "The Pearl", "artist": "Harold Budd & Brian Eno", "year": 1984, "mbid": "6c364112-e9fb-373c-9f1d-364b427f64c3", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-bebop-0001", "genre_id": "bebop", "title": "Brilliant Corners", "artist": "Thelonious Monk", "year": 1957, "mbid": "764d0d9e-68b1-39fe-b1d1-eda104926777", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-bebop-0002", "genre_id": "bebop", "title": "Birth of the Cool", "artist": "Miles Davis", "year": 1957, "mbid": "903d5fe8-ab43-33b2-9411-6738af50de19", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-bebop-0003", "genre_id": "bebop", "title": "Charlie Parker with Strings", "artist": "Charlie Parker", "year": 1949, "mbid": "a62849c1-252f-4044-a6f8-3b72aa3057ee", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-bebop-0004", "genre_id": "bebop", "title": "The Amazing Bud Powell", "artist": "Bud Powell", "year": 1951, "mbid": "34887975-3564-3094-831f-2476fe3b64e9", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-krautrock-0001", "genre_id": "krautrock", "title": "Autobahn", "artist": "Kraftwerk", "year": 1974, "mbid": "f73729e8-4501-3088-aa20-44945296036e", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-krautrock-0002", "genre_id": "krautrock", "title": "Tago Mago", "artist": "Can", "year": 1971, "mbid": "13d08c0e-14e2-30b2-9ad7-5f501761a8ea", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-krautrock-0003", "genre_id": "krautrock", "title": "Neu!", "artist": "Neu!", "year": 1972, "mbid": "00b3e683-47fa-3302-add0-4c0cecc5224e", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-krautrock-0004", "genre_id": "krautrock", "title": "Faust IV", "artist": "Faust", "year": 1973, "mbid": "75ec1e72-cc7d-37b6-bebd-a1131b578e7b", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-tuareg-0001", "genre_id": "tuareg-music", "title": "Aman Iman", "artist": "Tinariwen", "year": 2006, "mbid": "46bddb86-91ba-39ed-a053-bafef73e1dee", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-tuareg-0002", "genre_id": "tuareg-music", "title": "Tassili", "artist": "Tinariwen", "year": 2011, "mbid": "c52a29bf-df84-4990-a686-aab2063b57db", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-tuareg-0003", "genre_id": "tuareg-music", "title": "Ilana: The Creator", "artist": "Mdou Moctar", "year": 2019, "mbid": "69c28e8d-1371-4914-80c9-7db7ec5ee535", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-tuareg-0004", "genre_id": "tuareg-music", "title": "Chatma", "artist": "Tamikrest", "year": 2013, "mbid": "c33c1bca-4e14-4b38-ba5f-fe14a306fa74", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-idm-0001", "genre_id": "idm", "title": "Tri Repetae", "artist": "Autechre", "year": 1995, "mbid": "8b3d1836-e3cd-35eb-a8cd-d03d56bcc6f8", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-idm-0002", "genre_id": "idm", "title": "Music Has the Right to Children", "artist": "Boards of Canada", "year": 1998, "mbid": "17d74d52-c92b-3b8d-9f87-218ab2d1c4a0", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-idm-0003", "genre_id": "idm", "title": "Hard Normal Daddy", "artist": "Squarepusher", "year": 1997, "mbid": "f4168d4e-c0e8-388f-8baa-4de058d852e5", "release_type": "album", "source": "curated-omda"}
+{"album_id": "curated-omda-idm-0004", "genre_id": "idm", "title": "Los Angeles", "artist": "Flying Lotus", "year": 2008, "mbid": "83b3e9f2-0080-3d98-b75f-afc09e834118", "release_type": "album", "source": "curated-omda"}

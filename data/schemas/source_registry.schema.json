@@ -1,6 +1,6 @@
 {
   "schema_name": "source_registry",
-  "schema_version": 1,
+  "schema_version": 2,
   "fields": {
     "source_id": {"type": "string", "required": true, "pattern": "^[a-z0-9-]+$"},
     "kind": {"type": "string", "required": true, "enum": ["genre", "album"]},
@@ -8,6 +8,17 @@
     "license": {"type": "string", "required": true, "min_length": 1},
     "schema_version": {"type": "string", "required": true, "min_length": 1},
     "demo": {"type": "boolean", "required": true},
-    "records_file": {"type": "string", "required": true, "min_length": 1}
+    "records_file": {"type": "string", "required": true, "min_length": 1},
+    "data_derivation": {
+      "type": "string",
+      "required": true,
+      "enum": ["independently_curated", "derived_from_upstream"]
+    },
+    "upstream_license": {"type": "string", "required": true, "min_length": 1},
+    "content_digest": {
+      "type": "string",
+      "required": false,
+      "pattern": "^[0-9a-f]{64}$"
+    }
   }
 }

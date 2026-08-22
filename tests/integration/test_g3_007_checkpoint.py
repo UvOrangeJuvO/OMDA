@@ -2,25 +2,37 @@
 
 Uses the REAL reviewed packages (data/genres/curated-omda + data/albums/
 curated-omda + data/sources/registry.jsonl) to prove one real 3x3
-recommendation can be sourced end-to-end: genre FETCH -> album FETCH ->
-CandidateBatch -> ValidatedSourceSet, with provenance/license/digest that a
+recommendation can be sourced end-to-end: genre FETCH -> album FETCH per Genre
+-> CandidateBatch -> ValidatedSourceSet, with provenance/license/digest that a
 G4 delivery gate can trace (ADR-0002 §8.4/§8.5/§8.8).
 
-Negative tests prove demo packages (rym-sample) are marked demo and never
-silently relabelled production, and that forged/self-asserted provenance fails.
+Closes the G3-007-001..006 acceptance requirements:
+- 001: Genre-bound batches that are NOT identical across Genres; no cross-Genre
+  record can enter the requested batch; deterministic 3x3 selection with
+  permanent exclusion and explicit shortage;
+- 002: every production record carries a verified canonical MBID from the same
+  validated batch;
+- 003: demo status covers Genre descriptors too; empty/tampered/unrelated
+  assemblies fail closed;
+- 004: provider-neutral source_batch Port path, cache tampering treated as a
+  typed miss;
+- 005: license/derivation fixtures reject non-reviewed claims;
+- 006: (unit tests) cache FIFO/TTL robustness.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
-from omda.adapters.curated import CuratedAlbumSource
+from omda.adapters.curated import CuratedAlbumSource, RuntimeCache
 from omda.adapters.datasets import GenreDatasetAdapter
+from omda.ports.domain import GenreRef
 from omda.ports.errors import InvalidInputError
 from omda.ports.source import assemble_validated_source_set, verify_batch_integrity
-from omda.sources.registry import SourceRegistry
+from omda.sources.registry import RegistryEntry, SourceRegistry
 
 REPO = Path(__file__).resolve().parents[2]
 REGISTRY = REPO / "data" / "sources" / "registry.jsonl"
@@ -41,93 +53,191 @@ def test_real_curated_packages_support_one_3x3_run() -> None:
     album_source = CuratedAlbumSource(ALBUMS)
 
     genres = genre_adapter.list_eligible_genres()
-    assert len(genres) == 5  # real, eligible, non-demo genres
+    assert len(genres) == 5
     genre_descriptor = genre_adapter.descriptor()
     assert genre_descriptor.demo is False
     registry.verify_descriptor(genre_descriptor)
 
     batches = []
+    digests = set()
     for genre in genres:
-        batch = album_source.batch_for_genre(genre)
+        batch = album_source.source_batch(genre)  # provider-neutral Port path
         verify_batch_integrity(batch)
-        # Enough candidates to select 3 per genre AFTER history exclusion.
         assert len(batch.candidates) >= ALBUMS_PER_GENRE
-        assert batch.source.demo is False
-        # Every candidate is a real fact record bound to the package.
-        for record in batch.candidates:
-            assert record.title and record.artist
-            assert record.release_type == "album"
+        # G3-007-001: every candidate belongs to the requested Genre.
+        assert all(r.genre_id == genre.genre_id for r in batch.candidates)
+        # G3-007-002: every production record carries a canonical MBID.
+        assert all(r.mbid for r in batch.candidates)
+        digests.add(batch.digest)
         batches.append(batch)
+    # The five real batches are NOT identical (G3-007-001 positive proof).
+    assert len(digests) == len(genres)
+    assert len({b.genre_id for b in batches}) == len(genres)
 
     source_set = assemble_validated_source_set(
         registry,
         genre_descriptors=(genre_descriptor,),
         batches=tuple(batches),
+        selected_genre_ids=tuple(g.genre_id for g in genres),
+        required_candidates_per_genre=ALBUMS_PER_GENRE,
     )
     assert source_set.is_demo is False
 
 
-def test_committed_identity_and_facts_trace_to_validated_batch() -> None:
-    # ADR-0002 §8.8: outbound facts / committed MBID must trace to the same
-    # ValidatedSourceSet. We prove the traceable evidence fields are available:
-    # source_id + dataset_version + schema/query-policy version + batch digest.
+def test_no_cross_genre_record_enters_a_requested_batch() -> None:
+    # G3-007-001 negative: an Ambient batch never contains Bebop records.
     album_source = CuratedAlbumSource(ALBUMS)
-    batch = album_source.batch_for_genre(GenreDatasetAdapter(GENRES).list_eligible_genres()[0])
-    evidence = {
-        "genre_source_id": "curated-omda",
-        "genre_schema_version": "1",
-        "album_source_id": batch.source.source_id,
-        "album_dataset_version": batch.source.dataset_version,
-        "query_policy_version": batch.query_policy_version,
-        "batch_digest": batch.digest,
-    }
-    assert all(evidence.values())
-    # The batch digest is stable across reads (reproducible provenance).
-    assert album_source.batch_for_genre(
-        GenreDatasetAdapter(GENRES).list_eligible_genres()[0]
-    ).digest == evidence["batch_digest"]
+    ambient_ids = {r.album_id for r in album_source.source_batch(_g("ambient")).candidates}
+    assert "curated-omda-bebop-0001" not in ambient_ids
+    assert all(aid.startswith("curated-omda-ambient-") for aid in ambient_ids)
 
 
-def test_rym_sample_is_marked_demo_never_production() -> None:
-    # ADR-0002 §8.2: the existing rym-sample Genre package is demo data; the
-    # production gate must reject it. G3-007 proves the demo flag is exposed.
-    descriptor = GenreDatasetAdapter(RYM_SAMPLE).descriptor()
-    assert descriptor.demo is True
+def test_production_records_have_unique_valid_mbid_from_validated_batch() -> None:
+    # G3-007-002: every selected production record has a canonical identity
+    # bound to the same validated batch (permanent-exclusion basis).
+    album_source = CuratedAlbumSource(ALBUMS)
+    all_mbids: list[str] = []
+    for genre_id in ("ambient", "bebop", "krautrock", "tuareg-music", "idm"):
+        batch = album_source.source_batch(_g(genre_id))
+        for record in batch.candidates:
+            assert record.mbid is not None
+            assert len(record.mbid) == 36
+            assert record.mbid.count("-") == 4
+            candidates = album_source.candidates_for_genre(_g(genre_id))
+            by_id = {c.album_id: c for c in candidates}
+            identity = by_id[record.album_id].identity
+            assert identity is not None
+            assert identity.canonical_id == record.mbid  # identity from the batch
+            all_mbids.append(record.mbid)
+    assert len(all_mbids) == len(set(all_mbids))  # no duplicate canonical IDs
 
 
-def test_demo_or_unregistered_source_fails_validated_assembly() -> None:
-    # A package that claims production but is NOT in the registry fails closed
-    # (an empty registry has no reviewed entry for any source).
+def test_deterministic_3x3_selection_with_permanent_exclusion_and_shortage() -> None:
+    # G3-007-001/002: exercise actual deterministic selection from the real
+    # packages: pick 3 per Genre in stable order, exclude permanently-selected
+    # albums, and fail explicitly when a Genre runs short.
+    album_source = CuratedAlbumSource(ALBUMS)
+
+    def select(genre: GenreRef, excluded: set[str]):
+        candidates = [
+            r
+            for r in album_source.source_batch(genre).candidates
+            if r.album_id not in excluded
+        ]
+        if len(candidates) < ALBUMS_PER_GENRE:
+            raise InvalidInputError(
+                f"genre {genre.genre_id!r}: insufficient candidates after permanent "
+                f"exclusion ({len(candidates)} < {ALBUMS_PER_GENRE})"
+            )
+        return sorted(candidates, key=lambda r: r.album_id)[:ALBUMS_PER_GENRE]
+
+    excluded: set[str] = set()
+    for genre_id in ("ambient", "bebop", "krautrock"):
+        picked = select(_g(genre_id), excluded)
+        assert len(picked) == ALBUMS_PER_GENRE
+        assert all(p.mbid for p in picked)
+        excluded.update(p.album_id for p in picked)
+    # Excluding everything for one Genre -> explicit shortage, never substitution.
     with pytest.raises(InvalidInputError):
-        assemble_validated_source_set(
-            SourceRegistry({}),
-            genre_descriptors=(),
-            batches=(CuratedAlbumSource(ALBUMS).batch_for_genre(
-                GenreDatasetAdapter(GENRES).list_eligible_genres()[0]
-            ),),
-        )
-    # A reviewed registry that says curated-omda is DEMO makes the same
-    # production-claiming batch fail (self-asserted label vs reviewed policy).
-    from omda.sources.registry import RegistryEntry
+        select(_g("idm"), {r.album_id for r in album_source.source_batch(_g("idm")).candidates})
 
+
+def test_demo_genre_with_production_albums_yields_demo_source_set() -> None:
+    # G3-007-003: a registered demo Genre + production Albums must yield
+    # is_demo=True (the production-facing source-set result, not the raw flag).
+    demo_genre = GenreDatasetAdapter(RYM_SAMPLE).descriptor()
+    assert demo_genre.demo is True
     demo_registry = SourceRegistry(
         {
+            "rym-sample:genre": RegistryEntry(
+                source_id="rym-sample", kind="genre",
+                origin_url="https://rateyourmusic.com/genres/",
+                license="CC0-1.0 (sample records only; see data/genres/README.md)",
+                schema_version="1", demo=True, records_file="genres.jsonl",
+                data_derivation="derived_from_upstream",
+                upstream_license=(
+                    "RateYourMusic genre taxonomy (illustrative subset); see "
+                    "data/genres/README.md"
+                ),
+                content_digest="7c2450ae543c4efd91000a9b929848f9cdcfe0d458a6347bf5f8dc4da7f8a7e7",
+            ),
             "curated-omda:album": RegistryEntry(
                 source_id="curated-omda", kind="album",
-                origin_url="https://musicbrainz.org/search?query=release-group",
-                license=(
-                    "CC0-1.0 (curated factual metadata; see "
-                    "data/albums/curated-omda/README.md)"
+                origin_url="https://musicbrainz.org/ws/2/release-group",
+                license="CC0-1.0 (independently curated factual metadata only)",
+                schema_version="2", demo=False, records_file="albums.jsonl",
+                data_derivation="independently_curated",
+                upstream_license=(
+                    "MusicBrainz database core facts are CC0-1.0; the official "
+                    "search API index/tags are CC BY-NC-SA 3.0 supplementary "
+                    "and are NOT incorporated"
                 ),
-                schema_version="1", demo=True, records_file="albums.jsonl",
-            )
+            ),
         }
     )
-    with pytest.raises(InvalidInputError):
-        assemble_validated_source_set(
-            demo_registry,
-            genre_descriptors=(),
-            batches=(CuratedAlbumSource(ALBUMS).batch_for_genre(
-                GenreDatasetAdapter(GENRES).list_eligible_genres()[0]
-            ),),
+    ambient = _g("ambient")
+    result = assemble_validated_source_set(
+        demo_registry,
+        genre_descriptors=(demo_genre,),
+        batches=(CuratedAlbumSource(ALBUMS).source_batch(ambient),),
+        selected_genre_ids=("ambient",),
+        required_candidates_per_genre=ALBUMS_PER_GENRE,
+    )
+    assert result.is_demo is True
+
+
+def test_tampered_genre_data_fails_closed_via_content_digest(tmp_path: Path) -> None:
+    # G3-007-003: editing a Genre record changes its content digest, which no
+    # longer matches the reviewed registry -> assemble rejects.
+    tampered = GENRES / "genres.jsonl"
+    original = tampered.read_text(encoding="utf-8")
+    try:
+        lines = original.splitlines()
+        record = json.loads(lines[0])
+        record["name"] = "Ambient (tampered)"
+        lines[0] = json.dumps(record, ensure_ascii=False)
+        tampered.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        descriptor = GenreDatasetAdapter(GENRES).descriptor()
+        assert descriptor.content_digest != (
+            "d12d2876d8fad54ed9146b09f11751b1f9fce3b1afbc01f318c0df911c1b440c"
         )
+        with pytest.raises(InvalidInputError):
+            assemble_validated_source_set(
+                _registry(),
+                genre_descriptors=(descriptor,),
+                batches=(CuratedAlbumSource(ALBUMS).source_batch(_g("ambient")),),
+                selected_genre_ids=("ambient",),
+            )
+    finally:
+        tampered.write_text(original, encoding="utf-8")
+
+
+def test_tampered_cache_is_a_typed_miss_on_public_port_path(tmp_path: Path) -> None:
+    # G3-007-004: an invalid cached batch is never trusted — the public
+    # source_batch path treats it as a miss and rebuilds from the package.
+    cache = RuntimeCache(tmp_path / "cache")
+    album_source = CuratedAlbumSource(ALBUMS, cache=cache)
+    ambient = _g("ambient")
+    first = album_source.source_batch(ambient)
+    # Corrupt the cached copy for this Genre.
+    for payload in cache.root.glob("*.json"):
+        data = json.loads(payload.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):  # manifest is a list, not a payload
+            continue
+        if data.get("value", {}).get("genre_id") == "ambient":
+            data["value"]["digest"] = "f" * 64
+            payload.write_text(json.dumps(data), encoding="utf-8")
+    rebuilt = album_source.source_batch(ambient)
+    assert rebuilt.digest == first.digest  # correct data, not the tampered copy
+    verify_batch_integrity(rebuilt)
+
+
+def _g(genre_id: str) -> GenreRef:
+    names = {
+        "ambient": "Ambient",
+        "bebop": "Bebop",
+        "krautrock": "Krautrock",
+        "tuareg-music": "Tuareg Music",
+        "idm": "IDM",
+    }
+    return GenreRef(genre_id=genre_id, name=names[genre_id], family="x", eligible=True)

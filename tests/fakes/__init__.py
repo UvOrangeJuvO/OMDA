@@ -30,6 +30,13 @@ from omda.ports.domain import (
     JournalEntry,
 )
 from omda.ports.errors import InvariantFailureError
+from omda.ports.source import (
+    BATCH_SCHEMA_VERSION,
+    AlbumCandidateRecord,
+    CandidateBatch,
+    SourceDescriptor,
+    digest_batch,
+)
 
 
 class InMemoryHistory:
@@ -309,6 +316,13 @@ class FakeGenreSource:
 
 
 class FakeAlbumSource:
+    """Contract-parity fake: candidates_for_genre + provider-neutral source_batch.
+
+    ``source_batch`` returns a digest-bound CandidateBatch for the requested
+    Genre (G3-007-004), so the trusted boundary can assemble a
+    ValidatedSourceSet without importing a concrete adapter.
+    """
+
     def __init__(self, by_genre: dict[str, list[AlbumCandidate]] | None = None) -> None:
         self._by_genre = by_genre or {}
 
@@ -317,6 +331,50 @@ class FakeAlbumSource:
     ) -> list[AlbumCandidate]:
         found = self._by_genre.get(genre.genre_id, [])
         return found[:limit] if limit is not None else list(found)
+
+    def source_batch(self, genre: GenreRef) -> CandidateBatch:
+        found = self._by_genre.get(genre.genre_id, [])
+        records = tuple(
+            AlbumCandidateRecord(
+                album_id=c.album_id,
+                genre_id=genre.genre_id,
+                title=c.title,
+                artist=c.artist,
+                year=c.year,
+                mbid=c.identity.canonical_id if c.identity else None,
+            )
+            for c in found
+        )
+        source = SourceDescriptor(
+            source_id="fake",
+            kind="album",
+            display_name="Fake Albums",
+            license="CC0-1.0 (fake)",
+            origin_url="https://fake.example/albums",
+            retrieved_at="2026-08-22T00:00:00+00:00",
+            dataset_version="1",
+            schema_version="1",
+            data_scope="fake",
+            records_file="albums.jsonl",
+            demo=False,
+            data_derivation="independently_curated",
+            upstream_license="none",
+            license_core_facts="CC0-1.0",
+            license_supplementary_used="none",
+            license_service_terms="n/a",
+            license_derived_package="CC0-1.0",
+        )
+        batch = CandidateBatch(
+            schema_version=BATCH_SCHEMA_VERSION,
+            query_policy_version="1",
+            genre_id=genre.genre_id,
+            source=source,
+            digest="",
+            candidates=records,
+        )
+        from dataclasses import replace
+
+        return replace(batch, digest=digest_batch(batch))
 
 
 class FakeCriticRatingSource:

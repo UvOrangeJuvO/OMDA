@@ -1,0 +1,113 @@
+# G3-007 Repair — CHANGES_REQUESTED → 修复（2026-08-22）
+
+- Reviewer commit：`f42ce3a5e64e9443616406daa973ace488a6b081`（`G3_007_REVIEW_VERDICT.md`，
+  结论 **CHANGES_REQUESTED**，G3-007-001 ~ G3-007-006）
+- 被审 candidate：`07851eb4c8cb13a3bb2a06382c74e6cba7c3c27a`
+- 本轮修复范围：仅 G3-007 source/data 契约；**未动 G4 production composition、
+  PushPlus、SQLite v3 migration、LLM runtime**（相对 reviewer commit 的
+  `cli.py/production.py/orchestrator/storage/delivery/llm/config.py` diff = 0）
+- 每项先复现 Reviewer 反例、再做最小修复、加回归测试；未删除/弱化既有测试。
+
+## 逐项关闭证据
+
+### G3-007-001（P1）Album 批次未绑定 Genre — CLOSED
+- **复现**：20 条记录无 genre 字段；`_build_batch` 忽略 genre 使 Ambient/Bebop 批次
+  完全相等；`candidates_for_genre` 重贴 genres 标签。
+- **修复**：`album_candidate.schema.json` v2 增加必填 `genre_id`；`CandidateBatch`
+  增加 `genre_id`；`_build_batch` 按**精确 reviewed genre_id 过滤**，空覆盖显式
+  `InvalidInputError`（绝不重贴标签）；`candidates_for_genre` 返回记录的真实
+  genre_id；digest 覆盖 genre 绑定；`assemble` 校验 batch 内记录 genre 一致性
+  （unrelated batch 拒绝）与每个选中 genre 的批次覆盖。
+- **回归测试**：`test_batch_is_filtered_to_the_requested_genre_only`（跨 genre
+  负向）、`test_unknown_genre_coverage_fails_clearly`、checkpoint
+  `test_no_cross_genre_record_enters_a_requested_batch`、
+  `test_real_curated_packages_support_one_3x3_run`（五个真实批次 digest 互不相同）、
+  `test_deterministic_3x3_selection_with_permanent_exclusion_and_shortage`
+  （真实 3×3 确定性选择 + 永久排除 + 显式耗尽）。
+
+### G3-007-002（P1）无 canonical release-group identity — CLOSED
+- **复现**：20 条记录 MBID 0/20；`_identity_for` 恒 None；"证据名"测试只断言字符串
+  非空。
+- **修复**：**真实填充 20 个 verified MusicBrainz release-group MBID**（官方
+  WS/2 API 数据准备工具 `tools/curate_mbids.py`：可联系 UA + 1.1s pacing +
+  严格匹配 primary-type=Album + title/artist 规范化相等 + year 佐证 + score≥90，
+  全部人工审核后提交；year 对齐 MB first-release-date）；生产记录 mbid 必填
+  （schema optional + 代码层对非 demo 包强制）、duplicate mbid 拒绝；digest 覆盖
+  mbid；export 拒绝缺 mbid 的生产包；source.yaml/README 记录 MBID 获取 provenance。
+- **回归测试**：`test_production_record_without_mbid_is_rejected`、
+  `test_duplicate_canonical_mbid_is_rejected`、`test_export_refuses_production_package_without_mbid`、
+  checkpoint `test_production_records_have_unique_valid_mbid_from_validated_batch`
+  （20/20 MBID 非空、唯一、identity 来自同一 validated batch）。
+
+### G3-007-003（P1）Genre provenance/demo 未内容绑定 — CLOSED
+- **复现**：Genre descriptor 无内容 digest；`is_demo` 只看 Album；空 assembly 被
+  接受（is_demo=False）；registered demo Genre + production Albums → is_demo=False。
+- **修复**：`GenreSourceDescriptor.content_digest`（SHA-256 over 已审 Genre 记录，
+  `digest_genre_records`）；registry 记录审核时 content_digest，descriptor 不一致
+  fail-closed（篡改 Genre 数据被拒）；`ValidatedSourceSet.is_demo` **跨 Genre
+  descriptors 与 Album batches**；`assemble` 拒绝空/不完整 source set 并强制
+  `selected_genre_ids` 逐 genre 覆盖 ≥ `required_candidates_per_genre`（3×3）。
+- **回归测试**：`test_genre_content_digest_is_bound_by_registry`、
+  `test_demo_status_covers_genre_descriptors_too`（assemble 层 is_demo=True）、
+  `test_assemble_rejects_empty_and_incomplete_source_sets`、
+  checkpoint `test_demo_genre_with_production_albums_yields_demo_source_set`（真实
+  rym-sample demo Genre + production Albums → is_demo=True）、
+  `test_tampered_genre_data_fails_closed_via_content_digest`（真实篡改 genres.jsonl
+  → digest 不匹配拒绝）。
+
+### G3-007-004（P1）CandidateBatch 只是 concrete side API — CLOSED
+- **复现**：`AlbumSource` Port 只有 `candidates_for_genre`；`batch_for_genre` 仅
+  具体 adapter 有；cache hit 未验 digest；contract 测试锁定旧方法集。
+- **修复**：`AlbumSource` Port 增加 **provider-neutral `source_batch(genre) ->
+  CandidateBatch`**（ADR 授权的 source-envelope 契约），`CuratedAlbumSource` 与
+  `FakeAlbumSource`（contract parity）都实现；contract 测试断言方法集含
+  source_batch；cache hit 返回前 `verify_batch_integrity`，无效条目删为 typed
+  miss 并重建。
+- **回归测试**：`tests/contract/test_ports.py`（方法集 + fake parity）、checkpoint
+  `test_tampered_cache_is_a_typed_miss_on_public_port_path`（篡改缓存后经公开
+  source_batch 路径返回正确数据）。
+
+### G3-007-005（P1）生产 manifests 折叠许可层 — CLOSED（provenance 审计）
+- **复现**：Album/Genre 包 blanket CC0 + MusicBrainz search URL 作 origin；
+  README 全量 CC0 声明。
+- **修复**：`album_source` v2 / `genre_source` v3 schema 增加 `data_derivation`
+  （independently_curated | derived_from_upstream）、`upstream_license` 与四层
+  `license_core_facts` / `license_supplementary_used` / `license_service_terms` /
+  `license_derived_package`；数据包 manifest/README/registry 全部按四层记录
+  （MusicBrainz 仅采纳 CC0 core facts；search index/tags 明确 NOT incorporated；
+  web service 非商业条款声明；Wikipedia 只作验证不复制文本）；registry 绑定
+  derivation/upstream_license，不一致 fail-closed。
+- **回归测试**：`test_registry_verify_descriptor_mismatch_fails_closed` 新增
+  derivation/upstream_license 不匹配用例；checkpoint 全链路使用真实 registry
+  验证通过。
+
+### G3-007-006（P2）RuntimeCache FIFO/TTL 不健壮 — CLOSED
+- **复现**：按文件名排序淘汰（非插入序）；TTL 未校验正有限（负值立即过期、NaN
+  禁用比较）；`a/b` 与 `a_b` 同文件。
+- **修复**：插入序 FIFO（manifest.json 记录顺序，淘汰最先插入）；TTL 构造时强制
+  正有限数；key 用 SHA-256 命名（碰撞安全）。
+- **回归测试**：`test_cache_ttl_must_be_positive_finite`（0/-1/NaN/Inf/str/bool
+  全部拒绝）、`test_cache_bounded_fifo_eviction_in_insertion_order`（z→a→m 淘汰 z
+  非 a）、`test_cache_keys_are_collision_resistant`（a/b vs a_b 独立）。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **671 passed, 0 failed**（659→671；重写/合并的测试语义增强，无弱化） |
+| `pytest -v`（G3_007_TEST_RESULTS.txt） | 671 passed |
+| `ruff check src tests tools browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| G4 层零改动（相对 f42ce3a，cli/production/orchestrator/storage/delivery/llm/config） | 0 文件 |
+| tracked 敏感文件 | 无 |
+| 未 merge / 未 tag / 未进入 G5 | 确认 |
+| live 网络依赖 | 无（MBID 为一次性数据准备，`tools/curate_mbids.py` 是人工工具，非运行时 source；测试不触网） |
+
+## 残余风险（诚实披露）
+
+1. `tools/curate_mbids.py` 是**一次性人工数据准备工具**（贡献流程），非运行时
+   组件；20 个 MBID 已于 2026-08-22 经官方 API 获取并人工审核，但 upstream
+   MusicBrainz 数据随时间演进的再验证属 G5 数据许可审计范畴。
+2. `assemble_validated_source_set` 的 run.py 接线（FETCH/SELECT journal 记录
+   §8.8）仍属 G4 production composition；G3-007 提供证据字段与契约。
+3. live MusicBrainz 路径（ODP-1）仍未定案未实现（§8.1 不变）。

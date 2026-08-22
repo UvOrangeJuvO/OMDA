@@ -20,7 +20,6 @@ import json
 from pathlib import Path
 
 from omda.adapters.curated import CuratedAlbumSource
-from omda.ports.domain import GenreRef
 from omda.ports.errors import InvalidInputError
 from omda.ports.source import (
     AlbumCandidateRecord,
@@ -51,6 +50,15 @@ def export_curated_package(
             f"cannot export demo package {batch.source.source_id!r}: "
             "human review acknowledgement is required"
         )
+    if not batch.source.demo:
+        # G3-007-002: production Album records MUST carry a verified canonical
+        # MBID — export refuses a production package with missing identities.
+        missing = [r.album_id for r in batch.candidates if not r.mbid]
+        if missing:
+            raise InvalidInputError(
+                f"cannot export production package {batch.source.source_id!r}: "
+                f"{len(missing)} records lack a canonical MBID: {missing[:5]}"
+            )
     target_dir = Path(target_dir)
     if target_dir.name != batch.source.source_id:
         raise InvalidInputError(
@@ -63,6 +71,7 @@ def export_curated_package(
     for record in sorted(batch.candidates, key=lambda r: r.album_id):
         row: dict = {
             "album_id": record.album_id,
+            "genre_id": record.genre_id,
             "title": record.title,
             "artist": record.artist,
             "release_type": record.release_type,
@@ -98,10 +107,17 @@ def import_curated_package(
     adapter = CuratedAlbumSource(source_dir)
     descriptor = adapter.descriptor()
     registry.verify_descriptor(descriptor)
-    genre = GenreRef(genre_id="*", name="*", family="*", eligible=True)
-    batch = adapter.batch_for_genre(genre)
-    verify_batch_integrity(batch)
-    return descriptor, list(batch.candidates)
+    records = adapter.all_records()  # whole-package validation, no Genre filter
+    if not records:
+        raise InvalidInputError(f"{source_dir}: curated package contains no records")
+    if not descriptor.demo:
+        missing = [r.album_id for r in records if not r.mbid]
+        if missing:
+            raise InvalidInputError(
+                f"{source_dir}: production package records missing canonical MBID: "
+                f"{missing[:5]}"
+            )
+    return descriptor, list(records)
 
 
 def _source_yaml(source: SourceDescriptor) -> str:
@@ -120,6 +136,12 @@ def _source_yaml(source: SourceDescriptor) -> str:
         f"data_scope: \"{source.data_scope}\"",
         f"records_file: \"{source.records_file}\"",
         f"demo: {'true' if source.demo else 'false'}",
+        f"data_derivation: \"{source.data_derivation}\"",
+        f"upstream_license: \"{source.upstream_license}\"",
+        f"license_core_facts: \"{source.license_core_facts}\"",
+        f"license_supplementary_used: \"{source.license_supplementary_used}\"",
+        f"license_service_terms: \"{source.license_service_terms}\"",
+        f"license_derived_package: \"{source.license_derived_package}\"",
         "",
     ]
     return "\n".join(lines)

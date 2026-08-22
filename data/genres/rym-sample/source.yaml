@@ -1,11 +1,19 @@
 # RYM sample genre dataset (illustrative subset for the OMDA repository).
-source_id: rym-sample
-display_name: RateYourMusic Sample Genres
-license: CC0-1.0 (sample records only; see data/genres/README.md)
-origin_url: https://rateyourmusic.com/genres/
-retrieved_at: 2026-08-20T00:00:00+00:00
-dataset_version: 2026-08-20
-data_scope: 4 illustrative genre records; not a full RYM mirror
-records_file: genres.jsonl
-demo: true
+# DEMO package: derived from the RateYourMusic genre taxonomy (4 illustrative
+# records, not a full mirror); never usable for production delivery.
+source_id: "rym-sample"
+display_name: "RateYourMusic Sample Genres"
+license: "CC0-1.0 (sample records only; see data/genres/README.md)"
+origin_url: "https://rateyourmusic.com/genres/"
+retrieved_at: "2026-08-20T00:00:00+00:00"
+dataset_version: "2026-08-20"
 schema_version: "1"
+data_scope: "4 illustrative genre records; not a full RYM mirror; demo only"
+records_file: "genres.jsonl"
+demo: true
+data_derivation: "derived_from_upstream"
+upstream_license: "RateYourMusic genre taxonomy (illustrative subset); see data/genres/README.md"
+license_core_facts: "CC0-1.0 (sample records only)"
+license_supplementary_used: "none incorporated"
+license_service_terms: "not applicable (no live service dependency)"
+license_derived_package: "CC0-1.0 (illustrative sample only, demo)"

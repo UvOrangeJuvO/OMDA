@@ -28,7 +28,12 @@ _KNOWN_KINDS = frozenset({"genre", "album"})
 
 @dataclass(frozen=True)
 class RegistryEntry:
-    """One reviewed registry entry (trust anchor for one source package)."""
+    """One reviewed registry entry (trust anchor for one source package).
+
+    Binds source_id to expected origin/license/schema/demo/records_file AND to
+    the derivation basis, upstream license and (for Genre packages) the
+    reviewed content digest (G3-007-003/005).
+    """
 
     source_id: str
     kind: str  # "genre" | "album"
@@ -37,6 +42,9 @@ class RegistryEntry:
     schema_version: str
     demo: bool
     records_file: str
+    data_derivation: str = "independently_curated"
+    upstream_license: str = ""
+    content_digest: str | None = None  # required for Genre packages
 
     @property
     def key(self) -> str:
@@ -53,6 +61,9 @@ def _entry_from_record(record: dict) -> RegistryEntry:
             schema_version=record["schema_version"],
             demo=bool(record["demo"]),
             records_file=record["records_file"],
+            data_derivation=record["data_derivation"],
+            upstream_license=record["upstream_license"],
+            content_digest=record.get("content_digest"),
         )
     except KeyError as exc:
         raise InvalidInputError(f"source registry record missing {exc.args[0]!r}") from exc
@@ -125,10 +136,22 @@ class SourceRegistry:
             ("schema_version", descriptor.schema_version, entry.schema_version),
             ("records_file", descriptor.records_file, entry.records_file),
             ("demo", descriptor.demo, entry.demo),
+            ("data_derivation", descriptor.data_derivation, entry.data_derivation),
+            ("upstream_license", descriptor.upstream_license, entry.upstream_license),
         )
         for field, actual, expected in checks:
             if actual != expected:
                 mismatches.append(f"{field}: descriptor {actual!r} != registry {expected!r}")
+        if descriptor.kind == "genre":
+            # Genre packages are additionally bound to the reviewed content
+            # digest (G3-007-003): a tampered Genre file fails closed here.
+            expected_digest = entry.content_digest
+            actual_digest = getattr(descriptor, "content_digest", "")
+            if not expected_digest or actual_digest != expected_digest:
+                mismatches.append(
+                    f"content_digest: descriptor {actual_digest!r} != registry "
+                    f"{expected_digest!r}"
+                )
         if mismatches:
             raise InvalidInputError(
                 f"source {descriptor.source_id!r} ({descriptor.kind}) failed registry "

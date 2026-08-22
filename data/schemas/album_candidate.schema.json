@@ -1,8 +1,9 @@
 {
   "schema_name": "album_candidate",
-  "schema_version": 1,
+  "schema_version": 2,
   "fields": {
     "album_id": {"type": "string", "required": true, "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "genre_id": {"type": "string", "required": true, "pattern": "^[a-z0-9][a-z0-9-]*$"},
     "title": {"type": "string", "required": true, "min_length": 1},
     "artist": {"type": "string", "required": true, "min_length": 1},
     "year": {"type": "integer", "required": false},

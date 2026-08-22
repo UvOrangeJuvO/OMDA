@@ -95,7 +95,9 @@ def test_domain_error_carries_message_and_detail() -> None:
 
 def test_all_ports_define_minimal_method_sets() -> None:
     assert _protocol_methods(GenreSource) == {"list_eligible_genres"}
-    assert _protocol_methods(AlbumSource) == {"candidates_for_genre"}
+    # G3-007-004: the ADR-authorized provider-neutral source-envelope contract
+    # is part of the public Port (not a concrete-only parallel API).
+    assert _protocol_methods(AlbumSource) == {"candidates_for_genre", "source_batch"}
     assert _protocol_methods(AlbumEnricher) == {"enrich"}
     assert _protocol_methods(CriticRatingSource) == {"ratings_for"}
     assert _protocol_methods(LLM) == {"generate_narrative"}
