@@ -282,3 +282,42 @@ verdict：**BLOCKED_ARCHITECTURE / ADR_REQUIRED**（评审 candidate `8b1f7c9…
 - 本轮**未修改任何 production code**（仅新增 ADR 文档 + 状态/报告）；ADR 保持
   **Proposed**（未写 Accepted）；未处理 G5；未 merge / 未 tag。
 - 下一步：交 GPT-5.6 Sol 评审 ADR-0002；接受后按 D1-D8 实施并返回完整 candidate。
+
+---
+
+# ADR-0002 Re-review 1 — REVISE → 修订 v2（2026-08-22，documentation-only）
+
+对应 Reviewer commit：`443f90a04951e6d360a69fa4446b4e3b34946589`
+评审文件：`reviews/stage-04/ADR_0002_REVIEW.md`（结论 **REVISE**，ADR2-001 ~
+ADR2-008）
+ADR：`docs/adr/0002-production-album-source-and-runtime-boundary.md`（保持
+**Proposed**，修订 v2）
+本轮约束：只修订 ADR / Executor Report / PROJECT_STATE；**零 production
+code/tests 变更**；未实施 D1-D8；未 merge；未进入 G5。
+
+## 修订对照（ADR2-001 ~ ADR2-008）
+
+| Finding | 修订 v2 方案 |
+|---|---|
+| ADR2-001 tag-search 非无保留 CC0 | **许可四层分离**（core facts=CC0；tags/genre associations 与 search index=supplementary CC BY-NC-SA 3.0；web service 非商业条款；OMDA 派生包=per-source manifest 绝不整体标 CC0）；**候选发现首选 curated community Genre→release-group-MBID package**；live tag-search 仅 **ODP-1 Owner 决策**同意后可选、默认关闭；无合法来源 fail-closed（§2 D1/D2、§3） |
+| ADR2-002 runtime cache 与 Git source of truth 混淆 | 两条独立路径：**runtime cache**（有界、本地、Git 忽略、TTL/provenance、可删，普通 run 不写 tracked 数据）；**curated community package**（仅显式 export/import + schema 校验 + 人工审核后 commit，自带 license/source manifest）；cache hit 不得称为 Git source of truth（§2 D2） |
+| ADR2-003 D4 与独占 Gate 归属矛盾 | **窄幅重开 G3 corrective task（G3-007）**实现 MusicBrainzAlbumSource + 契约/cache/provenance/错误映射测试；G4 只做生产组合与 delivery gate；显式记录重开理由，不再声称"不改 G3 边界"（§2 D4） |
+| ADR2-004 tag 查询契约未定义 | 补全：Lucene 转义 + 引号包裹（hostile Genre name 注入测试）；release-group primary=Album 类型过滤；versioned Genre→query 映射（no-mapping / insufficient-candidates 可观测）；有界分页/cursor + query-version 失效（可越过已入历史第一页）；score 仅相关性不作 popularity filter（§2 D3、§5 AC-9） |
+| ADR2-005 预算/pacing 未跨 client 共享 | **composition-owned MusicBrainz request coordinator**：source+enricher 共用单 UA、host allowlist、≤1 rps pacing、retry accounting、**总尝试预算（每次 HTTP attempt 含失败/重试都计数）**；并发 run 单 run 锁 + 共享 limiter（§2 D5、§5 AC-9） |
+| ADR2-006 无单一可强制 provenance 契约 | 统一**版本化 `CandidateBatch`/source envelope**（immutable source descriptor：origin/query/retrieved_at/query version/license/demo flag/content digest + per-candidate MBID/事实）；trusted composition 在 journal claim 与 delivery 前内容级校验；AC-1 绑定 committed identity 与 outbound fact 到同一 batch；AC-2 覆盖 missing/contradictory/**forged** provenance（§2 D6、§5 AC-1/AC-2/AC-6） |
+| ADR2-007 破坏性 v3→v2 降级 | **删除降级方案**：v3=forward migration（事务内 fingerprint 检查 + 幂等加列 + 仅真实 legacy 行 NULL + set v3）；支持 v1 / v2-with-column / v2-without-column / v3 四布局；`user_version>3` 或未知 fingerprint fail-closed；回滚=forward-fix 或备份恢复，**绝不删 attempt 证据列**（§2 D7、§5 AC-7） |
+| ADR2-008 v0.1 config 宣传未激活 provider | v0.1 `llm.mode` **只允许 `deterministic`**；`provider` 在 config validation fail-closed（run/journal/network 前）；narrative 存档=typed deterministic marker（不存伪造句子）；provider 加入需独立 adapter+schema/version+cost/secret 控制+Gate acceptance（§2 D8、§5 AC-8） |
+
+## 验收
+
+纳入 G4 Re-review 4 全部 Required acceptance（AC-1..AC-9，修订版保持）+ ADR-0002
+首轮新增 7 项验收（许可 fixtures 区分 CC0/supplementary、runtime cache 不写 Git、
+转义/类型/映射缺失失败、分页越过首页且耗尽无污染、coordinator 共享预算、伪造
+provenance 前置失败、四布局安全迁移）——全部映射于 §5。
+
+## 明确声明
+
+- 本轮**未修改任何 production code/tests**（git diff 仅 ADR/报告/状态 3 文件）；
+  ADR 保持 **Proposed**（未写 Accepted）；未实施 D1-D8；未处理 G5；未 merge /
+  未 tag。
+- 下一步：交 GPT-5.6 Sol 复审修订 v2；接受后按 D1-D9（含 G3-007 窄幅重开）实施。
