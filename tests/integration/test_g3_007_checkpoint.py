@@ -171,6 +171,7 @@ def test_demo_genre_with_production_albums_yields_demo_source_set() -> None:
         license_service_terms=demo_genre.license_service_terms,
         license_derived_package=demo_genre.license_derived_package,
         content_digest=demo_genre.content_digest,
+        eligible_digest=demo_genre.eligible_digest,
     )
     demo_registry = SourceRegistry(base)
     ambient = _g("ambient")
@@ -200,9 +201,7 @@ def test_tampered_genre_data_fails_closed_via_content_digest(tmp_path: Path) -> 
     (copy / "genres.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     descriptor = GenreDatasetAdapter(copy).descriptor()
-    assert descriptor.content_digest != (
-        "d12d2876d8fad54ed9146b09f11751b1f9fce3b1afbc01f318c0df911c1b440c"
-    )
+    assert descriptor.content_digest != _registry().get("curated-omda", "genre").content_digest
     with pytest.raises(InvalidInputError):
         assemble_validated_source_set(
             _registry(),

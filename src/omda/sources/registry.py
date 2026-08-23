@@ -53,6 +53,7 @@ class RegistryEntry:
     license_service_terms: str = ""
     license_derived_package: str = ""
     content_digest: str | None = None  # required for Genre packages
+    eligible_digest: str | None = None  # required for Genre packages (G3-007-003)
 
     @property
     def key(self) -> str:
@@ -80,6 +81,7 @@ def _entry_from_record(record: dict) -> RegistryEntry:
             license_service_terms=record["license_service_terms"],
             license_derived_package=record["license_derived_package"],
             content_digest=record.get("content_digest"),
+            eligible_digest=record.get("eligible_digest"),
         )
     except KeyError as exc:
         raise InvalidInputError(f"source registry record missing {exc.args[0]!r}") from exc
@@ -180,13 +182,21 @@ class SourceRegistry:
                 mismatches.append(f"{field}: descriptor {actual!r} != registry {expected!r}")
         if descriptor.kind == "genre":
             # Genre packages are additionally bound to the reviewed content
-            # digest (G3-007-003): a tampered Genre file fails closed here.
+            # digest AND the eligible-ID digest (G3-007-003): a tampered Genre
+            # file or a forged eligible-ID set fails closed here.
             expected_digest = entry.content_digest
             actual_digest = getattr(descriptor, "content_digest", "")
             if not expected_digest or actual_digest != expected_digest:
                 mismatches.append(
                     f"content_digest: descriptor {actual_digest!r} != registry "
                     f"{expected_digest!r}"
+                )
+            expected_eligible = entry.eligible_digest
+            actual_eligible = getattr(descriptor, "eligible_digest", "")
+            if not expected_eligible or actual_eligible != expected_eligible:
+                mismatches.append(
+                    f"eligible_digest: descriptor {actual_eligible!r} != registry "
+                    f"{expected_eligible!r}"
                 )
         if mismatches:
             raise InvalidInputError(

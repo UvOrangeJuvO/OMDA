@@ -25,15 +25,13 @@ to malicious modification by an actor with local write access to the repository
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from typing import Protocol
 
 from omda.ports.errors import InvalidInputError
 
 BATCH_SCHEMA_VERSION = "2"
-
-_DIGEST_SEPARATOR = "|"
-_DIGEST_RECORD_SEPARATOR = "\x1f"
 
 # ADR-0002 D1: curated packages distinguish the four license/provenance layers
 # instead of a blanket claim (G3-007-005).
@@ -85,6 +83,7 @@ class GenreSourceDescriptor(SourceDescriptor):
 
     content_digest: str = ""
     eligible_genre_ids: tuple[str, ...] = ()
+    eligible_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -149,13 +148,26 @@ class ValidatedSourceSet:
         )
 
 
-def _source_digest_fields(source: SourceDescriptor) -> str:
-    # G3-007-005: EVERY immutable delivery/governance field is part of the
-    # canonical digest — changing any license layer, retrieval time, data scope
-    # or records file changes the batch/Genre digest, so unreviewed statements
-    # cannot keep a valid reviewed identity.
-    return _DIGEST_SEPARATOR.join(
-        (
+def _canonical_json(value: object) -> bytes:
+    """Deterministic, unambiguous canonical encoding (G3-007-010).
+
+    ``sort_keys`` + fixed separators + UTF-8 (no ASCII escaping) make the byte
+    representation unique for every allowed value — a separator character inside
+    a free-text field (``|``, ``\x1f``, ...) can never be confused with a
+    structure boundary, so two different fact sets always produce different
+    digests.
+    """
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _source_digest_fields(source: SourceDescriptor) -> bytes:
+    # G3-007-005/010: EVERY immutable delivery/governance field is part of the
+    # canonical digest as a JSON array — changing any license layer, retrieval
+    # time, data scope or records file changes the batch/Genre digest.
+    return _canonical_json(
+        [
             source.source_id,
             source.kind,
             source.display_name,
@@ -166,69 +178,96 @@ def _source_digest_fields(source: SourceDescriptor) -> str:
             source.schema_version,
             source.data_scope,
             source.records_file,
-            "demo" if source.demo else "production",
+            source.demo,
             source.data_derivation,
             source.upstream_license,
             source.license_core_facts,
             source.license_supplementary_used,
             source.license_service_terms,
             source.license_derived_package,
-        )
+        ]
+    )
+
+
+def _record_digest_fields(record: AlbumCandidateRecord) -> bytes:
+    return _canonical_json(
+        [
+            record.album_id,
+            record.genre_id,
+            record.title,
+            record.artist,
+            record.year,
+            record.mbid,
+            record.release_type,
+            record.score,
+        ]
     )
 
 
 def digest_batch(batch: CandidateBatch) -> str:
     """Return the SHA-256 hex digest over the batch's canonical serialization.
 
-    The canonical form includes schema/query-policy versions, the exact Genre,
-    the digest-relevant source fields and every candidate record (sorted by
-    album_id): genre binding and MBID are part of the digest, so changing a
-    Genre membership or canonical identity changes the digest (G3-007-001/002).
+    The canonical form is a JSON object (sort_keys) covering schema/query-policy
+    versions, the exact Genre, the digest-relevant source fields and every
+    candidate record (sorted by album_id). Genre binding, MBID and every
+    free-text value are unambiguous (G3-007-001/002/010).
     """
-    record_lines = [
-        _DIGEST_SEPARATOR.join(
-            (
-                record.album_id,
-                record.genre_id,
-                record.title,
-                record.artist,
-                str(record.year) if record.year is not None else "",
-                record.mbid or "",
-                record.release_type,
-                str(record.score) if record.score is not None else "",
-            )
-        )
-        for record in sorted(batch.candidates, key=lambda r: r.album_id)
-    ]
-    canonical = _DIGEST_RECORD_SEPARATOR.join(
-        (
-            batch.schema_version,
-            batch.query_policy_version,
-            batch.genre_id,
-            _source_digest_fields(batch.source),
-            _DIGEST_RECORD_SEPARATOR.join(record_lines),
-        )
+    canonical = _canonical_json(
+        {
+            "schema_version": batch.schema_version,
+            "query_policy_version": batch.query_policy_version,
+            "genre_id": batch.genre_id,
+            "source": _source_digest_fields(batch.source).decode("utf-8"),
+            "candidates": [
+                _record_digest_fields(record).decode("utf-8")
+                for record in sorted(batch.candidates, key=lambda r: r.album_id)
+            ],
+        }
     )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def digest_genre_records(records: tuple[tuple[str, ...], ...]) -> str:
-    """SHA-256 over canonical Genre record lines (G3-007-003).
+    """SHA-256 over canonical Genre records (G3-007-003/010).
 
-    Each line: (genre_id, name, family, sorted(parents), eligible, url, source)
-    sorted by genre_id so the digest is deterministic regardless of file order.
+    Records are sorted by genre_id; each record is a JSON array so separator
+    characters inside names/families are unambiguous.
     """
-    lines = [
-        _DIGEST_SEPARATOR.join(record)
-        for record in sorted(records, key=lambda r: r[0])
-    ]
-    return hashlib.sha256(
-        _DIGEST_RECORD_SEPARATOR.join(lines).encode("utf-8")
-    ).hexdigest()
+    canonical = _canonical_json(
+        [list(record) for record in sorted(records, key=lambda r: r[0])]
+    )
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def digest_genre_ids(genre_ids: tuple[str, ...]) -> str:
+    """Deterministic SHA-256 over the canonical eligible Genre-ID set.
+
+    G3-007-003: the registry records this digest at review time; assembly
+    verifies the descriptor's self-digest AND the registry binding, so a
+    caller-forged eligible set cannot cross the source boundary.
+    """
+    return hashlib.sha256(_canonical_json(sorted(set(genre_ids)))).hexdigest()
 
 
 def verify_batch_integrity(batch: CandidateBatch) -> None:
-    """Fail closed when the batch content does not match its declared digest."""
+    """Fail closed when the batch content does not match its declared digest.
+
+    Also enforces the runtime contract (G3-007-007/011):
+    - ``schema_version`` MUST equal the supported ``BATCH_SCHEMA_VERSION``;
+    - an Album ``CandidateBatch`` MUST come from an Album source
+      (``source.kind == "album"``).
+    """
+    if batch.schema_version != BATCH_SCHEMA_VERSION:
+        raise InvalidInputError(
+            f"candidate batch {batch.source.source_id!r} [{batch.genre_id!r}]: "
+            f"unsupported schema_version {batch.schema_version!r} "
+            f"(supported: {BATCH_SCHEMA_VERSION!r})"
+        )
+    if batch.source.kind != "album":
+        raise InvalidInputError(
+            f"candidate batch {batch.source.source_id!r} [{batch.genre_id!r}]: "
+            f"source.kind must be 'album', got {batch.source.kind!r}"
+        )
     expected = digest_batch(batch)
     if not isinstance(batch.digest, str) or len(batch.digest) != 64 or batch.digest != expected:
         raise InvalidInputError(
@@ -280,8 +319,15 @@ def assemble_validated_source_set(
         registry.verify_descriptor(descriptor)
         _verify_genre_digest(descriptor)
         # G3-007-003: every selected Genre must belong to the REVIEWED Genre
-        # content (digest-bound eligible-ID set) — a caller-supplied ID absent
-        # from the Genre package is rejected, never silently accepted.
+        # content. The eligible-ID set is digest-bound (self-digest + reviewed
+        # registry binding verified above), so a caller-supplied ID absent from
+        # the Genre package is rejected, never silently accepted.
+        self_digest = digest_genre_ids(descriptor.eligible_genre_ids)
+        if self_digest != descriptor.eligible_digest:
+            raise InvalidInputError(
+                f"genre source {descriptor.source_id!r}: eligible_genre_ids do not "
+                "match their declared eligible_digest (forged membership)"
+            )
         eligible_union.update(descriptor.eligible_genre_ids)
     unknown = sorted(selected - eligible_union)
     if unknown:
@@ -357,6 +403,7 @@ __all__ = [
     "ValidatedSourceSet",
     "assemble_validated_source_set",
     "digest_batch",
+    "digest_genre_ids",
     "digest_genre_records",
     "verify_batch_integrity",
 ]

@@ -16,6 +16,7 @@ from omda.ports.source import (
     ValidatedSourceSet,
     assemble_validated_source_set,
     digest_batch,
+    digest_genre_ids,
     verify_batch_integrity,
 )
 from omda.sources.registry import RegistryEntry, SourceRegistry
@@ -49,6 +50,7 @@ def _genre_descriptor(**overrides) -> GenreSourceDescriptor:
         "kind": "genre",
         "content_digest": "g" * 64,
         "eligible_genre_ids": ("ambient",),
+        "eligible_digest": digest_genre_ids(("ambient",)),
     }
     base.update(overrides)
     return GenreSourceDescriptor(**base)
@@ -193,7 +195,11 @@ def test_genre_content_digest_is_bound_by_registry() -> None:
     # Genre descriptor carrying a different digest fails closed.
     registry = SourceRegistry(
         {
-            "curated-omda:genre": _entry(kind="genre", content_digest="a" * 64),
+            "curated-omda:genre": _entry(
+                kind="genre",
+                content_digest="a" * 64,
+                eligible_digest=digest_genre_ids(("ambient",)),
+            ),
             "curated-omda:album": _entry(),
         }
     )
@@ -206,7 +212,8 @@ def test_assemble_validated_source_set() -> None:
     registry = SourceRegistry(
         {
             "curated-omda:genre": _entry(
-                kind="genre", records_file="records.jsonl", content_digest="g" * 64
+                kind="genre", records_file="records.jsonl", content_digest="g" * 64,
+                eligible_digest=digest_genre_ids(("ambient",))
             ),
             "curated-omda:album": _entry(),
         }
@@ -228,7 +235,8 @@ def test_assemble_rejects_tampered_forged_or_unregistered_inputs() -> None:
     registry = SourceRegistry(
         {
             "curated-omda:genre": _entry(
-                kind="genre", records_file="records.jsonl", content_digest="g" * 64
+                kind="genre", records_file="records.jsonl", content_digest="g" * 64,
+                eligible_digest=digest_genre_ids(("ambient",))
             ),
             "curated-omda:album": _entry(),
         }
@@ -268,7 +276,8 @@ def test_selected_phantom_genre_is_rejected() -> None:
     registry = SourceRegistry(
         {
             "curated-omda:genre": _entry(
-                kind="genre", records_file="records.jsonl", content_digest="g" * 64
+                kind="genre", records_file="records.jsonl", content_digest="g" * 64,
+                eligible_digest=digest_genre_ids(("ambient",))
             ),
             "curated-omda:album": _entry(),
         }
@@ -316,7 +325,8 @@ def test_demo_status_covers_genre_descriptors_too() -> None:
     registry = SourceRegistry(
         {
             "curated-omda:genre": _entry(
-                kind="genre", demo=True, records_file="records.jsonl", content_digest="g" * 64
+                kind="genre", demo=True, records_file="records.jsonl", content_digest="g" * 64,
+                eligible_digest=digest_genre_ids(("ambient",))
             ),
             "curated-omda:album": _entry(),
         }

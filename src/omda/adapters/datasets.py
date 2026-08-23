@@ -18,7 +18,11 @@ from omda.adapters._miniyaml import load_flat_yaml
 from omda.ports.critic import CriticRatingRow
 from omda.ports.domain import GenreRef
 from omda.ports.errors import InvalidInputError
-from omda.ports.source import GenreSourceDescriptor, digest_genre_records
+from omda.ports.source import (
+    GenreSourceDescriptor,
+    digest_genre_ids,
+    digest_genre_records,
+)
 from omda.schemas import validate
 from omda.schemas.validator import RecordValidationError
 
@@ -164,6 +168,7 @@ class GenreDatasetAdapter:
             license_derived_package=meta["license_derived_package"],
             content_digest=self._content_digest(),
             eligible_genre_ids=self._eligible_genre_ids(),
+            eligible_digest=digest_genre_ids(self._eligible_genre_ids()),
         )
 
     def _eligible_genre_ids(self) -> tuple[str, ...]:

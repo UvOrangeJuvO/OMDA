@@ -208,3 +208,84 @@ commit 的 cli/production/orchestrator/storage/delivery/llm/config diff = 0）�
    已提交 MBID 的 upstream 再验证属 G5 数据许可审计。
 2. `assemble_validated_source_set` 的 run.py 接线（§8.8 journal）仍属 G4。
 3. ODP-1（live MusicBrainz 路径）未定案未实现（§8.1 不变）。
+
+---
+
+# G3-007 Re-review 2 Repair（2026-08-23，candidate c4ae191）
+
+对应 Reviewer commit：`600305bd66b7a8f39d23f16ffcac31a321afcdb2`（G3_007_REVIEW_VERDICT.md
+Re-review 2，结论 **CHANGES_REQUESTED**，G3-007-003/007 保持 OPEN + 新增
+G3-007-010/011）
+被审 candidate：`c4ae1911c3f0092806da804da929f9e0d3045f93`
+本轮修复范围：仅 G3-007 source/data 契约；**未实施任何 G4 功能**（相对 reviewer
+commit 的 cli/production/orchestrator/storage/delivery/llm/config diff = 0）。
+未自行写 ACCEPTED；无需新 ADR（均在已接受 ADR-0002 内修复）。
+
+## 逐项关闭证据
+
+### G3-007-003（P1，保持 OPEN）eligible Genre 集仍可伪造 — CLOSED
+- **复现**：向真实注册 descriptor 的 `eligible_genre_ids` 追加 `phantom` + 自洽
+  重贴 batch + 重算 batch digest → assemble 接受。
+- **修复**：eligible 集绑定**确定性摘要**——`GenreSourceDescriptor.eligible_digest`
+  = SHA-256 over canonical JSON of sorted eligible IDs（`digest_genre_ids`）；
+  `GenreDatasetAdapter.descriptor()` 从同一批 reviewed records 派生 eligible 集并
+  计算 digest；`registry` genre entry 记录**审核时的 eligible_digest**，
+  `verify_descriptor` 比对（伪造 eligible 集 → 自洽 digest 不匹配 或 registry
+  不匹配 → fail-closed）；`assemble` 额外校验 descriptor 自洽
+  （`digest_genre_ids(eligible) == eligible_digest`）。
+- **回归测试**：`test_forged_eligible_genre_ids_are_rejected`（伪造 tuple + 伪造
+  digest 两条路径均拒绝）、`test_genuine_descriptor_still_validates`。
+
+### G3-007-007（P1，保持 OPEN）反序列化绕过 tracked schema — CLOSED
+- **复现**：未知顶层字段的 batch 被解析并通过；cache 中 schema_version `999`
+  （digest 重算）被 `source_batch()` 返回。
+- **修复**：`_batch_from_json` 构造对象**前**先 `_validate_record("candidate_batch",
+  payload)`（additional_fields 默认 reject → 未知字段拒绝；schema_version enum
+  ["2"] → `999` 拒绝；嵌套 source/candidates 结构错误拒绝）；`verify_batch_integrity`
+  额外要求 `schema_version == BATCH_SCHEMA_VERSION`（运行时拒绝不支持的版本）。
+- **回归测试**：public cache-hit 路径——未知顶层字段 / schema_version `999` /
+  malformed nested source / malformed candidates → 全部 typed miss（重建，不返回
+  非法条目）；`test_verify_rejects_unsupported_schema_version`。
+
+### G3-007-010（P1，新增）digest 编码歧义 — CLOSED
+- **复现**：`|`/`\x1f` 拼接使 `(title="A|B", artist="C")` 与 `(title="A",
+  artist="B|C")` 同 digest（Genre name/family 同理）。
+- **修复**：**canonical JSON 编码**替代分隔符拼接——`_canonical_json`
+  （`json.dumps(sort_keys=True, separators=(",",":"), ensure_ascii=False).encode("utf-8")`）；
+  `digest_batch` = SHA-256 over canonical JSON object（schema/query-policy/genre/
+  source 字段数组/records 数组）；`digest_genre_records` = canonical JSON array；
+  `digest_genre_ids` = canonical JSON array。任意分隔符字符在 free-text 字段中
+  都不可能再与结构边界混淆。
+- **回归测试**：`test_digest_batch_collision_for_separator_in_free_text` 与
+  `test_digest_genre_records_collision_for_separator_in_free_text`（`|` 与 `\x1f`
+  两组碰撞对，均不同 digest）。
+
+### G3-007-011（P1，新增）Album batch 可声称 Genre source — CLOSED
+- **复现**：真实 Ambient batch 的 source 换为真实注册 Genre descriptor + 重算
+  digest → assemble 接受。
+- **修复**：三层拒绝——①`candidate_batch.schema.json` `source.kind` enum 收窄为
+  `["album"]`（schema 层）；②`verify_batch_integrity` 要求
+  `source.kind == "album"`（领域层）；③`assemble` 在 registry lookup 前经
+  verify 拒绝（assembly 层）。
+- **回归测试**：`test_genre_kind_batch_is_rejected_by_domain_and_assembly`、
+  `test_schema_rejects_genre_kind_source`。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **704 passed, 0 failed**（693→704，全部新增/增强，无删除/弱化） |
+| `pytest -v`（G3_007_TEST_RESULTS.txt） | 704 passed |
+| `ruff check src tests tools browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 独立碰撞测试（010） | 2 passed（分隔符字符字段碰撞对） |
+| G4 层零改动（相对 600305b） | 0 文件 |
+| tracked 敏感文件 | 无 |
+| 未 merge / 未 tag / 未进入 G5 / 未写 ACCEPTED | 确认 |
+
+## 残余风险（诚实披露）
+
+1. 新编码（canonical JSON）改变了既有 digest 值——registry 已同步更新（content/
+   eligible digests）；任何外部消费者按旧 `|` 编码校验将失效（仓库内无）。
+2. `assemble_validated_source_set` 的 run.py 接线（§8.8 journal）仍属 G4。
+3. ODP-1（live MusicBrainz 路径）未定案未实现（§8.1 不变）。

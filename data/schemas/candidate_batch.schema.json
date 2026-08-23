@@ -8,7 +8,7 @@
     "digest": {"type": "string", "required": true, "pattern": "^[0-9a-f]{64}$"},
     "source": {"type": "object", "required": true, "fields": {
       "source_id": {"type": "string", "required": true, "min_length": 1},
-      "kind": {"type": "string", "required": true, "enum": ["genre", "album"]},
+      "kind": {"type": "string", "required": true, "enum": ["album"]},
       "display_name": {"type": "string", "required": true, "min_length": 1},
       "license": {"type": "string", "required": true, "min_length": 1},
       "origin_url": {"type": "string", "required": true, "pattern": "^https?://"},

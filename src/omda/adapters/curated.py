@@ -347,6 +347,15 @@ class CuratedAlbumSource:
         }
 
     def _batch_from_json(self, payload: dict) -> CandidateBatch | None:
+        # G3-007-007: the raw payload MUST pass the tracked candidate_batch v2
+        # schema BEFORE any object is constructed — unknown top-level fields,
+        # unsupported schema versions, malformed nested source and malformed
+        # candidates are all rejected (a validation failure is a typed miss,
+        # never trusted).
+        try:
+            _validate_record("candidate_batch", payload, "<candidate_batch>")
+        except InvalidInputError:
+            return None
         try:
             source = SourceDescriptor(**payload["source"])
             records = tuple(

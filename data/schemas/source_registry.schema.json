@@ -27,6 +27,11 @@
       "type": "string",
       "required": false,
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "eligible_digest": {
+      "type": "string",
+      "required": false,
+      "pattern": "^[0-9a-f]{64}$"
     }
   }
 }
