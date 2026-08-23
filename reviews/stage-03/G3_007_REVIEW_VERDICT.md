@@ -417,3 +417,140 @@ Candidate `2be8ee110fabe9d6979f5d23a374e06bae146294` is not accepted. G3-007 rem
 open and G4 must not begin. The four P1 findings can be repaired within accepted ADR-0002;
 another ADR is not presently required. Return a new full candidate after focused repair and
 full regression evidence.
+
+---
+
+## Re-review 2 — candidate `c4ae1911c3f0092806da804da929f9e0d3045f93`
+
+### Reviewed object
+
+- Re-review date: 2026-08-23
+- Exact original base SHA: `68e3d453c7b803d2090cb1318f48e58eb18d6390`
+- Previous candidate: `2be8ee110fabe9d6979f5d23a374e06bae146294`
+- Previous Reviewer commit: `09187426ca3f4f05eca27292fc448cc5f3ce470a`
+- Exact repair candidate SHA: `c4ae1911c3f0092806da804da929f9e0d3045f93`
+- Executor repair report: `reviews/stage-03/G3_007_REPAIR_REPORT.md`
+
+The exact SHA, ancestry and original merge-base are correct. The candidate contains one focused
+G3-007 repair commit after the previous Reviewer commit, the starting worktree was clean, and
+no incremental G4 implementation was found. The full suite and lint are green. Registry binding
+of the four license layers, owner-supplied MusicBrainz User-Agent handling and both test-isolation
+repairs are now implemented correctly.
+
+Acceptance is still blocked at the source-integrity boundary. The new
+`eligible_genre_ids` tuple is caller-controlled rather than registry/content bound; cache input
+does not actually pass through the tracked CandidateBatch schema; and the digest serialization
+is ambiguous for valid text fields. Independent probes reproduced each failure below.
+
+### Previous-finding closure status
+
+| Previous finding | Status | Re-review result |
+|---|---|---|
+| G3-007-003 selected Genre provenance | **OPEN** | The new eligible-ID tuple can itself be forged without changing the registered Genre content digest. |
+| G3-007-005 immutable license/provenance binding | **CLOSED** | All descriptor fields are now registry-bound and included in the source digest fields; field-by-field negative tests exist. |
+| G3-007-007 machine schema/runtime alignment | **PARTIAL / OPEN** | Tracked files and write serialization align, but cache deserialization bypasses the schema and accepts unsupported versions. |
+| G3-007-008 curation User-Agent | **CLOSED** | Owner-supplied value is required; placeholder values are rejected; transport test is network-free. |
+| G3-007-009 tamper-test safety/effectiveness | **CLOSED** | Genre data is copied to temporary storage and a fresh adapter exercises disk-cache corruption. |
+
+### [P1] G3-007-003 remains open — eligible Genre membership is still self-asserted
+
+- Location: `src/omda/ports/source.py:71-87,277-292`;
+  `src/omda/adapters/datasets.py:136-177`;
+  `src/omda/sources/registry.py:140-195`
+- Evidence: `GenreDatasetAdapter` normally derives `eligible_genre_ids` from the same records,
+  but the trusted assembly boundary receives only a dataclass descriptor. Neither the registry
+  nor `content_digest` binds the tuple, and `verify_descriptor()` does not compare it.
+- Independent reproduction: append `phantom` to a real registered descriptor's
+  `eligible_genre_ids`, consistently relabel a real batch and its records to `phantom`, and
+  recompute the batch's self-digest. `assemble_validated_source_set()` accepts the result even
+  though `phantom` is absent from the reviewed Genre records.
+- Impact: the repair moves the untrusted assertion from `selected_genre_ids` into another
+  untrusted field; it still does not prove membership in reviewed Genre content.
+- Required acceptance: either bind the canonical eligible-ID set (or its deterministic digest)
+  in the reviewed registry and verify it, or pass validated canonical Genre records into
+  assembly and derive membership there. Add a negative test that forges the descriptor tuple,
+  not merely the caller's selected tuple.
+
+### [P1] G3-007-007 remains open — CandidateBatch schema is enforced only on writes
+
+- Location: `src/omda/adapters/curated.py:115-143,313-375`;
+  `data/schemas/candidate_batch.schema.json`
+- Evidence: `_batch_to_json()` validates output, but `_batch_from_json()` directly constructs
+  objects without `_validate_record()`. `verify_batch_integrity()` checks only a self-computed
+  digest and does not require `schema_version == BATCH_SCHEMA_VERSION`.
+- Independent reproduction:
+  - a serialized batch with an unknown top-level field was parsed and passed integrity checks;
+  - a cache batch changed to schema version `999`, with its digest recomputed, was returned by
+    the public `source_batch()` path as schema `999` even though the tracked schema permits only
+    version `2`.
+- Impact: the published machine contract cannot reject unsupported or structurally drifting
+  cache/import data, which was the central acceptance requirement for this finding.
+- Required acceptance: validate the raw payload against the tracked schema before constructing
+  any object; reject unsupported runtime/query-policy versions explicitly; add public cache-hit
+  tests for unknown fields, version `999`, malformed nested source and malformed candidates.
+
+### [P1] G3-007-010 — digest canonicalization is ambiguous for valid record values
+
+- Location: `src/omda/ports/source.py:152-227`
+- Evidence: source, Album and Genre fields are concatenated with literal `|` and record separator
+  characters without length-prefixing or escaping. Album title/artist and Genre name/family
+  schemas permit `|`.
+- Independent reproduction:
+  - Album facts `(title="A|B", artist="C")` and `(title="A", artist="B|C")` produce the same
+    `digest_batch()` value;
+  - otherwise identical valid Genre facts with `(name="A|B", family="C")` and
+    `(name="A", family="B|C")` produce the same `digest_genre_records()` value.
+- Impact: changing reviewed facts can preserve the declared SHA-256 digest without breaking
+  SHA-256; the ambiguity is in the preimage encoding. Content integrity therefore is not
+  actually guaranteed for the allowed data domain.
+- Required acceptance: use a canonical unambiguous encoding, preferably deterministic JSON
+  arrays/objects with UTF-8 and fixed separators/sorted keys, or length-prefix every field.
+  Add collision-regression tests covering separator characters in every free-text field.
+
+### [P1] G3-007-011 — an Album CandidateBatch may claim a Genre source
+
+- Location: `data/schemas/candidate_batch.schema.json:10-12`;
+  `src/omda/ports/source.py:101-122,295-317`
+- Evidence: CandidateBatch's schema permits source kind `genre` or `album`, and assembly never
+  requires `batch.source.kind == "album"`.
+- Independent reproduction: replace a real Ambient batch's Album source descriptor with the
+  real registered Genre descriptor, recompute the batch digest, and assemble it with the real
+  registry. Validation accepts the CandidateBatch with `source.kind == "genre"`.
+- Impact: the validated boundary does not prove that Album candidates came from a reviewed
+  Album source; source-role provenance can be confused while all checks pass.
+- Required acceptance: restrict CandidateBatch source kind to `album` in both schema and domain
+  validation, reject the wrong kind before registry lookup, and add a negative assembly test.
+
+### Re-review 2 acceptance matrix
+
+| Criterion | Status |
+|---|---|
+| Focused G3 repair; no G4 implementation | **PASS** |
+| License/provenance fields bound to reviewed registry | **PASS** |
+| Owner-supplied, non-placeholder MusicBrainz User-Agent | **PASS** |
+| Tamper tests isolated and exercising disk path | **PASS** |
+| Selected Genre membership bound to reviewed content | **FAIL — G3-007-003** |
+| Read and write boundaries enforce CandidateBatch v2 schema | **FAIL — G3-007-007** |
+| Digests unambiguously bind allowed fact values | **FAIL — G3-007-010** |
+| CandidateBatch proves an Album-source role | **FAIL — G3-007-011** |
+| Open P0/P1 findings | **FOUR P1** |
+
+### Independent checks
+
+- Verified exact SHA, branch, ancestry, original merge-base, focused increment, clean starting
+  worktree and `git diff --check`.
+- Ran the complete suite from an isolated archive initialized as a temporary Git repository:
+  **693 passed in 5.93 seconds**. Ruff reported **all checks passed**.
+- Reproduced forged eligible membership, public cache serving schema `999`, acceptance of a
+  Genre-kind Album batch and two delimiter-based digest collisions using local read-only probes.
+- No production code/data, merge, tag, push, network request or G4 work was performed by the
+  Reviewer.
+
+### Re-review 2 verdict
+
+**CHANGES_REQUESTED**
+
+Candidate `c4ae1911c3f0092806da804da929f9e0d3045f93` is not accepted. G3-007 remains
+open; do not merge and do not begin G4. These findings are implementation-level corrections
+inside accepted ADR-0002, so another ADR is not currently required. Return a new full candidate
+after focused repair and full regression evidence.
