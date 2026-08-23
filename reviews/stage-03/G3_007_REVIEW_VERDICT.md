@@ -262,3 +262,158 @@ and submit an ADR rather than silently changing semantics.
 Candidate `07851eb4c8cb13a3bb2a06382c74e6cba7c3c27a` is not accepted. G3-007 remains
 open, must not be merged or tagged as accepted, and G4 must not begin. The Executor may create
 focused G3-007 repair commits and return a new full candidate for re-review.
+
+---
+
+## Re-review 1 — candidate `2be8ee110fabe9d6979f5d23a374e06bae146294`
+
+### Reviewed object
+
+- Re-review date: 2026-08-23
+- Exact original base SHA: `68e3d453c7b803d2090cb1318f48e58eb18d6390`
+- Previous rejected candidate: `07851eb4c8cb13a3bb2a06382c74e6cba7c3c27a`
+- Previous Reviewer commit: `f42ce3a5e64e9443616406daa973ace488a6b081`
+- Exact repair candidate SHA: `2be8ee110fabe9d6979f5d23a374e06bae146294`
+- Executor repair report: `reviews/stage-03/G3_007_REPAIR_REPORT.md`
+
+The repair candidate has the correct merge-base, is a descendant of the previous Reviewer
+commit, and contains one focused repair commit after it. The worktree was clean. No incremental
+G4 implementation was introduced. The repaired implementation now supplies distinct
+Genre-bound batches, 20 unique release-group MBIDs, a provider-neutral `source_batch` port,
+Genre content digests and stronger cache limits. Those are material improvements.
+
+The complete suite nevertheless cannot establish acceptance. Independent checks found that
+unreviewed license statements and a Genre ID absent from the reviewed Genre package can still
+cross the supposedly validated source boundary. The tracked machine schemas also disagree
+with the runtime contract. These are source-trust failures within G3-007, not reasons to begin
+G4.
+
+### Previous-finding closure status
+
+| Previous finding | Status | Re-review result |
+|---|---|---|
+| G3-007-001 Genre-bound batches | **CLOSED** | Records and batches carry `genre_id`; exact filtering and cross-Genre tests exist. |
+| G3-007-002 canonical MBIDs | **CLOSED for package content** | 20 unique UUID-shaped release-group MBIDs are present and required for non-demo records. The curation tool compliance issue is recorded separately below. |
+| G3-007-003 Genre provenance/completeness | **PARTIAL / OPEN** | Content digest, demo and coverage checks improved, but selected IDs are not proven to belong to the reviewed Genre content. |
+| G3-007-004 provider-neutral boundary | **CLOSED** | `AlbumSource.source_batch()` supplies a concrete provider-neutral batch; curated and fake adapters implement it. |
+| G3-007-005 license/provenance layers | **PARTIAL / OPEN** | Four fields exist but are not bound to the registry or integrity digest. |
+| G3-007-006 cache robustness | **CLOSED with P2 test debt** | TTL/key/manifest behavior materially improved; the tamper test does not actually read the tampered disk entry. |
+
+### [P1] G3-007-003 remains open — selected Genre IDs are not bound to reviewed Genre records
+
+- Location: `src/omda/ports/source.py:71-80,118-142` and source-set assembly validation;
+  `data/genres/curated-omda/genres.jsonl`
+- Evidence: `GenreSourceDescriptor` binds only an opaque content digest. Source-set assembly
+  verifies that each batch matches the caller-provided selected ID, but it receives neither
+  the canonical Genre records nor a digest-bound eligible-ID set.
+- Independent reproduction: a real Ambient batch was consistently relabelled to `phantom`,
+  its self-digest recomputed, and then assembled with the real registered curated Genre
+  descriptor and `selected_genre_ids=("phantom",)`. Validation accepted the source set even
+  though `phantom` is absent from the reviewed Genre package.
+- Impact: the source boundary proves internal consistency of caller-controlled labels, not
+  that selection came from the reviewed Genre source. This breaks the required Genre-to-Album
+  provenance chain.
+- Required acceptance: bind the eligible Genre IDs to the registered Genre content—either by
+  validating against canonical Genre records at assembly time or by carrying a registry- and
+  digest-bound eligible-ID set—and add a negative `phantom`-ID test.
+
+### [P1] G3-007-005 remains open — license/provenance layers are self-asserted
+
+- Location: `src/omda/ports/source.py:43-68,145-158`;
+  `src/omda/sources/registry.py:124-159`; `data/schemas/source_registry.schema.json`
+- Evidence: the four new fields `license_core_facts`, `license_supplementary_used`,
+  `license_service_terms` and `license_derived_package` are omitted from the canonical batch
+  digest and from the registry entry/verification contract. `retrieved_at`, `data_scope` and
+  `dataset_version` are also not fully registry-bound.
+- Independent reproduction: changing each license layer to a forged value and changing
+  `retrieved_at` to 2099 left the batch digest unchanged; both batch integrity verification
+  and full source-set assembly still passed.
+- Impact: a package can present unreviewed licensing or provenance statements while retaining
+  a valid reviewed identity. The four-layer representation is therefore descriptive text,
+  not an enforced trust boundary.
+- Required acceptance: make every immutable delivery/governance field part of the reviewed
+  registry contract or bind a complete descriptor digest; include it in batch/Genre integrity
+  validation; add one negative mismatch test for every bound field.
+
+### [P1] G3-007-007 — tracked machine schemas disagree with the runtime source contract
+
+- Location: `src/omda/ports/source.py:33,101-115`;
+  `data/schemas/candidate_batch.schema.json`;
+  `data/schemas/genre_source.schema.json`;
+  `data/genres/curated-omda/source.yaml`;
+  `data/genres/rym-sample/source.yaml`
+- Evidence:
+  - runtime declares CandidateBatch schema version `2` and requires `genre_id` plus a source
+    descriptor, while the tracked CandidateBatch schema remains version `1`, contains neither
+    field, and is not used to validate the serialized/cache/import boundary;
+  - the tracked Genre schema declares version `3`, while both Genre package manifests and
+    corresponding registry entries declare schema version `1`.
+- Impact: a consumer following the published schema cannot construct the runtime object, and
+  repository review cannot determine which version actually governs accepted packages.
+- Required acceptance: publish and exercise the complete v2 CandidateBatch envelope, make
+  Genre package/schema version semantics consistent, validate serialized boundaries against
+  the tracked schema, and add tests that fail on version drift.
+
+### [P1] G3-007-008 — the MusicBrainz curation tool does not use a contactable User-Agent
+
+- Location: `tools/curate_mbids.py:2-7,23-25`
+- Evidence: the tool claims a contactable User-Agent but hardcodes
+  `mailto:omda-curation@example.invalid`. The reserved `.invalid` address cannot contact a
+  maintainer. The shipped tool performs live requests and was cited as evidence for the
+  committed identities.
+- Impact: the documented curation flow is not safely reproducible under the upstream service's
+  identification requirement, weakening both external-service compliance and provenance.
+- Required acceptance: require an owner-supplied meaningful User-Agent/contact value, reject
+  missing or placeholder values (including `.invalid`), and test this without network access
+  using an injected transport. Do not hardcode a contributor's personal contact in the repo.
+
+### [P2] G3-007-009 — two integration tests do not safely prove their stated behavior
+
+- Location: `tests/integration/test_g3_007_checkpoint.py:189-232`;
+  `src/omda/adapters/curated.py:122-140`
+- Evidence:
+  - the Genre tamper test edits the tracked production `genres.jsonl` in place and restores it
+    in `finally`; interruption or parallel execution can leave or observe corrupted source;
+  - the cache tamper test reuses the same adapter after warming `_batch_cache`, so the second
+    call returns the in-memory batch and never reads the tampered disk entry. The disk repair
+    branch may be correct, but this test does not exercise it.
+- Required acceptance: copy the package to `tmp_path` before tampering and construct a fresh
+  adapter over the same runtime cache after disk corruption.
+
+### Re-review acceptance matrix
+
+| G3-007 / ADR-0002 criterion | Status |
+|---|---|
+| Focused G3 repair; G4 remains frozen | **PASS** |
+| Distinct Genre-bound production candidates | **PASS** |
+| Canonical release-group identity present | **PASS** |
+| Selected Genre belongs to reviewed Genre content | **FAIL — G3-007-003** |
+| Provider-neutral CandidateBatch port | **PASS** |
+| Review-bound four-layer license/provenance | **FAIL — G3-007-005** |
+| Versioned machine schema matches runtime contract | **FAIL — G3-007-007** |
+| Reproducible, compliant MBID curation flow | **FAIL — G3-007-008** |
+| Safe/effective tamper regression tests | **PARTIAL — G3-007-009** |
+| Open P0/P1 findings | **FOUR P1** |
+
+### Independent checks and limitations
+
+- Verified the exact SHA, branch ancestry, exact original merge-base, focused repair commit,
+  clean worktree and `git diff --check`.
+- Ran the complete suite from an isolated archive initialized as a temporary Git repository:
+  **671 passed**. Ruff also passed. This shows regression stability, but does not close the
+  semantic trust failures above.
+- Reproduced forged-license acceptance and unregistered `phantom` Genre acceptance with local
+  probes against the real registry and package contracts.
+- Spot-checked multiple committed release-group MBIDs against official MusicBrainz entity
+  pages. Not all 20 were independently live-confirmed because of upstream rate limiting and
+  browser verification. No live request was made with the candidate's invalid User-Agent.
+- No production code/data, merge, tag, push or G4 work was performed by the Reviewer.
+
+### Re-review verdict
+
+**CHANGES_REQUESTED**
+
+Candidate `2be8ee110fabe9d6979f5d23a374e06bae146294` is not accepted. G3-007 remains
+open and G4 must not begin. The four P1 findings can be repaired within accepted ADR-0002;
+another ADR is not presently required. Return a new full candidate after focused repair and
+full regression evidence.
