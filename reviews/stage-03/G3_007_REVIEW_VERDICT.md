@@ -554,3 +554,117 @@ Candidate `c4ae1911c3f0092806da804da929f9e0d3045f93` is not accepted. G3-007 rem
 open; do not merge and do not begin G4. These findings are implementation-level corrections
 inside accepted ADR-0002, so another ADR is not currently required. Return a new full candidate
 after focused repair and full regression evidence.
+
+---
+
+## Re-review 3 — candidate `60c81787ca53afa42aa086ba6408b05c1ffafe72`
+
+### Reviewed object
+
+- Re-review date: 2026-08-23
+- Exact original base SHA: `68e3d453c7b803d2090cb1318f48e58eb18d6390`
+- Previous candidate: `c4ae1911c3f0092806da804da929f9e0d3045f93`
+- Previous Reviewer commit: `600305bd66b7a8f39d23f16ffcac31a321afcdb2`
+- Exact repair candidate SHA: `60c81787ca53afa42aa086ba6408b05c1ffafe72`
+- Executor repair report: `reviews/stage-03/G3_007_REPAIR_REPORT.md`
+
+The SHA, ancestry and exact original merge-base are correct. The candidate contains one focused
+G3-007 repair commit after the prior Reviewer commit, the starting worktree was clean, and no
+incremental G4 implementation was found. The registry-bound eligible-Genre digest, canonical
+JSON fact encoding and Album-only CandidateBatch source role all withstand the previous
+independent reproductions.
+
+One version-trust gap remains. CandidateBatch schema version `2` is enforced, but the separate
+`query_policy_version` remains any nonempty string. A self-digested policy version `999` passes
+the tracked schema, the public cache path and final source-set assembly. Because the previous
+acceptance requirement explicitly covered unsupported query-policy versions, G3-007 cannot yet
+be accepted.
+
+### Previous-finding closure status
+
+| Previous finding | Status | Re-review result |
+|---|---|---|
+| G3-007-003 eligible Genre provenance | **CLOSED** | Registry binds `eligible_digest`; assembly checks both registry equality and tuple self-digest. Forging either tuple alone or tuple plus digest is rejected. |
+| G3-007-007 read/write schema contract | **PARTIAL / OPEN** | Raw cache input now passes the tracked schema and CandidateBatch schema `999` is rejected, but unsupported `query_policy_version` is still accepted. |
+| G3-007-010 unambiguous fact digests | **CLOSED** | Canonical JSON removes the demonstrated `|` and record-separator collisions; regression probes now produce distinct digests. |
+| G3-007-011 Album-source role | **CLOSED** | Schema and domain integrity require `source.kind == "album"`; the previous Genre-source substitution is rejected. |
+
+### [P1] G3-007-007 remains open — query policy version is not trusted or supported-version bound
+
+- Location: `data/schemas/candidate_batch.schema.json:5-6`;
+  `src/omda/ports/source.py:207-227,252-276`;
+  `src/omda/adapters/curated.py:115-143,347-384`
+- Evidence:
+  - the schema constrains `schema_version` to `"2"` but gives `query_policy_version` only
+    `min_length: 1`;
+  - `verify_batch_integrity()` checks the batch schema version and source kind, but not the
+    query-policy version or its relationship to the reviewed source/package policy;
+  - the cache key is generated from the current package version, but the cached envelope's
+    claimed policy is never compared with that expected version.
+- Independent reproduction: take a real Ambient batch, change only `query_policy_version` to
+  `"999"`, recompute its self-digest, and serialize it. A fresh adapter's public
+  `source_batch()` returns policy `999`, and `assemble_validated_source_set()` also accepts the
+  same batch with the real registry and Genre descriptor.
+- Impact: an unsupported selection/query policy can be presented as a validated current batch.
+  This weakens cache invalidation and makes a policy-semantic change indistinguishable from a
+  reviewed source result.
+- Required acceptance: define the supported query-policy version as an explicit constant or
+  reviewed registry/package field; constrain it in the machine schema; validate it in
+  `verify_batch_integrity()` and, where applicable, against the current source descriptor/cache
+  namespace. Add public cache and final assembly negative tests using a self-digested policy
+  `999` batch.
+
+### [P2] G3-007-012 — cache-path tests are double-wrapped and malformed cache shapes can escape typed-miss handling
+
+- Location: `tests/unit/test_review2_integrity.py:69-125`;
+  `src/omda/adapters/curated.py:456-467,469-476,347-384`
+- Evidence:
+  - `_cache_with()` calls `RuntimeCache.put(key, {"value": payload})`, while `put()` itself
+    writes its argument under a `value` field. The file therefore contains
+    `{"value":{"value":<candidate>}}`; every new cache test rejects this outer malformed
+    wrapper before reaching the specific mutation it claims to test;
+  - `RuntimeCache.get()` assumes decoded top-level JSON is a mapping and immediately calls
+    `.get()`. A valid JSON array/number in a corrupted cache file raises an untyped exception
+    instead of being treated as a cache miss. Non-mapping inner values can likewise reach
+    validation code that assumes a mapping.
+- Impact: the implementation fixes normal malformed dictionaries, but the regression evidence
+  is false-positive and arbitrary cache corruption can turn a recoverable cache miss into run
+  failure.
+- Required acceptance: pass the raw CandidateBatch payload directly to `RuntimeCache.put()` in
+  the tests and assert the stored/retrieved mutation is the one exercised. Make `get()` and
+  `_batch_from_json()` reject all non-mapping shapes as typed misses; cover top-level array,
+  number/null and inner non-object values.
+
+### Re-review 3 acceptance matrix
+
+| Criterion | Status |
+|---|---|
+| Focused G3 repair; no G4 implementation | **PASS** |
+| Eligible Genre membership registry/content bound | **PASS** |
+| Canonical digests unambiguous for allowed text | **PASS** |
+| CandidateBatch restricted to Album sources | **PASS** |
+| CandidateBatch schema version enforced | **PASS** |
+| Query-policy version supported and trust-bound | **FAIL — G3-007-007** |
+| Cache corruption tests exercise the intended payload | **FAIL — G3-007-012 (P2)** |
+| Open P0/P1 findings | **ONE P1** |
+
+### Independent checks
+
+- Verified exact SHA, branch, ancestry, original merge-base, focused increment, clean starting
+  worktree and `git diff --check`.
+- Ran the complete suite from an isolated archive initialized as a temporary Git repository:
+  **704 passed in 5.98 seconds**. Ruff reported **all checks passed**.
+- Re-ran the previous eligible-membership, delimiter-collision and source-kind probes; their
+  invalid forms are now rejected or produce distinct digests.
+- Reproduced policy `999` through both the public cache path and final source-set assembly.
+- No production code/data, merge, tag, push, network request or G4 work was performed by the
+  Reviewer.
+
+### Re-review 3 verdict
+
+**CHANGES_REQUESTED**
+
+Candidate `60c81787ca53afa42aa086ba6408b05c1ffafe72` is not accepted. G3-007 remains
+open; do not merge and do not begin G4. The remaining P1 and P2 are focused implementation/test
+corrections within accepted ADR-0002; another ADR is not required. Return a new full candidate
+after repair and full regression evidence.
