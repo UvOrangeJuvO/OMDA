@@ -111,3 +111,100 @@
 2. `assemble_validated_source_set` 的 run.py 接线（FETCH/SELECT journal 记录
    §8.8）仍属 G4 production composition；G3-007 提供证据字段与契约。
 3. live MusicBrainz 路径（ODP-1）仍未定案未实现（§8.1 不变）。
+
+---
+
+# G3-007 Re-review 1 Repair（2026-08-23，candidate 2be8ee1）
+
+对应 Reviewer commit：`09187426ca3f4f05eca27292fc448cc5f3ce470a`（G3_007_REVIEW_VERDICT.md
+Re-review 1，结论 **CHANGES_REQUESTED**，G3-007-003/005 保持 OPEN + 新增
+G3-007-007/008/009）
+被审 candidate：`2be8ee110fabe9d6979f5d23a374e06bae146294`
+本轮修复范围：仅 G3-007 source/data 契约；**未实施任何 G4 功能**（相对 reviewer
+commit 的 cli/production/orchestrator/storage/delivery/llm/config diff = 0）。
+未自行写 ACCEPTED；无需新 ADR（均在已接受 ADR-0002 内修复）。
+
+## 逐项关闭证据
+
+### G3-007-003（P1，保持 OPEN）selected Genre ID 未绑定 reviewed Genre 内容 — CLOSED
+- **复现**：`selected_genre_ids=("phantom",)` + 自洽 batch + 真实注册 Genre
+  descriptor 通过校验（phantom 不在 reviewed Genre 包中）。
+- **修复**：`GenreSourceDescriptor.eligible_genre_ids`（由 GenreDatasetAdapter 从
+  同一批 reviewed records 派生，eligible 记录的去重 genre_id；该 records 集即
+  content_digest 覆盖的对象）；`assemble_validated_source_set` 校验
+  `selected ⊆ 所有 descriptor.eligible_genre_ids 的并集`，任何 selected ID 不在
+  其中即 `InvalidInputError`——调用方无法用自洽标签证明来源来自 reviewed Genre
+  内容。
+- **回归测试**：`test_selected_phantom_genre_is_rejected`（unit）、checkpoint
+  `test_real_curated_packages_support_one_3x3_run`（selected 全部来自真实 eligible
+  集）。
+
+### G3-007-005（P1，保持 OPEN）license/provenance 层 self-asserted — CLOSED
+- **复现**：改四层 license 字段或 `retrieved_at` 为伪造值 → batch digest 不变、
+  registry 校验通过（这些字段既不在 digest 也不在 registry 契约）。
+- **修复**：
+  1. `_source_digest_fields` 扩展为**全部 immutable 字段**（display_name、
+     license、origin_url、retrieved_at、dataset_version、schema_version、
+     data_scope、records_file、demo、data_derivation、upstream_license、四层
+     license_*）→ 任一字段变化都改变 batch/Genre digest（integrity 校验覆盖）；
+  2. `RegistryEntry` 绑定**全部** immutable 字段（含 display_name/retrieved_at/
+     dataset_version/data_scope/四层 license_*），`verify_descriptor` 逐字段
+     比对，任何不一致 fail-closed（registry 为信任锚）；
+  3. `source_registry.schema.json` v3 声明全字段。
+- **回归测试**：`test_registry_verify_descriptor_mismatch_fails_closed` 参数化
+  **15 个字段**逐一伪造 → 全部拒绝（unit）；digest 敏感性扩展（license 层与
+  derivation 变化改变 digest）。
+
+### G3-007-007（P1，新增）tracked machine schemas 与 runtime 契约不一致 — CLOSED
+- **证据**：candidate_batch schema v1（无 genre_id/source）vs runtime v2；
+  genre_source schema v3 vs 数据包/registry 声明 v1。
+- **修复**：
+  1. `candidate_batch.schema.json` **v2 完整**（schema_version enum ["2"]、
+     genre_id、source object 全字段、candidates 条件可选字段）；
+  2. `CuratedAlbumSource._batch_to_json` 序列化**先按 tracked schema 校验**
+     （cache/export 边界与发布 schema 不可能漂移）；`_record_to_json` 省略
+     None 可选字段使 JSON 满足 schema；
+  3. Genre 包/registry 的 schema_version 统一为 **"3"**（与 genre_source schema
+     一致）；album 包 schema_version="2" 与 album_source schema 一致。
+- **回归测试**：`tests/unit/test_schema_version_alignment.py`——candidate_batch
+  schema 版本 == BATCH_SCHEMA_VERSION、genre/album 包声明版本 == tracked schema
+  版本、registry 版本一致、序列化 round-trip 过 tracked schema（版本漂移即失败）。
+
+### G3-007-008（P1，新增）curation 工具占位 User-Agent — CLOSED
+- **证据**：`tools/curate_mbids.py` 硬编码 `mailto:omda-curation@example.invalid`
+  （.invalid 不可联系）。
+- **修复**：工具改为从 `OMDA_MUSICBRAINZ_USER_AGENT` 环境变量读取 owner 提供的
+  UA；`_validate_user_agent` 拒绝缺失、非可联系形状与占位标记（`.invalid`、
+  `example.com/.org/.net`、`@example.`、localhost）；`_fetch` 接受可注入 transport
+  （urllib 默认），UA 随请求头发送；仓库不再硬编码任何个人联系方式。
+- **回归测试**：`tests/unit/test_curate_tool.py`——缺失/占位/非法 UA 全拒、
+  owner 值通过、注入 fake transport 验证请求头携带 owner UA（**无网络**）。
+
+### G3-007-009（P2，新增）两个集成测试不安全 — CLOSED
+- **证据**：Genre tamper 测试原地修改 tracked genres.jsonl（finally 恢复）；
+  cache tamper 测试复用同一 adapter（`_batch_cache` 内存命中，从不读被篡改的
+  磁盘条目）。
+- **修复**：Genre tamper 改为 `shutil.copytree` 到 tmp_path 再篡改**副本**；
+  cache tamper 先写入/篡改磁盘缓存，再用**fresh adapter**（无内存缓存）走公开
+  source_batch 路径读取被篡改条目 → 验 digest 失败 → typed miss 重建。
+- **回归测试**：两个测试重写（见 checkpoint）。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **693 passed, 0 failed**（671→693，全部为新增/增强，无删除/弱化） |
+| `pytest -v`（G3_007_TEST_RESULTS.txt） | 693 passed |
+| `ruff check src tests tools browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| G4 层零改动（相对 0918742） | 0 文件 |
+| tracked 敏感文件 | 无 |
+| 未 merge / 未 tag / 未进入 G5 / 未写 ACCEPTED | 确认 |
+| live 网络依赖 | 无（curation 工具测试用注入 transport；工具本身需 owner 提供 UA） |
+
+## 残余风险（诚实披露）
+
+1. `tools/curate_mbids.py` 运行需 owner 设置 `OMDA_MUSICBRAINZ_USER_AGENT`；20 个
+   已提交 MBID 的 upstream 再验证属 G5 数据许可审计。
+2. `assemble_validated_source_set` 的 run.py 接线（§8.8 journal）仍属 G4。
+3. ODP-1（live MusicBrainz 路径）未定案未实现（§8.1 不变）。

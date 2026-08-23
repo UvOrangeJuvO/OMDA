@@ -311,6 +311,14 @@ class CuratedAlbumSource:
         )
 
     def _batch_to_json(self, batch: CandidateBatch) -> dict[str, Any]:
+        """Serialize the batch envelope; validated against the tracked
+        ``candidate_batch`` v2 schema (G3-007-007) so the published schema and
+        the runtime serialized boundary can never drift apart."""
+        payload = self._batch_to_json_raw(batch)
+        _validate_record("candidate_batch", payload, "<candidate_batch>")
+        return payload
+
+    def _batch_to_json_raw(self, batch: CandidateBatch) -> dict[str, Any]:
         return {
             "schema_version": batch.schema_version,
             "query_policy_version": batch.query_policy_version,
@@ -335,19 +343,7 @@ class CuratedAlbumSource:
                 "license_derived_package": batch.source.license_derived_package,
             },
             "digest": batch.digest,
-            "candidates": [
-                {
-                    "album_id": record.album_id,
-                    "genre_id": record.genre_id,
-                    "title": record.title,
-                    "artist": record.artist,
-                    "year": record.year,
-                    "mbid": record.mbid,
-                    "release_type": record.release_type,
-                    "score": record.score,
-                }
-                for record in batch.candidates
-            ],
+            "candidates": [_record_to_json(record) for record in batch.candidates],
         }
 
     def _batch_from_json(self, payload: dict) -> CandidateBatch | None:
@@ -377,6 +373,26 @@ class CuratedAlbumSource:
             return batch
         except (KeyError, TypeError, ValueError):
             return None  # malformed cache entry: treat as a miss, never trust it
+
+
+def _record_to_json(record: AlbumCandidateRecord) -> dict[str, Any]:
+    """One candidate as JSON: None-valued optional fields are omitted so the
+    serialized boundary validates against the tracked ``candidate_batch`` v2
+    schema (year/mbid/score are optional)."""
+    row: dict[str, Any] = {
+        "album_id": record.album_id,
+        "genre_id": record.genre_id,
+        "title": record.title,
+        "artist": record.artist,
+        "release_type": record.release_type,
+    }
+    if record.year is not None:
+        row["year"] = record.year
+    if record.mbid:
+        row["mbid"] = record.mbid
+    if record.score is not None:
+        row["score"] = record.score
+    return row
 
 
 def _identity_for(record: AlbumCandidateRecord) -> AlbumIdentity | None:

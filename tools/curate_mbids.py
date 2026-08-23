@@ -14,15 +14,28 @@ Usage: python tools/curate_mbids.py  -> prints JSON {album_id: {...}}
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
 import urllib.parse
 import urllib.request
 
-USER_AGENT = "OMDA-curation/0.1 (mailto:omda-curation@example.invalid)"
 API = "https://musicbrainz.org/ws/2/release-group"
 PACING = 1.1  # seconds between queries (>= 1 req/s guidance)
+UA_ENV = "OMDA_MUSICBRAINZ_USER_AGENT"
+
+# G3-007-008: placeholder contacts can never be used — the tool refuses to run
+# with a missing or non-contactable User-Agent; no personal contact is
+# hardcoded in the repository.
+_PLACEHOLDER_MARKERS = (
+    ".invalid",
+    "example.com",
+    "example.org",
+    "example.net",
+    "@example.",
+    "localhost",
+)
 
 # (album_id, title, artist, year, genre_id)
 ALBUMS = [
@@ -62,7 +75,36 @@ def _norm(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def _fetch(title: str, artist: str) -> dict:
+def _validate_user_agent(value: str | None) -> str:
+    """Require an owner-supplied, contactable, non-placeholder User-Agent.
+
+    G3-007-008: rejects missing values, non-contactable shapes and placeholder
+    markers (including ``.invalid``); no personal contact is hardcoded here.
+    """
+    from omda.adapters.musicbrainz import _is_contactable_user_agent
+
+    if not value or not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"a contactable User-Agent is required: set {UA_ENV} "
+            "to 'Application/version (contact URL or email)'"
+        )
+    value = value.strip()
+    if not _is_contactable_user_agent(value):
+        raise ValueError(
+            f"user agent must match 'Application/version (contact URL or email)', "
+            f"got {value!r}"
+        )
+    lowered = value.lower()
+    if any(marker in lowered for marker in _PLACEHOLDER_MARKERS):
+        raise ValueError(
+            f"user agent contact must be a real maintainer contact; placeholder "
+            f"markers are not allowed: {value!r}"
+        )
+    return value
+
+
+def _fetch(title: str, artist: str, user_agent: str, transport=None) -> dict:
+    """Perform one bounded query; ``transport`` is injectable for tests."""
     query = urllib.parse.urlencode(
         {
             "query": f'release:"{title}" AND artist:"{artist}"',
@@ -71,11 +113,12 @@ def _fetch(title: str, artist: str) -> dict:
         }
     )
     url = f"{API}?{query}"
+    opener = transport or urllib.request.urlopen
     last_error: Exception | None = None
     for attempt in range(4):  # transient 503/429/network retries with backoff
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(request, timeout=30) as response:
+            request = urllib.request.Request(url, headers={"User-Agent": user_agent})
+            with opener(request, timeout=30) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             last_error = exc
@@ -108,9 +151,14 @@ def _match(item: dict, title: str, artist: str, year: int) -> dict | None:
 
 
 def main() -> int:
+    try:
+        user_agent = _validate_user_agent(os.environ.get(UA_ENV))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     results: dict[str, dict] = {}
     for album_id, title, artist, year, genre in ALBUMS:
-        data = _fetch(title, artist)
+        data = _fetch(title, artist, user_agent)
         items = data.get("release-groups", [])
         best = None
         for item in items:

@@ -75,9 +75,16 @@ class GenreSourceDescriptor(SourceDescriptor):
     ``content_digest`` is the SHA-256 over the reviewed manifest + Genre records
     (G3-007-003); the registry records the digest reviewed at install time, so a
     tampered Genre package fails closed at the source-set boundary.
+
+    ``eligible_genre_ids`` is the digest-bound set of eligible Genre IDs derived
+    from the reviewed records (G3-007-003 Re-review 1): source-set assembly
+    proves every selected Genre belongs to this reviewed content, so a caller-
+    supplied ID that is absent from the Genre package (e.g. a ``phantom`` ID)
+    can never cross the boundary.
     """
 
     content_digest: str = ""
+    eligible_genre_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -143,17 +150,29 @@ class ValidatedSourceSet:
 
 
 def _source_digest_fields(source: SourceDescriptor) -> str:
+    # G3-007-005: EVERY immutable delivery/governance field is part of the
+    # canonical digest — changing any license layer, retrieval time, data scope
+    # or records file changes the batch/Genre digest, so unreviewed statements
+    # cannot keep a valid reviewed identity.
     return _DIGEST_SEPARATOR.join(
         (
             source.source_id,
             source.kind,
+            source.display_name,
             source.license,
             source.origin_url,
+            source.retrieved_at,
             source.dataset_version,
             source.schema_version,
+            source.data_scope,
+            source.records_file,
             "demo" if source.demo else "production",
             source.data_derivation,
             source.upstream_license,
+            source.license_core_facts,
+            source.license_supplementary_used,
+            source.license_service_terms,
+            source.license_derived_package,
         )
     )
 
@@ -256,9 +275,21 @@ def assemble_validated_source_set(
             f"{required_candidates_per_genre!r}"
         )
     selected = set(selected_genre_ids)
+    eligible_union: set[str] = set()
     for descriptor in genre_descriptors:
         registry.verify_descriptor(descriptor)
         _verify_genre_digest(descriptor)
+        # G3-007-003: every selected Genre must belong to the REVIEWED Genre
+        # content (digest-bound eligible-ID set) — a caller-supplied ID absent
+        # from the Genre package is rejected, never silently accepted.
+        eligible_union.update(descriptor.eligible_genre_ids)
+    unknown = sorted(selected - eligible_union)
+    if unknown:
+        raise InvalidInputError(
+            f"selected genres {unknown} are not present in the reviewed Genre "
+            "packages (eligible_genre_ids); a selected ID must come from the "
+            "digest-bound Genre content"
+        )
     covered: dict[str, int] = {}
     seen_batch_genres: set[str] = set()
     for batch in batches:

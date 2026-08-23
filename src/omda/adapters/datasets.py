@@ -163,6 +163,18 @@ class GenreDatasetAdapter:
             license_service_terms=meta["license_service_terms"],
             license_derived_package=meta["license_derived_package"],
             content_digest=self._content_digest(),
+            eligible_genre_ids=self._eligible_genre_ids(),
+        )
+
+    def _eligible_genre_ids(self) -> tuple[str, ...]:
+        """Digest-bound eligible Genre IDs from the reviewed records (G3-007-003).
+
+        Only records whose validated ``eligible`` is true may be selected; the
+        set is derived from the same records the content digest covers, so a
+        selected ID that is absent here can never cross the source boundary.
+        """
+        return tuple(
+            sorted(record["genre_id"] for record in self._records() if record["eligible"])
         )
 
     def _content_digest(self) -> str:

@@ -37,13 +37,21 @@ class RegistryEntry:
 
     source_id: str
     kind: str  # "genre" | "album"
+    display_name: str
     origin_url: str
     license: str
+    retrieved_at: str
+    dataset_version: str
     schema_version: str
-    demo: bool
+    data_scope: str
     records_file: str
+    demo: bool
     data_derivation: str = "independently_curated"
     upstream_license: str = ""
+    license_core_facts: str = ""
+    license_supplementary_used: str = ""
+    license_service_terms: str = ""
+    license_derived_package: str = ""
     content_digest: str | None = None  # required for Genre packages
 
     @property
@@ -56,13 +64,21 @@ def _entry_from_record(record: dict) -> RegistryEntry:
         return RegistryEntry(
             source_id=record["source_id"],
             kind=record["kind"],
+            display_name=record["display_name"],
             origin_url=record["origin_url"],
             license=record["license"],
+            retrieved_at=record["retrieved_at"],
+            dataset_version=record["dataset_version"],
             schema_version=record["schema_version"],
-            demo=bool(record["demo"]),
+            data_scope=record["data_scope"],
             records_file=record["records_file"],
+            demo=bool(record["demo"]),
             data_derivation=record["data_derivation"],
             upstream_license=record["upstream_license"],
+            license_core_facts=record["license_core_facts"],
+            license_supplementary_used=record["license_supplementary_used"],
+            license_service_terms=record["license_service_terms"],
+            license_derived_package=record["license_derived_package"],
             content_digest=record.get("content_digest"),
         )
     except KeyError as exc:
@@ -131,13 +147,33 @@ class SourceRegistry:
         entry = self.get(descriptor.source_id, descriptor.kind)
         mismatches: list[str] = []
         checks = (
+            ("display_name", descriptor.display_name, entry.display_name),
             ("origin_url", descriptor.origin_url, entry.origin_url),
             ("license", descriptor.license, entry.license),
+            ("retrieved_at", descriptor.retrieved_at, entry.retrieved_at),
+            ("dataset_version", descriptor.dataset_version, entry.dataset_version),
             ("schema_version", descriptor.schema_version, entry.schema_version),
+            ("data_scope", descriptor.data_scope, entry.data_scope),
             ("records_file", descriptor.records_file, entry.records_file),
             ("demo", descriptor.demo, entry.demo),
             ("data_derivation", descriptor.data_derivation, entry.data_derivation),
             ("upstream_license", descriptor.upstream_license, entry.upstream_license),
+            ("license_core_facts", descriptor.license_core_facts, entry.license_core_facts),
+            (
+                "license_supplementary_used",
+                descriptor.license_supplementary_used,
+                entry.license_supplementary_used,
+            ),
+            (
+                "license_service_terms",
+                descriptor.license_service_terms,
+                entry.license_service_terms,
+            ),
+            (
+                "license_derived_package",
+                descriptor.license_derived_package,
+                entry.license_derived_package,
+            ),
         )
         for field, actual, expected in checks:
             if actual != expected:

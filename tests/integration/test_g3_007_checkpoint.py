@@ -145,36 +145,34 @@ def test_deterministic_3x3_selection_with_permanent_exclusion_and_shortage() -> 
 def test_demo_genre_with_production_albums_yields_demo_source_set() -> None:
     # G3-007-003: a registered demo Genre + production Albums must yield
     # is_demo=True (the production-facing source-set result, not the raw flag).
+    # Registry entries are derived from the REAL package descriptors so every
+    # immutable field matches (G3-007-005).
     demo_genre = GenreDatasetAdapter(RYM_SAMPLE).descriptor()
     assert demo_genre.demo is True
-    demo_registry = SourceRegistry(
-        {
-            "rym-sample:genre": RegistryEntry(
-                source_id="rym-sample", kind="genre",
-                origin_url="https://rateyourmusic.com/genres/",
-                license="CC0-1.0 (sample records only; see data/genres/README.md)",
-                schema_version="1", demo=True, records_file="genres.jsonl",
-                data_derivation="derived_from_upstream",
-                upstream_license=(
-                    "RateYourMusic genre taxonomy (illustrative subset); see "
-                    "data/genres/README.md"
-                ),
-                content_digest="7c2450ae543c4efd91000a9b929848f9cdcfe0d458a6347bf5f8dc4da7f8a7e7",
-            ),
-            "curated-omda:album": RegistryEntry(
-                source_id="curated-omda", kind="album",
-                origin_url="https://musicbrainz.org/ws/2/release-group",
-                license="CC0-1.0 (independently curated factual metadata only)",
-                schema_version="2", demo=False, records_file="albums.jsonl",
-                data_derivation="independently_curated",
-                upstream_license=(
-                    "MusicBrainz database core facts are CC0-1.0; the official "
-                    "search API index/tags are CC BY-NC-SA 3.0 supplementary "
-                    "and are NOT incorporated"
-                ),
-            ),
-        }
+    base = {
+        e.key: e for e in SourceRegistry.load(REGISTRY).entries()
+    }  # curated-omda genre + album (reviewed)
+    base["rym-sample:genre"] = RegistryEntry(
+        source_id=demo_genre.source_id,
+        kind="genre",
+        display_name=demo_genre.display_name,
+        origin_url=demo_genre.origin_url,
+        license=demo_genre.license,
+        retrieved_at=demo_genre.retrieved_at,
+        dataset_version=demo_genre.dataset_version,
+        schema_version=demo_genre.schema_version,
+        data_scope=demo_genre.data_scope,
+        demo=demo_genre.demo,
+        records_file=demo_genre.records_file,
+        data_derivation=demo_genre.data_derivation,
+        upstream_license=demo_genre.upstream_license,
+        license_core_facts=demo_genre.license_core_facts,
+        license_supplementary_used=demo_genre.license_supplementary_used,
+        license_service_terms=demo_genre.license_service_terms,
+        license_derived_package=demo_genre.license_derived_package,
+        content_digest=demo_genre.content_digest,
     )
+    demo_registry = SourceRegistry(base)
     ambient = _g("ambient")
     result = assemble_validated_source_set(
         demo_registry,
@@ -189,37 +187,39 @@ def test_demo_genre_with_production_albums_yields_demo_source_set() -> None:
 def test_tampered_genre_data_fails_closed_via_content_digest(tmp_path: Path) -> None:
     # G3-007-003: editing a Genre record changes its content digest, which no
     # longer matches the reviewed registry -> assemble rejects.
-    tampered = GENRES / "genres.jsonl"
-    original = tampered.read_text(encoding="utf-8")
-    try:
-        lines = original.splitlines()
-        record = json.loads(lines[0])
-        record["name"] = "Ambient (tampered)"
-        lines[0] = json.dumps(record, ensure_ascii=False)
-        tampered.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        descriptor = GenreDatasetAdapter(GENRES).descriptor()
-        assert descriptor.content_digest != (
-            "d12d2876d8fad54ed9146b09f11751b1f9fce3b1afbc01f318c0df911c1b440c"
+    # G3-007-009: the tracked package is never modified — we copy it to a
+    # tmp_path fixture and tamper the COPY.
+    import shutil
+
+    copy = tmp_path / "curated-omda"  # directory name must equal source_id
+    shutil.copytree(GENRES, copy)
+    lines = (copy / "genres.jsonl").read_text(encoding="utf-8").splitlines()
+    record = json.loads(lines[0])
+    record["name"] = "Ambient (tampered)"
+    lines[0] = json.dumps(record, ensure_ascii=False)
+    (copy / "genres.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    descriptor = GenreDatasetAdapter(copy).descriptor()
+    assert descriptor.content_digest != (
+        "d12d2876d8fad54ed9146b09f11751b1f9fce3b1afbc01f318c0df911c1b440c"
+    )
+    with pytest.raises(InvalidInputError):
+        assemble_validated_source_set(
+            _registry(),
+            genre_descriptors=(descriptor,),
+            batches=(CuratedAlbumSource(ALBUMS).source_batch(_g("ambient")),),
+            selected_genre_ids=("ambient",),
         )
-        with pytest.raises(InvalidInputError):
-            assemble_validated_source_set(
-                _registry(),
-                genre_descriptors=(descriptor,),
-                batches=(CuratedAlbumSource(ALBUMS).source_batch(_g("ambient")),),
-                selected_genre_ids=("ambient",),
-            )
-    finally:
-        tampered.write_text(original, encoding="utf-8")
 
 
 def test_tampered_cache_is_a_typed_miss_on_public_port_path(tmp_path: Path) -> None:
     # G3-007-004: an invalid cached batch is never trusted — the public
     # source_batch path treats it as a miss and rebuilds from the package.
     cache = RuntimeCache(tmp_path / "cache")
-    album_source = CuratedAlbumSource(ALBUMS, cache=cache)
     ambient = _g("ambient")
-    first = album_source.source_batch(ambient)
-    # Corrupt the cached copy for this Genre.
+    first = CuratedAlbumSource(ALBUMS, cache=cache).source_batch(ambient)
+    # Corrupt the cached copy for this Genre ON DISK.
+    corrupted = False
     for payload in cache.root.glob("*.json"):
         data = json.loads(payload.read_text(encoding="utf-8"))
         if not isinstance(data, dict):  # manifest is a list, not a payload
@@ -227,7 +227,13 @@ def test_tampered_cache_is_a_typed_miss_on_public_port_path(tmp_path: Path) -> N
         if data.get("value", {}).get("genre_id") == "ambient":
             data["value"]["digest"] = "f" * 64
             payload.write_text(json.dumps(data), encoding="utf-8")
-    rebuilt = album_source.source_batch(ambient)
+            corrupted = True
+    assert corrupted
+    # G3-007-009: use a FRESH adapter over the SAME runtime cache — it has no
+    # in-memory _batch_cache, so it must read the tampered disk entry, detect
+    # the invalid digest, treat it as a typed miss and rebuild from the package.
+    fresh = CuratedAlbumSource(ALBUMS, cache=cache)
+    rebuilt = fresh.source_batch(ambient)
     assert rebuilt.digest == first.digest  # correct data, not the tampered copy
     verify_batch_integrity(rebuilt)
 

@@ -8,7 +8,7 @@ license: "CC0-1.0 (independently curated factual taxonomy only)"
 origin_url: "https://en.wikipedia.org/wiki/List_of_music_genres_and_styles"
 retrieved_at: "2026-08-22T00:00:00+00:00"
 dataset_version: "2026-08-22"
-schema_version: "1"
+schema_version: "3"
 data_scope: "5 reviewed, non-demo genre records sufficient for one 3x3 run"
 records_file: "genres.jsonl"
 demo: false

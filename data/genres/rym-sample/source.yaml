@@ -7,7 +7,7 @@ license: "CC0-1.0 (sample records only; see data/genres/README.md)"
 origin_url: "https://rateyourmusic.com/genres/"
 retrieved_at: "2026-08-20T00:00:00+00:00"
 dataset_version: "2026-08-20"
-schema_version: "1"
+schema_version: "3"
 data_scope: "4 illustrative genre records; not a full RYM mirror; demo only"
 records_file: "genres.jsonl"
 demo: true

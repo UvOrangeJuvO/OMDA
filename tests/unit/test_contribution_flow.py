@@ -85,10 +85,18 @@ def _registry() -> SourceRegistry:
         {
             "curated-omda:album": RegistryEntry(
                 source_id="curated-omda", kind="album",
+                display_name=ALBUM_META["display_name"],
                 origin_url=ALBUM_META["origin_url"], license=ALBUM_META["license"],
-                schema_version="2", demo=False, records_file="albums.jsonl",
+                retrieved_at=ALBUM_META["retrieved_at"],
+                dataset_version=ALBUM_META["dataset_version"],
+                schema_version="2", data_scope=ALBUM_META["data_scope"],
+                demo=False, records_file="albums.jsonl",
                 data_derivation="independently_curated",
                 upstream_license="none incorporated",
+                license_core_facts=ALBUM_META["license_core_facts"],
+                license_supplementary_used=ALBUM_META["license_supplementary_used"],
+                license_service_terms=ALBUM_META["license_service_terms"],
+                license_derived_package=ALBUM_META["license_derived_package"],
             )
         }
     )
