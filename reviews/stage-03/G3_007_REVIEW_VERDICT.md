@@ -668,3 +668,78 @@ Candidate `60c81787ca53afa42aa086ba6408b05c1ffafe72` is not accepted. G3-007 rem
 open; do not merge and do not begin G4. The remaining P1 and P2 are focused implementation/test
 corrections within accepted ADR-0002; another ADR is not required. Return a new full candidate
 after repair and full regression evidence.
+
+---
+
+## Re-review 4 — candidate `960712ed4ee7b2890328f90c9ac4cc97a4f6fd35`
+
+### Reviewed object
+
+- Re-review date: 2026-08-24
+- Exact original base SHA: `68e3d453c7b803d2090cb1318f48e58eb18d6390`
+- Previous candidate: `60c81787ca53afa42aa086ba6408b05c1ffafe72`
+- Previous Reviewer commit: `bbda5039e451e86cccc29eadd507cf6b0a141022`
+- Exact accepted candidate SHA: `960712ed4ee7b2890328f90c9ac4cc97a4f6fd35`
+- Focused repair commit: `960712e`
+- Executor repair report: `reviews/stage-03/G3_007_REPAIR_REPORT.md`
+
+The exact SHA, direct parent, ancestry and original merge-base are correct. The candidate is one
+focused G3-007 repair commit after the previous Reviewer commit, the worktree was clean at review
+start, and no incremental G4 implementation was introduced.
+
+### Final finding closure
+
+The last open P1 and P2 are closed:
+
+- **G3-007-007 CLOSED:** `QUERY_POLICY_VERSION = "1"` is now an explicit runtime constant,
+  CandidateBatch's tracked schema permits only that value, batch construction uses the constant,
+  and domain integrity rejects every other policy before registry/assembly acceptance.
+  Independent reproduction using a self-digested policy `999` batch produced:
+  `verify=REJECTED`, public cache path rebuilt under policy `1`, and final assembly `REJECTED`.
+- **G3-007-012 CLOSED:** cache tests now write the raw CandidateBatch payload rather than a
+  double-wrapped value and assert exact storage retrieval. `RuntimeCache.get()` and
+  `_batch_from_json()` explicitly treat non-mapping top-level and inner JSON values as misses.
+  Independent array, number, null and string probes all recovered without an untyped exception.
+
+All G3-007-001 through G3-007-012 findings are now **CLOSED**. There are no open P0, P1, P2 or
+P3 findings against this exact candidate.
+
+### Final G3-007 acceptance matrix
+
+| Criterion | Result |
+|---|---|
+| Focused G3 source/data repair; no incremental G4 work | **PASS** |
+| Real Genre-bound Album batches and canonical release-group MBIDs | **PASS** |
+| Genre membership/content/demo provenance bound to reviewed registry | **PASS** |
+| Provider-neutral, versioned CandidateBatch source boundary | **PASS** |
+| Immutable license/provenance fields registry- and digest-bound | **PASS** |
+| Machine schemas align with runtime and apply on read/write paths | **PASS** |
+| Schema and query-policy versions explicitly supported and enforced | **PASS** |
+| Canonical fact digests unambiguous for allowed text values | **PASS** |
+| CandidateBatch restricted to reviewed Album sources | **PASS** |
+| Runtime cache bounded, collision-resistant and robust to arbitrary JSON shapes | **PASS** |
+| Curation User-Agent owner-supplied and placeholder-safe | **PASS** |
+| Open findings | **NONE** |
+
+### Independent checks and limitations
+
+- Verified exact SHA, direct parent, branch, ancestry, original merge-base, focused increment,
+  clean starting worktree and full-range `git diff --check`.
+- Ran the complete suite from an isolated archive initialized as a temporary Git repository:
+  **710 passed in 4.36 seconds**.
+- Ruff over `src`, `tests`, `tools` and `browser_companion`: **all checks passed**.
+- Independently exercised policy `999` at domain verification, public cache and final assembly;
+  all three fail closed or rebuild under policy `1` as specified.
+- Independently exercised top-level and inner array/number/null/string cache shapes; all were
+  safe misses without crashes.
+- No live network request, production-code/data edit by Reviewer, merge, tag, push or G4 work
+  was performed.
+
+### Re-review 4 verdict
+
+**ACCEPTED**
+
+This acceptance applies only to exact candidate
+`960712ed4ee7b2890328f90c9ac4cc97a4f6fd35`. G3-007 is now eligible for the separate controlled
+merge/resume procedure. This verdict does not itself merge the branch, tag a release, or begin
+G4; those actions require the Owner's next explicit instruction.
