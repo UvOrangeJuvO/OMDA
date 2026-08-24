@@ -73,8 +73,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--token-env",
-        default=DEFAULT_TOKEN_ENV,
-        help="environment variable that holds the PushPlus token (never logged)",
+        default=None,
+        help=(
+            "environment variable that holds the PushPlus token (never logged); "
+            "when OMITTED the config delivery.pushplus_token_env is used, when "
+            "explicitly given it overrides the config (G4-007C)"
+        ),
     )
     parser.add_argument("--run-id", default=None, help="optional run id (default: generated)")
     return parser.parse_args(argv)
@@ -166,7 +170,7 @@ def _main(mode: DeliveryMode, args: argparse.Namespace) -> int:
     if mode is DeliveryMode.DELIVER:
         from omda.config import load_config
         from omda.orchestrator.run import COMPLETE
-        from omda.production import build_production_engine
+        from omda.production import build_curated_sources, build_production_engine
         from omda.storage import SqliteHistory
 
         config = load_config(args.config)
@@ -175,9 +179,20 @@ def _main(mode: DeliveryMode, args: argparse.Namespace) -> int:
                 "--deliver requires delivery.channel == 'pushplus' in config "
                 "(pass --config with a pushplus channel; see data/schemas/config.schema.json)"
             )
-        genre_source = _sample_genre_source(args)
-        genres = genre_source.list_eligible_genres()
-        album_source = _sample_album_source(genres)
+        # G4-007B / ADR-0002 D1/D6: the external route ONLY accepts the
+        # reviewed NON-DEMO curated source set + registry. A missing/mismatched
+        # package, sample/demo data or forged provenance fails closed here
+        # (and again at the runtime ValidatedSourceSet boundary) — fake Albums
+        # are NEVER pushed or committed as official history.
+        genre_source, album_source, registry = build_curated_sources()
+        # G4-007C: distinguish "CLI option omitted" (use the config value) from
+        # an explicit override; missing in both -> the delivery fails with a
+        # clear token-missing error before any network call.
+        token_env = (
+            args.token_env
+            if args.token_env is not None
+            else config.delivery.pushplus_token_env
+        )
         run_id = args.run_id or _new_run_id("run")
         history = SqliteHistory(args.history)
         try:
@@ -186,9 +201,9 @@ def _main(mode: DeliveryMode, args: argparse.Namespace) -> int:
                 history=history,
                 genre_source=genre_source,
                 album_source=album_source,
-                llm_transport=_LocalEchoTransport(),
                 transport=_pushplus_transport(),
-                token_env=args.token_env or config.delivery.pushplus_token_env,
+                token_env=token_env,
+                source_registry=registry,
                 seed=run_id,
             )
             outcome = engine.run(run_id)
@@ -197,20 +212,21 @@ def _main(mode: DeliveryMode, args: argparse.Namespace) -> int:
         print(f"deliver {run_id}: {outcome.state}")
         return 0 if outcome.state == COMPLETE else 1
 
-    # DRY-RUN (default safety gate): local preview, zero external calls.
-    from omda.adapters.llm import LLMAdapter
-
+    # DRY-RUN (default safety gate): local preview, zero external calls, no
+    # token resolution, isolated history. ADR-0002 D6: dry-run MAY use sample
+    # Genre/Album data — it is local and history-neutral.
     genre_source = _sample_genre_source(args)
     genres = genre_source.list_eligible_genres()
     album_source = _sample_album_source(genres)
     run_id = args.run_id or _new_run_id("dry")
-    llm = LLMAdapter(transport=_LocalEchoTransport())
+    # v0.1 deterministic runtime: no external LLM is called; the dry-run llm
+    # slot is unused (kept for the Port shape).
     outcome = run_dry_run(
         run_id=run_id,
         output_dir=args.output_dir,
         genre_source=genre_source,
         album_source=album_source,
-        llm=llm,
+        llm=None,
         seed=run_id,
     )
     target = outcome.receipt.target if outcome.receipt is not None else str(
@@ -253,14 +269,10 @@ def _sample_genre_source(args) -> object:
     return GenreDatasetAdapter(str(DEFAULT_DATA_DIR / "genres" / "rym-sample"))
 
 
-class _LocalEchoTransport:
-    """Local echo transport for the sample dry-run (no network, no SDK)."""
-
-    def complete(self, system: str, user: str) -> str:
-        return "A concise local explanation of the selected picks."
-
-
 def _sample_album_source(genres):
+    # G4-007B: sample albums are ONLY for the local, history-neutral dry-run
+    # (ADR-0002 D6); the external --deliver route uses the reviewed curated
+    # source set and REJECTS this illustrative data.
     from omda.ports.domain import AlbumCandidate
 
     class SampleAlbums:

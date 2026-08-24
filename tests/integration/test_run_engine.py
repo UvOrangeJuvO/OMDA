@@ -162,22 +162,32 @@ def test_fetch_failure_does_not_pollute_history(factory) -> None:
 
 
 @pytest.mark.parametrize("factory", HISTORY_FACTORIES)
-def test_generation_failure_does_not_pollute_history(factory) -> None:
+def test_deterministic_runtime_never_invokes_llm(factory) -> None:
+    # ADR-0002 D8 / AC-8: v0.1 is a DETERMINISTIC (no-LLM) runtime. Even an
+    # injected LLM that would fail on invocation is NEVER called — the run
+    # completes with the deterministic fact report and official history
+    # advances normally. (Provider-mode failure semantics live in
+    # LLMAdapter/GenerationFailureError; the v0.1 engine has no LLM slot.)
     history = factory()
     outcome = _engine(history, llm=FailingLLM()).run("run-1")
-    assert outcome.state == FAILED
-    _assert_history_untouched(history, "run-1")
+    assert outcome.state == COMPLETE
+    assert history.latest_pick_index() == 3
+    # No "narrative" was archived — only the typed deterministic marker.
+    generated = [
+        e for e in history.journal_after("run-1", 0) if e.transition == "GENERATED"
+    ]
+    assert generated and generated[-1].detail == {"narrative_mode": "deterministic"}
 
 
 @pytest.mark.parametrize("factory", HISTORY_FACTORIES)
-def test_llm_provider_failure_does_not_pollute_history(factory) -> None:
-    # G4-005: a FAILED LLM generation is a hard failure; nothing is delivered
-    # and official history stays untouched. (An empty narrative string is no
-    # longer a failure — it is never part of the delivered payload.)
+def test_deterministic_runtime_ignores_provider_breakage(factory) -> None:
+    # Same contract for a provider that would "explode": v0.1 never constructs
+    # or invokes an external LLM transport (ADR-0002 §8-10), so the run is
+    # unaffected and history is committed once.
     history = factory()
     outcome = _engine(history, llm=ExplodingLLM()).run("run-1")
-    assert outcome.state == FAILED
-    _assert_history_untouched(history, "run-1")
+    assert outcome.state == COMPLETE
+    assert history.latest_pick_index() == 3
 
 
 @pytest.mark.parametrize("factory", HISTORY_FACTORIES)
@@ -493,8 +503,12 @@ def test_historical_latest_pick_from_absent_genre_advances_global_index() -> Non
 
 @pytest.mark.parametrize("factory", HISTORY_FACTORIES)
 def test_failed_run_consumes_no_pick_indices(factory) -> None:
+    # A failed delivery run must not consume any pick indices or album history
+    # (G1-001: official history only after validated delivery). The failure is
+    # injected at the DELIVERY boundary — the v0.1 engine has no LLM slot
+    # (ADR-0002 D8), so the LLM is not a valid failure injection point.
     history = factory()
-    engine = _engine(history, llm=FailingLLM())
+    engine = _engine(history, delivery=FailingDelivery())
     outcome = engine.run("run-1")
     assert outcome.state == FAILED
     assert history.latest_pick_index() == 0  # nothing consumed

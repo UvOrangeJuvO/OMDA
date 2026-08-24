@@ -109,27 +109,35 @@ def test_production_run_never_commits_history_for_invalid_payload() -> None:
         assert outcome.payload.startswith("# 每日音乐发现")
 
 
-# --- G4-008 re-review 3: the LLM narrative is archived (bounded), not discarded --
+# --- G4-008 + ADR-0002 D8: the narrative slot is a typed deterministic marker -
 
 
-def test_generated_narrative_is_archived_bounded_in_journal() -> None:
-    # The LLM output is invoked once and its result is PERSISTED (bounded)
-    # into the GENERATED journal entry — it is never discarded (G4-008), and
-    # it is still never part of the delivered payload.
-
+def test_generated_deterministic_marker_is_archived() -> None:
+    # ADR-0002 D8 / AC-8: v0.1 is a deterministic/no-LLM runtime — no external
+    # LLM is invoked, so no narrative sentence is EVER archived (the previous
+    # G4-008 "archive the LLM text" contract is superseded by D8). The
+    # GENERATED journal stores a TYPED deterministic marker, and the delivered
+    # payload is the deterministic fact report (no free-text slot).
     engine, history, delivery = _run_with_llm_text("Some archival explanation.")
     outcome = engine.run("run-1")
     assert outcome.state == COMPLETE
-    generated = next(e for e in history.journal_after("run-1", 0) if e.transition == "GENERATED")
+    generated = next(
+        e for e in history.journal_after("run-1", 0) if e.transition == "GENERATED"
+    )
     assert generated.detail is not None
-    assert generated.detail["narrative"] == "Some archival explanation."
+    assert generated.detail == {"narrative_mode": "deterministic"}
+    assert "narrative" not in generated.detail  # never a fabricated sentence
     # The delivered payload has no free-text slot (mechanical contract).
     assert "Some archival explanation" not in outcome.payload
 
 
-def test_generated_narrative_is_truncated_to_bounded_length() -> None:
+def test_generated_deterministic_marker_never_stores_fake_narrative() -> None:
+    # Even a huge injected "narrative" is never archived in v0.1 — the marker
+    # stays bounded and typed (no fabricated sentence, no length blow-up).
     engine, history, delivery = _run_with_llm_text("x" * 10_000)
     outcome = engine.run("run-1")
     assert outcome.state == COMPLETE
-    generated = next(e for e in history.journal_after("run-1", 0) if e.transition == "GENERATED")
-    assert len(generated.detail["narrative"]) <= 1500
+    generated = next(
+        e for e in history.journal_after("run-1", 0) if e.transition == "GENERATED"
+    )
+    assert generated.detail == {"narrative_mode": "deterministic"}

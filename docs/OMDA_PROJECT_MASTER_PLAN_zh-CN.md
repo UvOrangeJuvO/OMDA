@@ -20,7 +20,9 @@ OMDA（Open Music Discovery Agent）每天提供一份可解释、有多样性�
 4. 为每个 Genre 获取候选 Album 并补全必要信息；
 5. 永久排除成功推荐过的 Album，也排除本次运行已经选中的 Album；
 6. 每个 Genre 选择 3 张 Album，数据允许时至少一张发行于 2010 年或以后；
-7. 让 LLM 根据已验证的数据生成介绍，不让 LLM 改变选择；
+7. v0.1 由确定性运行时生成结构化事实报告（ADR-0002 D8：narrative 仅存档
+   typed deterministic marker，不调用任何外部 LLM；未来 provider 模式需独立
+   implemented adapter、版本化配置与 Gate 接受，不在 v0.1 激活）；
 8. 验证 Markdown 输出并通过 PushPlus 或本地文件交付；
 9. 只有完整交付成功后才正式写 Genre cooldown 和 Album history；
 10. 失败时给出可恢复状态，不制造无声重复推送。
@@ -70,10 +72,16 @@ OMDA（Open Music Discovery Agent）每天提供一份可解释、有多样性�
 
 ### 3.6 LLM
 
+- v0.1 是 deterministic/no-LLM runtime（ADR-0002 D8）：config 只接受
+  `llm.mode=deterministic`，任何 provider 值在 config validation 阶段
+  fail-closed（任何 run/journal/network 副作用之前）；交付物 = 确定性事实
+  报告，narrative 存档为 typed deterministic marker，不保存任何伪造句子，
+  不构造本地 echo transport 冒充生产 Agent。
 - 确定性代码负责候选过滤、选择、去重、cooldown 和事务。
-- LLM 只基于提供的事实写解释与文案。
-- 外部网页和数据内的指令均是不可信数据，不可覆盖系统规则或触发工具。
-- LLM 输出必须经过结构、长度和引用事实验证。
+- 未来 provider 模式加入需独立 implemented adapter、schema/版本变更、
+  cost/secret 控制与 Gate acceptance；不在 v0.1 激活。
+- LLM（如未来启用）只基于提供的事实写解释与文案，输出必须经过结构、长度和
+  引用事实验证；外部网页和数据内的指令均是不可信数据。
 
 ### 3.7 Run 事务
 

@@ -186,14 +186,21 @@ def test_acceptance_5_same_key_different_digest_fails_closed_before_network() ->
                 channel="pushplus",
                 payload_digest=_digest("original"),
             )
-            snap = store.begin_delivery_operation(
-                run_id="run-1",
-                idempotency_key="run-1:pushplus",
-                channel="pushplus",
-                payload_digest=_digest("replayed-with-different-content"),
+            # G4-002C (ADR-0001 §15-5 / ADR-0002 AC-3): replaying the SAME key
+            # with a DIFFERENT payload digest fails closed in the storage
+            # transaction BEFORE any external call — the durable operation row
+            # is the authority and cannot be relabelled by the caller.
+            with pytest.raises(InvariantFailureError):
+                store.begin_delivery_operation(
+                    run_id="run-1",
+                    idempotency_key="run-1:pushplus",
+                    channel="pushplus",
+                    payload_digest=_digest("replayed-with-different-content"),
+                )
+            # The original binding is untouched.
+            assert store.find_delivery_operation("run-1:pushplus").payload_digest == (
+                _digest("original")
             )
-            assert snap.created is False
-            assert snap.operation.payload_digest == _digest("original")
         finally:
             store.close()
 
@@ -414,10 +421,23 @@ def test_acceptance_9_v1_rows_survive_v3_migration_and_receipt_attempt_binds() -
     with tempfile.TemporaryDirectory() as d:
         path = Path(d) / "runtime.db"
         conn = sqlite3.connect(path)
+        # A COMPLETE v1 physical layout (ADR-0002 D7 fingerprint contract):
+        # all four base tables exist, the receipt WITHOUT attempt_id.
         conn.execute(
             "CREATE TABLE run_journal ("
             "journal_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, "
             "transition TEXT NOT NULL, at TEXT NOT NULL, detail TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE genre_pick_history ("
+            "pick_index INTEGER PRIMARY KEY, run_id TEXT NOT NULL, "
+            "genre_id TEXT NOT NULL, committed_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE album_history ("
+            "album_id TEXT PRIMARY KEY, canonical_id TEXT, canonical_source TEXT, "
+            "identity_confidence TEXT NOT NULL, run_id TEXT NOT NULL, "
+            "recommended_at TEXT NOT NULL)"
         )
         conn.execute(
             "CREATE TABLE delivery_receipt ("

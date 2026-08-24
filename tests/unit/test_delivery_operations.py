@@ -45,8 +45,25 @@ def test_sqlite_migrates_to_v3_with_new_tables() -> None:
 def test_v1_database_migrates_and_preserves_rows() -> None:
     with tempfile.TemporaryDirectory() as d:
         path = Path(d) / "runtime.db"
-        # Build a v1 database with one receipt row and user_version=1.
+        # Build a COMPLETE v1 physical layout (ADR-0002 D7 fingerprint contract:
+        # four base tables, receipt WITHOUT attempt_id) with one receipt row.
         conn = sqlite3.connect(path)
+        conn.execute(
+            "CREATE TABLE run_journal ("
+            "journal_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, "
+            "transition TEXT NOT NULL, at TEXT NOT NULL, detail TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE genre_pick_history ("
+            "pick_index INTEGER PRIMARY KEY, run_id TEXT NOT NULL, "
+            "genre_id TEXT NOT NULL, committed_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE album_history ("
+            "album_id TEXT PRIMARY KEY, canonical_id TEXT, canonical_source TEXT, "
+            "identity_confidence TEXT NOT NULL, run_id TEXT NOT NULL, "
+            "recommended_at TEXT NOT NULL)"
+        )
         conn.execute(
             "CREATE TABLE delivery_receipt ("
             "idempotency_key TEXT PRIMARY KEY, run_id TEXT NOT NULL, "
@@ -66,6 +83,7 @@ def test_v1_database_migrates_and_preserves_rows() -> None:
             assert store.schema_version() == 3
             old = store.find_delivery_receipt("old:markdown")
             assert old is not None and old.status == "ok" and old.run_id == "old"
+            assert old.attempt_id is None  # pre-v3 rows keep null (no synthesis)
         finally:
             store.close()
 
@@ -237,22 +255,30 @@ def test_resolution_from_succeeded_fails_closed() -> None:
 
 
 def test_begin_requires_matching_digest_on_replay() -> None:
-    # The same key cannot be replayed with different content (ADR §7).
+    # G4-002C (ADR-0001 §15-5 / ADR-0002 AC-3): the same key cannot be replayed
+    # with different content — begin with a mismatched run/channel/digest
+    # binding FAILS CLOSED in the storage transaction, before any network call.
     with tempfile.TemporaryDirectory() as d:
         store = SqliteHistory(Path(d) / "runtime.db")
         try:
             _begin(store, key="run-1:pushplus")
-            # begin with a DIFFERENT digest returns existing (claim blocked);
-            # the caller must fail closed before network (tested at RunEngine
-            # level); here we assert the stored digest is authoritative.
-            snapshot = store.begin_delivery_operation(
+            with pytest.raises(InvariantFailureError):
+                store.begin_delivery_operation(
+                    run_id="run-1",
+                    idempotency_key="run-1:pushplus",
+                    channel="pushplus",
+                    payload_digest=_digest("different"),
+                )
+            # The stored binding is authoritative and untouched.
+            assert store.find_delivery_operation("run-1:pushplus").payload_digest == _digest()
+            # A same-binding replay is still a no-op snapshot (created=False).
+            replay = store.begin_delivery_operation(
                 run_id="run-1",
                 idempotency_key="run-1:pushplus",
                 channel="pushplus",
-                payload_digest=_digest("different"),
+                payload_digest=_digest(),
             )
-            assert snapshot.created is False
-            assert snapshot.operation.payload_digest == _digest()
+            assert replay.created is False
         finally:
             store.close()
 

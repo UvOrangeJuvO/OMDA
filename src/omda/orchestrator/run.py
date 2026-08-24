@@ -62,6 +62,7 @@ from omda.ports.errors import (
     DomainError,
     GenerationFailureError,
     InsufficientCandidatesError,
+    InvalidInputError,
     InvariantFailureError,
     SourceUnavailableError,
     StateCommitFailureError,
@@ -70,6 +71,10 @@ from omda.ports.errors import (
 from omda.ports.genre import GenreSource
 from omda.ports.history import HistoryPort
 from omda.ports.llm import LLM
+from omda.ports.source import (
+    ValidatedSourceSet,
+    assemble_validated_source_set,
+)
 from omda.seed import make_rng
 
 MAX_PAYLOAD_LENGTH = 4000
@@ -271,6 +276,7 @@ class RunEngine:
         critic_rows: dict[str, list[CriticRatingRow]] | None = None,
         rating_weights: dict[str, float] | None = None,
         missing_policy: str = "skip",
+        source_registry: Any = None,
     ) -> None:
         self._config = config
         self._history = history
@@ -278,6 +284,14 @@ class RunEngine:
         self._album_source = album_source
         self._llm = llm
         self._delivery = delivery
+        # ADR-0002 §8-4: the reviewed source registry is the trust anchor. When
+        # wired (the PRODUCTION path), every run assembles and validates a
+        # ValidatedSourceSet AFTER fetch and BEFORE selection/delivery claim.
+        self._source_registry = source_registry
+        # ADR-0002 D8: v0.1 is a deterministic/no-LLM runtime — config only
+        # permits llm.mode == "deterministic" (provider fails closed in config
+        # validation); the engine therefore never calls an external LLM.
+        self._llm_mode = config.llm.mode if config.llm is not None else "deterministic"
         # G2-006/G2-008: the engine never holds a mutable long-lived RNG. The base
         # seed is explicit (caller argument takes precedence over Config.seed);
         # every run derives its own generator from durable provenance, so later
@@ -378,13 +392,63 @@ class RunEngine:
                 parents_by_genre=parents_by_genre,
             )
 
-            # FETCH: candidates per genre.
-            candidates_by_genre: dict[str, list[AlbumCandidate]] = {}
-            for genre in chosen:
-                candidates_by_genre[genre.genre_id] = self._album_source.candidates_for_genre(
-                    genre
-                )
-            self._append(run_id, FETCHED)
+            # FETCH: candidates per genre. On the PRODUCTION path (a reviewed
+            # source registry is wired) the trusted application boundary
+            # assembles and validates a ValidatedSourceSet AFTER fetch and
+            # BEFORE selection/delivery claim (ADR-0002 §8.4): every Genre
+            # descriptor and Album batch must match the reviewed registry, and
+            # the selected Genre IDs must belong to the digest-bound eligible
+            # set. The FETCHED journal records the source evidence (§8.8) so
+            # outbound facts and committed MBIDs trace to the same validated
+            # source set.
+            if self._source_registry is not None:
+                genre_descriptors = (self._genre_source.descriptor(),)
+                batches = tuple(self._album_source.source_batch(genre) for genre in chosen)
+                try:
+                    validated = assemble_validated_source_set(
+                        self._source_registry,
+                        genre_descriptors=genre_descriptors,
+                        batches=batches,
+                        selected_genre_ids=tuple(g.genre_id for g in chosen),
+                        required_candidates_per_genre=self._config.albums_per_genre,
+                    )
+                except InvalidInputError as exc:
+                    # G4-007B / ADR-0002 §8.4: sample/demo/missing/forged sources
+                    # fail closed BEFORE selection, delivery claim or any
+                    # history mutation — never substituted with unrelated data.
+                    self._append(
+                        run_id,
+                        FAILED,
+                        {
+                            "reason": "validated source set rejected",
+                            "message": str(exc),
+                        },
+                    )
+                    return RunOutcome(run_id=run_id, state=FAILED)
+                if validated.is_demo:
+                    # ADR-0002 D6/§8-2: a demo Genre or demo Album batch can
+                    # never reach external delivery — the production gate
+                    # rejects it here (the illustrative rym-sample package is
+                    # demo and must be refused on --deliver).
+                    self._append(
+                        run_id,
+                        FAILED,
+                        {
+                            "reason": "demo source set rejected for external delivery",
+                            "source_set_is_demo": True,
+                        },
+                    )
+                    return RunOutcome(run_id=run_id, state=FAILED)
+                self._append(run_id, FETCHED, _source_evidence(validated))
+                candidates_by_genre = _candidates_from_validated(validated)
+            else:
+                # Fixture path (no registry): the provider-neutral envelope is
+                # still used; selection data comes from the adapter as before.
+                candidates_by_genre = {
+                    genre.genre_id: self._album_source.candidates_for_genre(genre)
+                    for genre in chosen
+                }
+                self._append(run_id, FETCHED)
 
             # SELECT: deterministic Core selection (3x3), permanent exclusion +
             # within-run dedup + rating + year constraints.
@@ -405,7 +469,11 @@ class RunEngine:
 
             # DELIVER with stable idempotency key; persist receipt first.
             return self._deliver_and_commit(run_id, plan, payload)
-        except (SourceUnavailableError, InsufficientCandidatesError) as exc:
+        except (SourceUnavailableError, InsufficientCandidatesError, InvalidInputError) as exc:
+            # InvalidInputError covers source-side rejection on the production
+            # path (e.g. a Genre whose curated package has no batch) — it must
+            # surface as an explicit FAILED run, never an unclassified crash,
+            # and never a history mutation (G1-001).
             self._append(run_id, FAILED, {"reason": type(exc).__name__, "message": str(exc)})
             return RunOutcome(run_id=run_id, state=FAILED)
         except (GenerationFailureError, ValidationFailureError, DeliveryFailureError) as exc:
@@ -470,11 +538,23 @@ class RunEngine:
         )
 
     def _generate(self, plan: Plan) -> str:
-        # G4-001 + G4-005: the LLM only explains from the fact packet, and its
-        # free-text narrative is NEVER part of the delivered payload (there is
-        # no free-text slot, so an off-packet Album/Genre reference can never
-        # be delivered). G4-008: the narrative IS archived — bounded — in the
-        # GENERATED journal entry so the provider cost has a durable purpose.
+        # ADR-0002 D8 / §8-10 / AC-8: v0.1 is a DETERMINISTIC (no-LLM) runtime.
+        # No external LLM is ever called; the GENERATED journal records a TYPED
+        # deterministic marker (never a fabricated narrative sentence), and the
+        # delivered payload is the deterministic fact report (G4-005 mechanical
+        # contract: no free-text slot, so an off-packet Album/Genre reference
+        # can never be delivered). A future provider mode requires its own
+        # implemented adapter, versioned config and Gate acceptance — it is not
+        # part of v0.1.
+        if self._llm_mode == "deterministic":
+            self._append(
+                plan.run_id,
+                GENERATED,
+                {"narrative_mode": "deterministic"},
+            )
+            return render_markdown(self._report_data(plan))
+        # Unreachable in v0.1 (config fails closed on provider mode); retained
+        # only as the documented future-provider seam.
         packet = FactPacket(run_id=plan.run_id, plan=plan)
         try:
             narrative = self._llm.generate_narrative(
@@ -766,6 +846,84 @@ def _packet_dict(packet: FactPacket) -> dict[str, Any]:
             for a in packet.plan.albums
         ],
     }
+
+
+def _source_evidence(validated: ValidatedSourceSet) -> dict[str, Any]:
+    """ADR-0002 §8.8: journal the validated Genre/Album source evidence.
+
+    Records the source IDs, content/batch digests, schema/query-policy/package
+    versions and demo flags of the validated source set, so outbound facts and
+    committed MBIDs can be traced back to the SAME ValidatedSourceSet.
+    """
+    return {
+        "source_evidence": {
+            "genres": [
+                {
+                    "source_id": d.source_id,
+                    "content_digest": d.content_digest,
+                    "eligible_digest": d.eligible_digest,
+                    "schema_version": d.schema_version,
+                    "package_version": d.dataset_version,
+                    "demo": d.demo,
+                }
+                for d in validated.genre_descriptors
+            ],
+            "albums": [
+                {
+                    "source_id": b.source.source_id,
+                    "batch_digest": b.digest,
+                    "genre_id": b.genre_id,
+                    "schema_version": b.schema_version,
+                    "query_policy_version": b.query_policy_version,
+                    "package_version": b.source.dataset_version,
+                    "demo": b.source.demo,
+                }
+                for b in validated.batches
+            ],
+            "selected_genre_ids": sorted(b.genre_id for b in validated.batches),
+        }
+    }
+
+
+def _candidates_from_validated(
+    validated: ValidatedSourceSet,
+) -> dict[str, list[AlbumCandidate]]:
+    """Derive the SELECT input strictly from the VALIDATED source set.
+
+    The candidates come from the digest-bound batches that already passed
+    registry + content validation (ADR-0002 §8.4), so selection can never
+    consume unvalidated or substituted records on the production path.
+    """
+    by_genre: dict[str, list[AlbumCandidate]] = {}
+    for batch in validated.batches:
+        by_genre[batch.genre_id] = [
+            AlbumCandidate(
+                album_id=record.album_id,
+                title=record.title,
+                artist=record.artist,
+                year=record.year,
+                genres=(record.genre_id,),
+                identity=_identity_for_record(record),
+            )
+            for record in batch.candidates
+        ]
+    return by_genre
+
+
+def _identity_for_record(record) -> AlbumIdentity | None:
+    """Canonical release-group identity from a validated batch record (G3-007-002).
+
+    Mirrors ``CuratedAlbumSource`` identity semantics: a production record's
+    verified MusicBrainz MBID becomes the permanent-exclusion identity.
+    """
+    if not record.mbid:
+        return None
+    return AlbumIdentity(
+        album_id=record.album_id,
+        canonical_id=record.mbid,
+        canonical_source="musicbrainz",
+        identity_confidence="exact",
+    )
 
 
 __all__ = [

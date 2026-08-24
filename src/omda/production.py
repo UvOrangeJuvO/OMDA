@@ -6,16 +6,36 @@ This module provides:
 
 - ``PushPlusHttpTransport`` — a real HTTP(S) PushPlus client built on the
   standard library (no third-party SDK). It classifies every provider outcome
-  per ADR-0001 §9: documented success -> ``ProviderSuccess``; definitive
-  client rejection (HTTP 4xx) -> ``ProviderRejection`` (terminal); zero-bytes
-  proven failures (DNS / connection-refused before any write) ->
-  ``NoBytesSentError`` (the only retryable class); everything else (5xx,
-  timeout, connection reset, malformed body, lost response) ->
-  ``AmbiguousFailure`` (no retry).
+  per ADR-0001 §9 / §15-3 (G4-002A/G4-002E). The classification table below is
+  the EXACT contract the code and tests enforce — a stale document must never
+  instruct a future adapter to restore a rejected behavior:
+
+  | Observed outcome | Classification | Automatic action |
+  |---|---|---|
+  | documented success (HTTP 200 + business code 200) | ``ProviderSuccess`` | ok, no retry |
+  | zero request bytes proven (DNS/connect failure before any write) |
+    ``NoBytesSentError`` | the ONLY retryable class, bounded |
+  | HTTP 5xx, timeout, connection reset, malformed body, lost response |
+    ``AmbiguousFailure`` | ambiguous, NO retry |
+  | undocumented HTTP 4xx (no documented no-side-effect contract) |
+    ``AmbiguousFailure`` | ambiguous, NO retry |
+  | undocumented/unknown business code | ``AmbiguousFailure`` | ambiguous, NO retry |
+
+  NO HTTP 4xx class is treated as a definitive rejection: the current PushPlus
+  documentation proves no side effect only for its documented business code
+  200. Any non-200 status may have queued the push, so it is AMBIGUOUS.
 - ``build_production_engine`` — wires the REAL ``RunEngine`` with the
   repository data sources, an injectable LLM transport and the PushPlus
   delivery. Ordinary tests inject fake transports; the composition shape, token
   boundary and official-history ordering are exercised without any live call.
+  ADR-0002 D8: v0.1 is a DETERMINISTIC (no-LLM) runtime — the engine never
+  calls an external LLM (``llm_transport`` is accepted for test-shape
+  compatibility but is NOT invoked in v0.1; a future provider mode requires its
+  own implemented adapter and Gate acceptance).
+- ``build_curated_sources`` — assembles the v0.1 PRODUCTION source set: the
+  reviewed non-demo curated Genre/Album packages plus the reviewed
+  ``SourceRegistry`` trust anchor (ADR-0002 §8.4/§8.5, G3-007). The external
+  route MUST fail closed while only sample/demo data is available (G4-007B).
 
 No API key / token is ever committed: the PushPlus token is read at runtime
 from the environment variable named by ``DeliveryConfig.pushplus_token_env``.
@@ -132,10 +152,11 @@ def build_production_engine(
     history: Any,
     genre_source: Any,
     album_source: Any,
-    llm_transport: Any,
+    llm_transport: Any = None,
     transport: Any | None = None,
     token_env: str | None = None,
     seed: str | None = None,
+    source_registry: Any = None,
 ) -> RunEngine:
     """Compose the REAL production RunEngine for the ``--deliver`` path.
 
@@ -143,6 +164,15 @@ def build_production_engine(
     production default is ``PushPlusHttpTransport``. The PushPlus token is
     resolved at runtime from ``config.delivery.pushplus_token_env`` — never
     logged and never committed.
+
+    ``source_registry`` is the reviewed source registry trust anchor
+    (ADR-0002 §8.5); when supplied the engine assembles and validates a
+    ValidatedSourceSet after FETCH and before SELECT/delivery claim (§8.4).
+
+    v0.1 is DETERMINISTIC (ADR-0002 D8): ``llm_transport`` is accepted for
+    test-shape compatibility but is never invoked — no external LLM call
+    happens, and the config schema already rejects any provider mode before
+    any run/journal/network side effect.
     """
     if config.delivery is None or config.delivery.channel != "pushplus":
         raise DeliveryFailureError(
@@ -160,11 +190,49 @@ def build_production_engine(
         llm=LLMAdapter(transport=llm_transport),
         delivery=delivery,
         seed=seed,
+        source_registry=source_registry,
     )
+
+
+def build_curated_sources(
+    *,
+    genres_dir: Path | None = None,
+    albums_dir: Path | None = None,
+    registry_path: Path | None = None,
+) -> tuple[Any, Any, Any]:
+    """Assemble the v0.1 PRODUCTION curated source set (G4-007B, ADR-0002 D1/D6).
+
+    Returns ``(genre_source, album_source, registry)`` over the reviewed
+    NON-DEMO curated packages (``data/genres/curated-omda``,
+    ``data/albums/curated-omda``) and the reviewed
+    ``data/sources/registry.jsonl`` trust anchor (G3-007). A missing package or
+    registry fails closed — the external delivery route must never substitute
+    sample/demo data for the real curated source set.
+    """
+    from omda.adapters.curated import CuratedAlbumSource
+    from omda.adapters.datasets import GenreDatasetAdapter
+    from omda.sources.registry import SourceRegistry
+
+    data_dir = DEFAULT_DATA_DIR
+    genres = genres_dir or (data_dir / "genres" / "curated-omda")
+    albums = albums_dir or (data_dir / "albums" / "curated-omda")
+    registry_path = registry_path or (data_dir / "sources" / "registry.jsonl")
+    for label, path in (("genre package", genres), ("album package", albums)):
+        if not Path(path).exists():
+            raise DeliveryFailureError(
+                f"--deliver requires the reviewed curated {label} at {path!r}; "
+                "external delivery fails closed without a production source "
+                "(ADR-0002 D1/D6)"
+            )
+    genre_source = GenreDatasetAdapter(genres)
+    album_source = CuratedAlbumSource(albums)
+    registry = SourceRegistry.load(registry_path)
+    return genre_source, album_source, registry
 
 
 __all__ = [
     "DEFAULT_DATA_DIR",
     "PushPlusHttpTransport",
+    "build_curated_sources",
     "build_production_engine",
 ]

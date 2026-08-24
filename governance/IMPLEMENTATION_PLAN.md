@@ -348,20 +348,45 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 - Rollback：文本贡献可 revert。
 - Risks：贡献摩擦——错误信息定位到行。
 
+#### T3.6 G3-007 corrective checkpoint（ADR-0002 D4 授权）
+- Goal：交付 v0.1 默认生产 Album 候选来源——reviewed curated
+  Genre→release-group-MBID 数据包（非 demo、人工审核、许可/provenance 完整、
+  足以完成一次真实 3×3）。
+- Inputs：ADR-0002 D1/D2/D4/D6、§8；G4 Re-review 4 G4-007B。
+- 允许范围：`CuratedAlbumSource`、`CandidateBatch`/`GenreSourceDescriptor`
+  契约与校验、curated import/export 贡献流程、Git-ignored runtime cache、
+  `data/genres/curated-omda` + `data/albums/curated-omda` + registry 绑定、
+  对应 fixtures/许可/provenance 测试。
+- Deliverables：真实非 demo curated Genre + Album 包（5 Genre × 4 Album，
+  20 条 verified release-group MBID）；source registry 信任锚。
+- Acceptance：G3-007 独立 Reviewer checkpoint **ACCEPTED** 后才恢复 G4
+  production composition / PushPlus 接线（ADR-0002 §8-3）。
+- Dependencies：T3.1–T3.3。
+- Rollback：包与契约可 revert；不触碰 G4 层。
+- Risks：仅证明 fail-closed 不足以关闭 G4-007B——必须含真实 curated 3×3
+  端到端事实来源证据（ADR-0002 §8-11）。
+
 ### C.4 G4 Agent & Delivery（SPEC §10：受控生成、Markdown 校验、交付与恢复）
 
 **Milestone 目标**：LLM 只解释、输出必校验、交付幂等、恢复完备；先 dry-run，不自动推送。
 
-#### T4.1 LLM Provider Adapter 与受控 Prompt
-- Goal：vendor 隔离 + 有界事实包 + untrusted content 隔离。
-- Inputs：SPEC §3.5；MP §3.6。
-- 允许范围：`omda/adapters/llm.py`、Prompt 模板（仓库内）。
-- Deliverables：事实包构造；系统指令不可被外部文本覆盖；供应商 SDK 仅在此处。
-- Tests：prompt-injection 隔离（SPEC §7-13）。
-- Acceptance：LLM 输出不改变任何选择结果。
-- Dependencies：T1.4（Port 契约）、G2 全部。
-- Rollback：adapter 可替换。
-- Risks：R-008 注入——测试固化「外部文本只作数据」。
+#### T4.1 LLM Provider Adapter 与受控 Prompt（v0.1 = deterministic/no-LLM）
+- Goal：v0.1 正式定义为 deterministic/no-LLM runtime（ADR-0002 D8/§8-10）：
+  config `llm.mode` 只允许 `deterministic`，任何 provider 值在 config
+  validation 阶段 fail-closed（run/journal/network 副作用之前）；交付物 =
+  确定性事实报告；narrative 存档 = typed deterministic marker，**不保存任何
+  伪造句子、不构造本地 echo transport 冒充生产 Agent**。
+- Inputs：SPEC §3.5；MP §3.6；ADR-0002 D8。
+- 允许范围：`omda/adapters/llm.py`（LLMAdapter/bounded_packet 保留为未来
+  provider 模式的已实现契约与测试基础，v0.1 引擎不调用）；config schema。
+- Deliverables：`llm.mode=deterministic` 默认且唯一；provider 值 fail-closed。
+- Tests：deterministic 全链路零 LLM 调用 + GENERATED 存 marker（AC-8）；
+  config provider 拒绝；bounded_packet 既有测试保留。
+- Acceptance：v0.1 任何运行路径不调用外部 LLM；不存档伪 narrative。
+- Dependencies：T1.3（config）、T1.4（Port 契约）、G2 全部。
+- Rollback：adapter/config 可回退。
+- Risks：未来 provider 模式需独立 implemented adapter + schema/版本变更 +
+  cost/secret 控制 + Gate acceptance（ADR-0002 D8），不在 v0.1 激活。
 
 #### T4.2 Markdown 生成与校验
 - Goal：结构化、长度受限、引用事实验证。
@@ -398,14 +423,36 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 
 #### T4.5 dry-run 与人工批准门
 - Goal：默认 dry-run；自动推送需显式开关。
-- Inputs：OPH §14-8。
+- Inputs：OPH §14-8；ADR-0002 D6。
 - 允许范围：CLI 开关、输出目录约定。
 - Deliverables：`--dry-run` 默认路径；推送需 `--deliver` 或配置显式开启。
-- Tests：dry-run 不产生任何外部调用。
+- Tests：dry-run 不产生任何外部调用、不解析 token、隔离历史。
 - Acceptance：Owner 可先观察 7 次 dry-run 无历史污染。
-- Dependencies：T4.3。
+- Dependencies：T4.3、T4.6。
 - Rollback：无副作用路径。
 - Risks：误自动推送——默认关闭即为防护。
+
+#### T4.6 production-source composition 与 external-delivery gate（G4-007B/007C）
+- Goal：`--deliver` 只接受**已校验的非 demo curated source set**（G3-007
+  产物 + reviewed SourceRegistry 信任锚，ADR-0002 D1/D6/§8-4/§8-5）——
+  sample/demo/missing/contradictory/forged 来源全部 fail-closed，绝不把编造
+  Album 推送到外部或写入官方历史。
+- Inputs：ADR-0002 D6/§8-4/§8-8；G4 Re-review 4 G4-007B/G4-007C。
+- 允许范围：`omda/production.py`（composition/gate）、`omda/cli.py`
+  （--deliver 接线）、`omda/orchestrator/run.py`（FETCH 后 SELECT 前
+  ValidatedSourceSet 校验 + FETCH/SELECT journal 运行证据）。
+- Deliverables：`build_production_engine` 接入 `source_registry`；运行期
+  assemble_validated_source_set + demo gate；FETCHED journal 记录 Genre/Album
+  source_id/digest/schema/query-policy/package version（§8-8）；`--token-env`
+  区分"省略→config 值"与"显式覆盖"（G4-007C）。
+- Tests：AC-1（真实 curated 3×3 公共入口 + 事实/MBID 追溯同 batch）、AC-2
+  （sample/demo/missing/forged 拒绝：calls==0、历史零变更）、AC-5（token
+  三态）；G4-002E docstring 分类表与代码一致（AC-6）。
+- Acceptance：外部交付只可能来自真实 reviewed curated 来源；任何非真实来源
+  在 PushPlus 前与官方历史变更前失败。
+- Dependencies：T3.6（G3-007 已接受）、T4.3、T4.5。
+- Rollback：gate 在 composition 层，可回退配置。
+- Risks：仅 fail-closed 不算完成——必须含真实 3×3 端到端证据（§8-11）。
 
 ### C.5 G5 Release Audit（SPEC §10：E2E、安装、安全、许可、备份/回滚、RC）
 
@@ -528,7 +575,7 @@ PLAN → FETCH → SELECT → GENERATE → VALIDATE → DELIVER → COMMIT HISTO
 | ID | 待确认项 | 分类 | 决策机制 / 最近决策 Gate | 建议默认 |
 |---|---|---|---|---|
 | OD-1 | Python 版本基线 | (c) | G1 评审 | 3.12（pyproject 声明） |
-| OD-2 | LLM provider 具体选型与模型标识 | (c) | G4 评审（涉及外部账户/成本时 Owner 知晓） | DeepSeek API，Provider 可替换 |
+| OD-2 | LLM provider 具体选型与模型标识 | (c) | G4 评审；**ADR-0002 D8：v0.1 为 deterministic/no-LLM runtime，provider 模式未激活**——未来加入需独立 implemented adapter、版本化配置、cost/secret 控制与 Gate acceptance | v0.1 仅 `llm.mode=deterministic`（provider 值 config validation fail-closed）；候选 DeepSeek 留待未来 |
 | OD-3 | PushPlus token 注入方式 | (c) | G4 评审 | 环境变量 + `.env.example` |
 | OD-4 | canonical identity 默认来源 | (b) | G3 评审；若偏离 MP 建议（MusicBrainz）或改变身份契约则 ADR。许可风险见 R-006，外部网络/限流行为见 R-005 | MusicBrainz release-group |
 | OD-5 | 「每日」运行窗口与触发方式 | (a)+(c) | 窗口语义 → Owner；触发机制（本地 cron/手动）属 (c) G5 后 | UTC 日界可配置；先手动/dry-run |

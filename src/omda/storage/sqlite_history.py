@@ -188,6 +188,12 @@ class SqliteHistory:
             # on the same key; wait for the writer instead of failing instantly.
             conn.execute("PRAGMA busy_timeout = 5000")
             self._migrate(conn)
+        except SourceUnavailableError:
+            # G4-002D: a migration fail-closed (unknown/future fingerprint) must
+            # still release the connection before propagating.
+            if conn is not None:
+                conn.close()
+            raise
         except sqlite3.Error as exc:
             # Hygiene (G1-005): close a successfully-created connection when
             # migration later fails, then surface the domain error.
@@ -219,6 +225,37 @@ class SqliteHistory:
         conn.execute("BEGIN IMMEDIATE")
         try:
             current = conn.execute("PRAGMA user_version").fetchone()[0]
+            # ADR-0002 D7 / G4-002D: unknown FUTURE versions fail closed —
+            # a newer binary wrote this store; this binary must never guess.
+            if current > _SCHEMA_VERSION:
+                raise SourceUnavailableError(
+                    f"runtime store schema version {current} is newer than supported "
+                    f"{_SCHEMA_VERSION}; refusing to open (fail closed, no migration)"
+                )
+            # ADR-0002 D7 / ADR2-007: the version number alone is not a sufficient
+            # migration precondition — the CURRENT physical layout is checked
+            # BEFORE any write:
+            #   v1 layout: four base tables, receipt WITHOUT attempt_id
+            #   v2 layout: + delivery_operation/attempt/resolution
+            #   v3 layout: v2 + receipt.attempt_id column
+            # A stored version whose tables are missing is an UNKNOWN fingerprint
+            # (corrupt/foreign schema) and fails closed — never silently
+            # recreated as if it were a fresh database.
+            if current >= 1:
+                for table in (
+                    "run_journal",
+                    "genre_pick_history",
+                    "album_history",
+                    "delivery_receipt",
+                ):
+                    SqliteHistory._assert_table(conn, table, current, current)
+            if current >= 2:
+                for table in (
+                    "delivery_operation",
+                    "delivery_attempt",
+                    "delivery_resolution",
+                ):
+                    SqliteHistory._assert_table(conn, table, current, current)
             for version in range(current + 1, _SCHEMA_VERSION + 1):
                 statements = _MIGRATIONS[version]
                 for statement in statements:
@@ -233,10 +270,36 @@ class SqliteHistory:
                             continue
                     conn.execute(statement)
                 conn.execute(f"PRAGMA user_version = {version}")
+            if current == _SCHEMA_VERSION:
+                # v3 is the final layout: a v3 store WITHOUT the attempt_id column
+                # is an unknown fingerprint — fail closed instead of guessing.
+                cols = {
+                    row[1] for row in conn.execute("PRAGMA table_info(delivery_receipt)")
+                }
+                if "attempt_id" not in cols:
+                    raise SourceUnavailableError(
+                        f"runtime store user_version={current} lacks the v3 "
+                        "delivery_receipt.attempt_id column; unknown schema "
+                        "fingerprint (fail closed, no migration)"
+                    )
             conn.commit()
         except BaseException:
             conn.rollback()
             raise
+
+    @staticmethod
+    def _assert_table(
+        conn: sqlite3.Connection, table: str, user_version: int, target_version: int
+    ) -> None:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+        ).fetchone()
+        if row is None:
+            raise SourceUnavailableError(
+                f"runtime store user_version={user_version} cannot migrate to v"
+                f"{target_version}: required table {table!r} is missing "
+                "(unknown schema fingerprint; fail closed, no migration)"
+            )
 
     # -- run journal -----------------------------------------------------------
 
@@ -436,6 +499,45 @@ class SqliteHistory:
     def save_delivery_receipt(self, receipt: DeliveryReceipt) -> DeliveryReceipt:
         try:
             with self._conn as conn:
+                # G4-002C (ADR-0001 §15-5): a receipt carrying a non-null
+                # attempt_id MUST bind to the matching operation — operation
+                # key, run id, channel and attempt all refer to the same
+                # operation, verified in the same transaction BEFORE any write.
+                # Legacy v1 rows (attempt_id NULL) keep the narrow compatibility
+                # rule: no attempt association is asserted, they remain readable
+                # and immutable.
+                if receipt.attempt_id is not None:
+                    op = conn.execute(
+                        "SELECT run_id, channel FROM delivery_operation "
+                        "WHERE operation_key = ?",
+                        (receipt.idempotency_key,),
+                    ).fetchone()
+                    if op is None:
+                        raise InvariantFailureError(
+                            f"receipt attempt_id {receipt.attempt_id!r} references "
+                            f"no delivery operation {receipt.idempotency_key!r}"
+                        )
+                    if (
+                        op["run_id"] != receipt.run_id
+                        or op["channel"] != receipt.channel
+                    ):
+                        raise InvariantFailureError(
+                            f"receipt attempt_id {receipt.attempt_id!r} is bound to "
+                            f"operation {receipt.idempotency_key!r} "
+                            f"(run {op['run_id']!r}, channel {op['channel']!r}) but "
+                            f"the receipt declares ({receipt.run_id!r}, "
+                            f"{receipt.channel!r}) — mismatched binding (§15-5)"
+                        )
+                    bound = conn.execute(
+                        "SELECT 1 FROM delivery_attempt "
+                        "WHERE attempt_id = ? AND operation_key = ?",
+                        (receipt.attempt_id, receipt.idempotency_key),
+                    ).fetchone()
+                    if bound is None:
+                        raise InvariantFailureError(
+                            f"receipt attempt_id {receipt.attempt_id!r} does not "
+                            f"belong to operation {receipt.idempotency_key!r}"
+                        )
                 row = conn.execute(
                     "SELECT run_id, delivered_at, channel, status, target, attempt_id "
                     "FROM delivery_receipt WHERE idempotency_key = ?",
@@ -561,6 +663,29 @@ class SqliteHistory:
                     "FROM delivery_operation WHERE operation_key = ?",
                     (idempotency_key,),
                 ).fetchone()
+                if (
+                    not created
+                    and row is not None
+                    and (
+                        row["run_id"] != run_id
+                        or row["channel"] != channel
+                        or row["payload_digest"] != payload_digest
+                    )
+                ):
+                    # G4-002C (ADR-0001 §15-5): an existing operation row must
+                    # bind to the SAME run/channel/payload digest — a caller
+                    # replaying the key with different binding fields fails
+                    # closed HERE (before any external call), in the same
+                    # storage transaction. The operation row is the durable
+                    # authority; the caller cannot relabel it.
+                    raise InvariantFailureError(
+                        f"delivery operation {idempotency_key!r} already exists "
+                        f"bound to run/channel/digest "
+                        f"({row['run_id']!r}, {row['channel']!r}, "
+                        f"{row['payload_digest']!r}); caller supplied "
+                        f"({run_id!r}, {channel!r}, {payload_digest!r}) — "
+                        "mismatched binding fails closed (§15-5)"
+                    )
                 conn.commit()
             except BaseException:
                 conn.rollback()

@@ -244,3 +244,158 @@ ADR-0001 接受 commit：`1349a0fd53116335d372c89684d83f1d556b63ac`（Accepted A
 | G0-G3 verdict 未改（相对 base 0 行）；G2 Core 零改动 | 确认 |
 | 无 G5 scope；无 live LLM/PushPlus 依赖；无反爬绕过 | 确认 |
 | 未 merge / 未 tag / 未进入 G5 / 未写 ACCEPTED | 确认 |
+
+---
+
+# G4 Resume Repair（2026-08-24，G3-007 Accepted 后恢复；candidate 待 Reviewer 审）
+
+对应控制决策：`reviews/stage-04/G4_RESUME_REPORT.md`（G3-007 **ACCEPTED**，G4 从
+BLOCKED_ARCHITECTURE 恢复为 CHANGES_REQUESTED）
+G3-007 接受 commit：`28e652cd3ad979efefa4269aa26ded123015a434`（candidate `960712e`）
+本轮起点 commit：`7c38f356b5c8aec009d305c272f786a1908d0ac2`
+本轮范围：仅 G4 production composition / delivery / 迁移 / config / 文档；**未实施任何
+G5 功能**；未自行写 ACCEPTED；无需新 ADR（均在已接受 ADR-0001 §15 + ADR-0002 §8 内修复）。
+每项先加失败测试复现 Reviewer 反例、再做最小修复；未删除/弱化既有测试（受 ADR-0002
+D8 产品语义变更影响的 5 个 LLM 相关测试按新语义升级并披露）。
+
+## G4-007B（P1 架构）— 外部交付推送编造 Albums 并提交官方历史 — CLOSED
+
+- **根因**：`cli --deliver` 恒用 `_sample_album_source`（每 Genre 三条编造记录）→ 推送
+  `Sample Artist` 内容并把 `ambient-1` 等 ID 提交为永久官方历史；`build_production_engine`
+  无 source-set 校验。
+- **修复**：
+  1. `omda/production.py` 新增 **`build_curated_sources()`**——组装 v0.1 生产来源：
+     reviewed **非 demo** curated Genre/Album 包（`data/genres/curated-omda`、
+     `data/albums/curated-omda`）+ `SourceRegistry` 信任锚；缺失包 → `DeliveryFailureError`
+     fail-closed（绝不 sample 替代）。
+  2. `cli --deliver` 改用 `build_curated_sources()`；`_sample_album_source`/`_sample_genre_source`
+     仅保留给本地、历史中性的 dry-run（ADR-0002 D6 允许）。
+  3. `build_production_engine` 新增 `source_registry` 接线；`RunEngine` 在 **FETCH 后、
+     SELECT 前**（`source_registry` 非 None 时）用 `assemble_validated_source_set` 组成并
+     校验 `ValidatedSourceSet`（§8-4）：selected ⊆ digest-bound eligible 集、batch digest
+     自洽、registry 逐字段匹配；**demo source set 拒绝**（D6/§8-2）；校验失败 → FAILED，
+     零外部调用、零历史变更。
+  4. SELECT 的 candidates 从 **validated batches** 提取（`_candidates_from_validated`），
+     杜绝未校验记录进入选择。
+- **测试**（`tests/integration/test_g4_resume_acceptance.py`）：
+  - AC-1：公共 `cli.main --deliver` 真实 curated 3×3 → COMPLETE、恰 1 次外部调用、
+    outbound 无 `Sample` 标记、官方历史 9 个 production MBID；engine 层逐条断言 outbound
+    fact + committed MBID 均来自同一 digest-bound batch。
+  - AC-2：未注册 demo（rym-sample）拒绝；**注册 demo source set**（registry demo=true）
+    被 demo gate 拒绝；伪造 batch（自标 source_id 但 digest 不符）拒绝；缺失包拒绝——
+    全部 calls==0 + 历史零变更。
+  - AC-9A：首轮 9 条提交后，第二轮**不重复**；curated 包 4 条/Genre 耗尽时显式失败
+    （无 sample 替代、无历史污染）。
+
+## G4-002C（P1）— begin/receipt 持久化绑定仍可被绕过 — CLOSED
+
+- **根因**：`begin_delivery_operation` 对既有 key 不校验 run/channel/digest 绑定（复现：
+  `run-a/shared/…` 后再 begin `run-b/shared/…` 被接受为 created=False）；`save_delivery_receipt`
+  接受任意非空 attempt_id（`shared-key#999` 无对应 attempt 仍存储）；InMemory 同缺陷。
+- **修复**（SQLite + InMemory parity）：
+  1. `begin_delivery_operation`：`INSERT ... ON CONFLICT DO NOTHING` 后对既有行**同事务校验**
+     run_id/channel/payload_digest 与 caller 一致，不一致 → `InvariantFailureError`（任何外部
+     调用之前，ADR-0001 §15-5 / ADR-0002 AC-3）。
+  2. `save_delivery_receipt`：非空 attempt_id 时**同事务校验** attempt 属于匹配 operation
+     （operation_key/run/channel/attempt 四重绑定）；**v1 legacy null-attempt 兼容**：attempt_id
+     为 NULL 的旧行不做 attempt 关联校验、保持可读不可改写（ADR-0002 D9）。
+  3. InMemoryHistory 同步（contract parity）。
+- **测试**：`test_acceptance_5`/`test_begin_requires_matching_digest_on_replay` 更新为
+  fail-closed 语义（原"返回 existing"语义违反 §15-5，按 ADR 强制）；新增
+  `test_ac3_begin_rejects_mismatched_binding`（SQLite + InMemory：错 run/channel/digest 全拒、
+  同绑定 replay 仍 no-op）、`test_ac4_save_receipt_rejects_unbound_attempt`（跨 operation
+  attempt、不存在 attempt 全拒；null-attempt legacy 可存）。
+
+## G4-002D（P2）— SQLite v3 与 Accepted v2 边界分歧 — CLOSED（ADR-0002 D7）
+
+- **根因**：`_SCHEMA_VERSION=3` 但迁移无 fingerprint 检查、`user_version > 3` 不 fail-closed、
+  四种物理布局未覆盖。
+- **修复**：`_migrate` 重写——迁移**前**校验当前版本物理布局（v1 四表 / v2 三表 / v3
+  attempt_id 列），未知 fingerprint fail-closed；`user_version > 3` fail-closed；v1 →
+  v2-with-column → v2-without-column → v3 四布局在同一事务性迁移中幂等收敛到 v3；
+  pre-v3 旧行 attempt_id 保留 NULL（不合成）；无删列降级路径；迁移失败时连接正确释放。
+- **测试**：AC-7 四布局参数化（fresh=v3、v1/v2-with-col/v2-without-col→v3）、
+  `user_version=4` fail-closed、`user_version=2` 缺三表 fingerprint fail-closed、v1 旧行
+  迁移后保留且 attempt_id 为 NULL（`test_ac7_*`）。
+
+## G4-007C（P2）— token 配置被 CLI 默认值掩盖 — CLOSED
+
+- **根因**：`--token-env` 非空默认 `PUSHPLUS_TOKEN` → `args.token_env or config…` 恒选默认，
+  config-only 场景失效。
+- **修复**：`--token-env` 默认 **None**（区分"省略"与"显式覆盖"）；`--deliver` 中
+  `token_env = args.token_env if not None else config.delivery.pushplus_token_env`；两处均缺 →
+  推送前明确 token-missing 失败（零网络调用）；secret 永不落日志。
+- **测试**：AC-5 config-only（省略 → 用 config 的 env 名）、CLI-override（显式 → 覆盖）、
+  missing-token（config 无 + 未传 → 非零退出、calls==0）三态经公共入口。
+
+## G4-002E（P2）— production 文档仍把 HTTP 4xx 当 definitive — CLOSED
+
+- **修复**：`production.py` 模块 docstring 重写为**与代码/测试完全一致**的分类表——唯一
+  自动重试类 `NoBytesSentError`（零字节证明）；所有非 200 状态（含全部 4xx/5xx/未知业务码）
+  → `AmbiguousFailure` ambiguous no-retry；无文档化 definitive 类别。
+- **测试**：AC-6 读取模块 docstring 断言分类表关键行 + 真实 transport 注入 400 →
+  AmbiguousFailure。
+
+## G4-009 / ADR-0002 D8（P2/决策）— v0.1 定义 deterministic/no-LLM runtime — CLOSED
+
+- **根因**：`--deliver` 用 `_LocalEchoTransport`（本地常量句）冒充生产 Agent；G5 是
+  release-audit 无 runtime-provider 任务。
+- **修复**（按 ADR-0002 D8/§8-10/AC-8）：
+  1. config schema + `LLMConfig`：`llm.mode` 只允许 `deterministic`（schema enum +
+     `__post_init__` 双保险）；`provider` 值在 config validation 即 fail-closed（任何
+     run/journal/network 副作用之前）；
+  2. `RunEngine._generate` deterministic 分支：**不调用任何 LLM**，GENERATED journal 存档
+     typed marker `{"narrative_mode": "deterministic"}`（不存伪句子），交付物 = 确定性事实
+     报告（G4-005 机械契约不变）；provider 分支保留为未来 seam（v0.1 不可达）；
+  3. `cli.py` 删除 `_LocalEchoTransport`；dry-run/deliver 均不构造 echo transport。
+- **测试**：AC-8（`Config(llm=LLMConfig(mode="provider"))` 与 config 文件 provider 均拒绝；
+  真实 curated 3×3 全链路注入会炸的 LLM → 零调用 COMPLETE + GENERATED marker）；
+  `test_deterministic_runtime_never_invokes_llm`/`test_deterministic_runtime_ignores_provider_breakage`
+  （原"LLM 失败注入"测试按 D8 语义升级：v0.1 无 LLM 槽，失败注入点改为 Delivery 边界）；
+  G4-008 两个 narrative 存档测试改为 marker 断言（D8 取代"存档 LLM 文本"契约）。
+
+## ADR-0002 §8.8 — 运行证据可追溯 — CLOSED
+
+- **修复**：`RunEngine` FETCH 后 journal `FETCHED` 的 `source_evidence`：每个 Genre
+  descriptor 的 source_id/content_digest/eligible_digest/schema_version/package_version/demo；
+  每个 Album batch 的 source_id/batch_digest/genre_id/schema_version/query_policy_version/
+  package_version/demo + selected_genre_ids。outbound facts 与 committed MBID 可经
+  `source_batch` 回溯到同一 ValidatedSourceSet（AC-1 逐条断言）。
+- **测试**：`test_ac1_outbound_facts_and_committed_mbids_belong_to_validated_batch`
+  （FETCHED evidence 断言 + 逐 album 追溯）。
+
+## 规划文档修订（ADR-0002 D4/D8 授权）
+
+- `docs/OMDA_PROJECT_MASTER_PLAN_zh-CN.md`：MVP 步骤 7 改为 deterministic 结构化报告
+  （narrative 仅 typed marker，不调用外部 LLM）；§3.6 LLM 段写明 v0.1 no-LLM + provider
+  fail-closed + 未来加入条件。
+- `governance/IMPLEMENTATION_PLAN.md`：C.3 新增 **T3.6 G3-007 corrective checkpoint**
+  （D4 授权，含独立 Gate 流程）；T4.1 重写为 v0.1 deterministic/no-LLM（D8）；新增
+  **T4.6 production-source composition 与 external-delivery gate**（G4-007B/007C）；
+  OD-2 措辞改为"v0.1 不激活 provider；未来独立实现 + Gate 接受"。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **734 passed, 0 failed, 0 skipped, 0 error**（710→734，+24 新增 AC 测试） |
+| `pytest -v`（reviews/stage-04/TEST_RESULTS.txt） | 734 passed |
+| `ruff check src tests tools browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| ADR-0002 AC-1~AC-8、AC-9A | 全部通过（`test_g4_resume_acceptance.py` 24 项）；AC-9B 保持 ODP-1 条件未实现 |
+| 既有测试未删除/弱化/skip | 确认（5 个受 D8 语义影响的 LLM 测试升级为 deterministic 断言并披露；2 个 begin 绑定测试按 §15-5 强制 fail-closed 语义更新并披露；2 个 v1 fixture 补全为完整 v1 物理布局） |
+| G4 层零 G5 实现；G2 Core 零改动 | 确认 |
+| tracked 敏感文件 | 无（token 仅测试占位） |
+| live 网络依赖 | 无（全部 fake/injected transport；`--deliver` 需 owner 提供 token） |
+| 未 merge / 未 tag / 未进入 G5 / 未写 ACCEPTED | 确认 |
+| PROJECT_STATE | G4 / **READY_FOR_REVIEW** |
+
+## 残余风险（诚实披露）
+
+1. curated 包 5 Genre × 4 Album（每 Genre 3 条后仅剩 1 条）：真实 3×3 可完成，但连续多日
+   运行会快速耗尽（AC-9A 显式失败路径已测）；扩充 curated 数据属 G3-007 之后的贡献流程。
+2. v0.1 deterministic 意味着交付物无 LLM narrative——这是 ADR-0002 D8 的有意取舍；未来
+   provider 模式需独立 implemented adapter + 版本化配置 + Gate acceptance。
+3. ODP-1（live MusicBrainz tag-search）仍未定案未实现（§8-1 不变）；AC-9B 条件未启用。
+4. PushPlus 文档化 definitive 类别当前为零——全部非 200 均为 ambiguous（保守，符合
+   ADR-0001 §9/§15-3）；未来有文档化 no-side-effect 类别时可放宽。

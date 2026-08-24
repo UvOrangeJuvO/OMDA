@@ -24,6 +24,13 @@
         "channel": {"type": "string", "required": false, "enum": ["markdown", "pushplus"]},
         "pushplus_token_env": {"type": "string", "required": false, "pattern": "^[A-Z_][A-Z0-9_]*$"}
       }
+    },
+    "llm": {
+      "type": "object",
+      "required": false,
+      "fields": {
+        "mode": {"type": "string", "required": false, "enum": ["deterministic"]}
+      }
     }
   }
 }

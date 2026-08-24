@@ -129,6 +129,30 @@ class InMemoryHistory:
         )
 
     def save_delivery_receipt(self, receipt: DeliveryReceipt) -> DeliveryReceipt:
+        # G4-002C parity (ADR-0001 §15-5): a non-null attempt_id must bind to
+        # the matching operation; legacy null-attempt receipts stay compatible.
+        if receipt.attempt_id is not None:
+            op = self._operations.get(receipt.idempotency_key)
+            if op is None:
+                raise InvariantFailureError(
+                    f"receipt attempt_id {receipt.attempt_id!r} references "
+                    f"no delivery operation {receipt.idempotency_key!r}"
+                )
+            if op.run_id != receipt.run_id or op.channel != receipt.channel:
+                raise InvariantFailureError(
+                    f"receipt attempt_id {receipt.attempt_id!r} is bound to "
+                    f"operation {receipt.idempotency_key!r} but the receipt "
+                    "declares mismatched run/channel (§15-5)"
+                )
+            if not any(
+                a.attempt_id == receipt.attempt_id
+                and a.operation_key == receipt.idempotency_key
+                for a in self._attempts
+            ):
+                raise InvariantFailureError(
+                    f"receipt attempt_id {receipt.attempt_id!r} does not belong "
+                    f"to operation {receipt.idempotency_key!r}"
+                )
         existing = self._receipts.get(receipt.idempotency_key)
         if existing is None:
             self._receipts[receipt.idempotency_key] = receipt
@@ -155,6 +179,21 @@ class InMemoryHistory:
     ) -> DeliveryOperationSnapshot:
         existing = self._operations.get(idempotency_key)
         if existing is not None:
+            # G4-002C parity (ADR-0001 §15-5): an existing operation row must
+            # bind to the SAME run/channel/payload digest — a mismatched replay
+            # fails closed before any external call, mirroring SqliteHistory.
+            if (
+                existing.run_id != run_id
+                or existing.channel != channel
+                or existing.payload_digest != payload_digest
+            ):
+                raise InvariantFailureError(
+                    f"delivery operation {idempotency_key!r} already exists bound "
+                    f"to run/channel/digest ({existing.run_id!r}, {existing.channel!r}, "
+                    f"{existing.payload_digest!r}); caller supplied "
+                    f"({run_id!r}, {channel!r}, {payload_digest!r}) — "
+                    "mismatched binding fails closed (§15-5)"
+                )
             return DeliveryOperationSnapshot(created=False, operation=existing)
         operation = DeliveryOperation(
             idempotency_key=idempotency_key,
