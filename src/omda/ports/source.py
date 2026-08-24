@@ -33,6 +33,18 @@ from omda.ports.errors import InvalidInputError
 
 BATCH_SCHEMA_VERSION = "2"
 
+# The ONLY query/selection policy version this runtime supports (G3-007-007).
+#
+# ``query_policy_version`` is INDEPENDENT of ``schema_version``: the schema
+# version describes the CandidateBatch envelope format, while the query-policy
+# version describes the selection/query semantics the batch was produced under
+# (e.g. how many candidates per Genre, what eligibility rules applied). It is a
+# reviewed constant — never copied from a package manifest — so a batch that
+# claims an unsupported policy version (e.g. a self-digested ``"999"``) is
+# rejected by the machine schema, by ``verify_batch_integrity`` and therefore
+# by both the public cache path and final source-set assembly.
+QUERY_POLICY_VERSION = "1"
+
 # ADR-0002 D1: curated packages distinguish the four license/provenance layers
 # instead of a blanket claim (G3-007-005).
 _DATA_DERIVATIONS = frozenset({"independently_curated", "derived_from_upstream"})
@@ -254,6 +266,9 @@ def verify_batch_integrity(batch: CandidateBatch) -> None:
 
     Also enforces the runtime contract (G3-007-007/011):
     - ``schema_version`` MUST equal the supported ``BATCH_SCHEMA_VERSION``;
+    - ``query_policy_version`` MUST equal the supported ``QUERY_POLICY_VERSION``
+      (an unsupported policy version is indistinguishable from a reviewed batch
+      and must never cross the trusted boundary);
     - an Album ``CandidateBatch`` MUST come from an Album source
       (``source.kind == "album"``).
     """
@@ -262,6 +277,12 @@ def verify_batch_integrity(batch: CandidateBatch) -> None:
             f"candidate batch {batch.source.source_id!r} [{batch.genre_id!r}]: "
             f"unsupported schema_version {batch.schema_version!r} "
             f"(supported: {BATCH_SCHEMA_VERSION!r})"
+        )
+    if batch.query_policy_version != QUERY_POLICY_VERSION:
+        raise InvalidInputError(
+            f"candidate batch {batch.source.source_id!r} [{batch.genre_id!r}]: "
+            f"unsupported query_policy_version {batch.query_policy_version!r} "
+            f"(supported: {QUERY_POLICY_VERSION!r})"
         )
     if batch.source.kind != "album":
         raise InvalidInputError(
@@ -399,6 +420,7 @@ __all__ = [
     "BATCH_SCHEMA_VERSION",
     "CandidateBatch",
     "GenreSourceDescriptor",
+    "QUERY_POLICY_VERSION",
     "SourceDescriptor",
     "ValidatedSourceSet",
     "assemble_validated_source_set",

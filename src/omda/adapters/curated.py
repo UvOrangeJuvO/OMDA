@@ -38,6 +38,7 @@ from omda.ports.domain import AlbumCandidate, AlbumIdentity, GenreRef
 from omda.ports.errors import InvalidInputError
 from omda.ports.source import (
     BATCH_SCHEMA_VERSION,
+    QUERY_POLICY_VERSION,
     AlbumCandidateRecord,
     CandidateBatch,
     SourceDescriptor,
@@ -293,7 +294,10 @@ class CuratedAlbumSource:
         descriptor = self.descriptor()
         batch = CandidateBatch(
             schema_version=BATCH_SCHEMA_VERSION,
-            query_policy_version=meta["schema_version"],
+            # G3-007-007: the query-policy version is a REVIEWED constant, never
+            # copied from the package manifest — a batch claiming any other
+            # policy version is rejected by schema/verify/assembly.
+            query_policy_version=QUERY_POLICY_VERSION,
             genre_id=genre.genre_id,
             source=descriptor,
             digest="",
@@ -346,12 +350,18 @@ class CuratedAlbumSource:
             "candidates": [_record_to_json(record) for record in batch.candidates],
         }
 
-    def _batch_from_json(self, payload: dict) -> CandidateBatch | None:
+    def _batch_from_json(self, payload: object) -> CandidateBatch | None:
         # G3-007-007: the raw payload MUST pass the tracked candidate_batch v2
         # schema BEFORE any object is constructed — unknown top-level fields,
-        # unsupported schema versions, malformed nested source and malformed
-        # candidates are all rejected (a validation failure is a typed miss,
-        # never trusted).
+        # unsupported schema/query-policy versions, malformed nested source and
+        # malformed candidates are all rejected (a validation failure is a
+        # typed miss, never trusted).
+        # G3-007-012: non-mapping cache values (top-level array/number/null/
+        # string or an inner non-object value) are a typed miss too — the
+        # schema validator assumes a mapping, so reject them here before it can
+        # raise an untyped exception.
+        if not isinstance(payload, dict):
+            return None
         try:
             _validate_record("candidate_batch", payload, "<candidate_batch>")
         except InvalidInputError:
@@ -453,13 +463,19 @@ class RuntimeCache:
         self._ttl = ttl_seconds
         self._clock = clock or _time.time
 
-    def get(self, key: str) -> dict | None:
+    def get(self, key: str) -> Any:
         path = self._path_for(key)
         if not path.exists():
             return None
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
+            return None
+        # G3-007-012: a corrupted cache file whose top-level JSON is a valid
+        # array/number/null/string (or any non-mapping) is a TYPED miss — never
+        # let an untyped AttributeError/TypeError escape a recoverable cache
+        # corruption.
+        if not isinstance(payload, dict):
             return None
         stamp = payload.get("_cached_at")
         if not isinstance(stamp, (int, float)) or (self._clock() - stamp) > self._ttl:

@@ -32,6 +32,7 @@ from omda.ports.domain import (
 from omda.ports.errors import InvariantFailureError
 from omda.ports.source import (
     BATCH_SCHEMA_VERSION,
+    QUERY_POLICY_VERSION,
     AlbumCandidateRecord,
     CandidateBatch,
     SourceDescriptor,
@@ -366,7 +367,7 @@ class FakeAlbumSource:
         )
         batch = CandidateBatch(
             schema_version=BATCH_SCHEMA_VERSION,
-            query_policy_version="1",
+            query_policy_version=QUERY_POLICY_VERSION,
             genre_id=genre.genre_id,
             source=source,
             digest="",

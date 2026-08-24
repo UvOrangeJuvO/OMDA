@@ -3,7 +3,7 @@
   "schema_version": 2,
   "fields": {
     "schema_version": {"type": "string", "required": true, "enum": ["2"]},
-    "query_policy_version": {"type": "string", "required": true, "min_length": 1},
+    "query_policy_version": {"type": "string", "required": true, "enum": ["1"]},
     "genre_id": {"type": "string", "required": true, "pattern": "^[a-z0-9][a-z0-9-]*$"},
     "digest": {"type": "string", "required": true, "pattern": "^[0-9a-f]{64}$"},
     "source": {"type": "object", "required": true, "fields": {

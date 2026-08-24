@@ -12,7 +12,7 @@ from pathlib import Path
 
 from omda.adapters.curated import CuratedAlbumSource, _validate_record
 from omda.ports.domain import GenreRef
-from omda.ports.source import BATCH_SCHEMA_VERSION
+from omda.ports.source import BATCH_SCHEMA_VERSION, QUERY_POLICY_VERSION
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -24,6 +24,14 @@ def _schema(name: str) -> dict:
 def test_candidate_batch_schema_version_matches_runtime() -> None:
     # The tracked candidate_batch schema is the version the runtime serializes.
     assert _schema("candidate_batch")["schema_version"] == int(BATCH_SCHEMA_VERSION)
+
+
+def test_candidate_batch_query_policy_enum_matches_runtime_constant() -> None:
+    # G3-007-007 (Re-review 3): the supported query-policy version is an
+    # explicit runtime constant AND constrained in the tracked machine schema —
+    # a version drift between them fails here, before any cache/assembly path.
+    field = _schema("candidate_batch")["fields"]["query_policy_version"]
+    assert field["enum"] == [QUERY_POLICY_VERSION]
 
 
 def test_genre_package_schema_version_matches_tracked_genre_source_schema() -> None:

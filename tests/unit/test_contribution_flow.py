@@ -18,6 +18,7 @@ from omda.adapters.curated import CuratedAlbumSource
 from omda.ports.domain import GenreRef
 from omda.ports.errors import InvalidInputError
 from omda.ports.source import (
+    QUERY_POLICY_VERSION,
     AlbumCandidateRecord,
     CandidateBatch,
     SourceDescriptor,
@@ -71,7 +72,7 @@ def _batch(*, demo: bool = False) -> CandidateBatch:
     )
     batch = CandidateBatch(
         schema_version="2",
-        query_policy_version=ALBUM_META["schema_version"],
+        query_policy_version=QUERY_POLICY_VERSION,
         genre_id="ambient",
         source=source,
         digest="",

@@ -9,6 +9,7 @@ import pytest
 
 from omda.ports.errors import InvalidInputError
 from omda.ports.source import (
+    QUERY_POLICY_VERSION,
     AlbumCandidateRecord,
     CandidateBatch,
     GenreSourceDescriptor,
@@ -86,7 +87,7 @@ def _records() -> tuple[AlbumCandidateRecord, ...]:
 def _batch(**overrides) -> CandidateBatch:
     base = dict(
         schema_version="2",
-        query_policy_version="1",
+        query_policy_version=QUERY_POLICY_VERSION,
         genre_id="ambient",
         source=_album_descriptor(),
         digest="",

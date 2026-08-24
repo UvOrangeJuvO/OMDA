@@ -1,7 +1,8 @@
-"""G3-007 Re-review 2 failure-first tests (G3-007-003/007/010/011)."""
+"""G3-007 Re-review 2/3 failure-first tests (G3-007-003/007/010/011/012)."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from omda.ports.domain import GenreRef
 from omda.ports.errors import InvalidInputError
 from omda.ports.source import (
     BATCH_SCHEMA_VERSION,
+    QUERY_POLICY_VERSION,
     AlbumCandidateRecord,
     CandidateBatch,
     GenreSourceDescriptor,
@@ -91,13 +93,17 @@ def test_genuine_descriptor_still_validates() -> None:
 
 def _cache_with(payload: dict, tmp_path: Path) -> RuntimeCache:
     cache = RuntimeCache(tmp_path / "cache")
-    # Emulate a corrupted cache entry with the exact key the adapter uses.
+    # G3-007-012: pass the RAW CandidateBatch payload directly to put() — the
+    # cache wrapper must not double-wrap it. Assert the STORED/RETRIEVED entry
+    # is exactly the mutated payload, so every test below genuinely exercises
+    # the mutation it claims to test (not an outer malformed wrapper).
     from omda.adapters.curated import CuratedAlbumSource
 
     probe = CuratedAlbumSource(ALBUMS)
     probe.source_batch(AMBIENT)  # warm nothing; the key is deterministic
     key = probe._cache_key(AMBIENT)
-    cache.put(key, {"value": payload})
+    cache.put(key, payload)
+    assert cache.get(key) == payload
     return cache
 
 
@@ -111,7 +117,7 @@ def _valid_payload() -> dict:
 def test_cache_hit_rejects_unknown_top_level_field(tmp_path: Path) -> None:
     payload = _valid_payload()
     payload["evil"] = True
-    cache = _cache_with({"digest": payload["digest"]} | payload, tmp_path)
+    cache = _cache_with(payload, tmp_path)
     source = CuratedAlbumSource(ALBUMS, cache=cache)
     batch = source.source_batch(AMBIENT)
     assert batch.schema_version == BATCH_SCHEMA_VERSION  # rebuilt, not the unknown-field entry
@@ -149,6 +155,87 @@ def test_verify_rejects_unsupported_schema_version() -> None:
     batch = replace(_ambient_batch(), schema_version="999")
     with pytest.raises(InvalidInputError):
         verify_batch_integrity(batch)
+
+
+# --- G3-007-007 (Re-review 3): query-policy version is supported-version bound -
+
+
+def _forged_policy_batch(policy_version: str) -> CandidateBatch:
+    # Reviewer reproduction: a REAL registered batch whose ONLY change is
+    # query_policy_version, with its self-digest RECOMPUTED so the rejection
+    # below can only come from the policy-version trust check — never from a
+    # stale digest.
+    batch = replace(_ambient_batch(), query_policy_version=policy_version)
+    return replace(batch, digest=digest_batch(batch))
+
+
+def test_verify_rejects_unsupported_query_policy_version() -> None:
+    # Domain integrity: a self-digested policy "999" batch is rejected.
+    with pytest.raises(InvalidInputError):
+        verify_batch_integrity(_forged_policy_batch("999"))
+
+
+def test_cache_hit_rejects_unsupported_query_policy_version(tmp_path: Path) -> None:
+    # Public cache path: a self-digested policy "999" cache entry must be a
+    # typed miss — the tracked schema enum rejects it before any object is
+    # constructed, and the batch is rebuilt under the supported policy.
+    probe = CuratedAlbumSource(ALBUMS)
+    payload = probe._batch_to_json_raw(_forged_policy_batch("999"))
+    cache = _cache_with(payload, tmp_path)
+    source = CuratedAlbumSource(ALBUMS, cache=cache)
+    batch = source.source_batch(AMBIENT)
+    assert batch.query_policy_version == QUERY_POLICY_VERSION  # rebuilt, not policy 999
+
+
+def test_assembly_rejects_unsupported_query_policy_version() -> None:
+    # Final assembly: a self-digested policy "999" batch fails closed even
+    # with the real registry and the real reviewed Genre descriptor.
+    with pytest.raises(InvalidInputError):
+        assemble_validated_source_set(
+            _registry(),
+            genre_descriptors=(_genre_descriptor(),),
+            batches=(_forged_policy_batch("999"),),
+            selected_genre_ids=("ambient",),
+        )
+
+
+# --- G3-007-012 (Re-review 3): real cache file shapes are safe typed misses ---
+
+
+def _write_cache_entry(cache: RuntimeCache, key: str, raw_json: str) -> None:
+    """Write a REAL on-disk cache file shape (bypasses put()) — G3-007-012."""
+    path = cache._path_for(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(raw_json, encoding="utf-8")
+
+
+def test_cache_get_treats_non_mapping_top_level_shapes_as_miss(tmp_path: Path) -> None:
+    # G3-007-012: a corrupted cache file whose top-level JSON is a valid
+    # array / number / null / string must be a TYPED miss — never an untyped
+    # AttributeError/TypeError from a malformed mapping assumption.
+    cache = RuntimeCache(tmp_path / "cache")
+    key = "k"
+    for raw in ("[1, 2, 3]", "42", "null", '"not-an-object"'):
+        _write_cache_entry(cache, key, raw)
+        assert cache.get(key) is None, raw
+
+
+def test_cache_path_treats_inner_non_object_values_as_miss(tmp_path: Path) -> None:
+    # G3-007-012: a valid top-level object whose "value" is NOT a mapping
+    # (array / number / string / null) reaches _batch_from_json, which must
+    # treat it as a typed miss and rebuild — no untyped exception escapes the
+    # public source_batch() path.
+    probe = CuratedAlbumSource(ALBUMS)
+    key = probe._cache_key(AMBIENT)
+    cache = RuntimeCache(tmp_path / "cache")
+    for inner in ('[1, 2, 3]', "42", '"oops"', "null"):
+        payload = f'{{"value": {inner}, "_cached_at": {json.dumps(cache._clock())}}}'
+        _write_cache_entry(cache, key, payload)
+        source = CuratedAlbumSource(ALBUMS, cache=cache)
+        batch = source.source_batch(AMBIENT)  # must rebuild, never raise
+        assert batch.genre_id == "ambient"
+        assert batch.query_policy_version == QUERY_POLICY_VERSION
+        cache.delete(key)
 
 
 # --- G3-007-010: unambiguous canonical digest encoding ------------------------

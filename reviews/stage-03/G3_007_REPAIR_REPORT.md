@@ -289,3 +289,87 @@ commit 的 cli/production/orchestrator/storage/delivery/llm/config diff = 0）�
    eligible digests）；任何外部消费者按旧 `|` 编码校验将失效（仓库内无）。
 2. `assemble_validated_source_set` 的 run.py 接线（§8.8 journal）仍属 G4。
 3. ODP-1（live MusicBrainz 路径）未定案未实现（§8.1 不变）。
+
+---
+
+# G3-007 Re-review 3 Repair（2026-08-24，candidate 60c8178）
+
+对应 Reviewer commit：`bbda5039e451e86cccc29eadd507cf6b0a141022`（G3_007_REVIEW_VERDICT.md
+Re-review 3，结论 **CHANGES_REQUESTED**，G3-007-007 保持 OPEN（query-policy 版本未受
+支持版本约束）+ 新增 G3-007-012（P2，缓存测试双层包装 + 非 mapping 缓存形状可逃逸
+typed-miss 处理））
+被审 candidate：`60c81787ca53afa42aa086ba6408b05c1ffafe72`
+本轮修复范围：仅 G3-007 source/data 契约与回归测试；**未实施任何 G4 功能**（相对
+reviewer commit 的 cli/production/orchestrator/storage/delivery/llm/config diff = 0）。
+未自行写 ACCEPTED；无需新 ADR（均在已接受 ADR-0002 内修复）。
+
+## 逐项关闭证据
+
+### G3-007-007（P1，保持 OPEN）query-policy 版本未受支持版本约束 — CLOSED
+- **复现**：真实 Ambient batch 仅改 `query_policy_version="999"` 并重算自 digest →
+  tracked schema 接受（min_length:1）、`verify_batch_integrity` 放行、公开缓存路径
+  `source_batch()` 返回 policy 999、最终 `assemble_validated_source_set` 也接受。
+- **修复**（三层拒绝，policy 版本成为 reviewed 常量）：
+  1. `src/omda/ports/source.py` 新增显式常量 **`QUERY_POLICY_VERSION = "1"`**
+     （独立于 schema_version：schema 版本描述 envelope 格式，policy 版本描述选择/
+     查询语义；绝不从包 manifest 复制）；
+  2. `data/schemas/candidate_batch.schema.json` 将 `query_policy_version` 约束改为
+     **`enum: ["1"]`**（machine schema 层拒绝 "999"）；
+  3. `verify_batch_integrity` 增加 `query_policy_version == QUERY_POLICY_VERSION`
+     领域校验（`InvalidInputError`），因此**缓存读取路径**（`batch_for_genre` 先过
+     schema 再 verify，无效条目 typed miss 删除重建）与**最终 assembly**
+     （`assemble_validated_source_set` 内逐 batch 调 verify）两条路径都 fail-closed；
+  4. `CuratedAlbumSource._build_batch` 改为 `query_policy_version=QUERY_POLICY_VERSION`
+     （不再复制 `meta["schema_version"]`）。
+- **回归测试**（`tests/unit/test_review2_integrity.py`）：
+  - `test_verify_rejects_unsupported_query_policy_version`（域层，自算 digest 的
+    "999" 被拒）；
+  - `test_cache_hit_rejects_unsupported_query_policy_version`（**公开缓存路径**：
+    自算 digest 的 "999" 条目 → typed miss → 重建为受支持版本 "1"）；
+  - `test_assembly_rejects_unsupported_query_policy_version`（**最终 assembly**：
+    真实 registry + 真实 Genre descriptor + "999" batch → 拒绝）；
+  - `test_candidate_batch_query_policy_enum_matches_runtime_constant`
+    （`test_schema_version_alignment.py`：schema enum 与常量漂移即失败）。
+
+### G3-007-012（P2）缓存测试双层包装 + 非 mapping 缓存形状 — CLOSED
+- **复现**：`_cache_with()` 调 `RuntimeCache.put(key, {"value": payload})`，而
+  `put()` 自身又写 `{"value": <arg>}` → 文件实为 `{"value":{"value":<candidate>}}`，
+  所有新缓存测试先被外层畸形包装拒掉，从未触达其声称测试的 mutation；
+  `RuntimeCache.get()` 假定顶层 JSON 是 mapping 立即 `.get()`——顶层合法 JSON
+  array/number/null/string 抛未分类 AttributeError/TypeError（内部非 object 值同样
+  可达假定 mapping 的校验代码）。
+- **修复**：
+  1. 测试直接传 **raw CandidateBatch payload** 给 `put()`，并在 `_cache_with` 内断言
+     `cache.get(key) == payload`——存储/取回的就是被修改的 payload，每条测试真正
+     读取并拒绝目标 mutation；
+  2. `RuntimeCache.get()` 顶层 `json.loads` 结果非 dict → **typed miss（返回 None）**，
+     不抛未分类异常；
+  3. `_batch_from_json(payload: object)` 入口 `isinstance(payload, dict)` 检查 →
+     非 mapping 直接 None（typed miss），schema 校验器不再可能对 list/int/str/None
+     抛未分类 TypeError。
+- **回归测试**（`tests/unit/test_review2_integrity.py`，**真实磁盘缓存文件形状**）：
+  - `test_cache_get_treats_non_mapping_top_level_shapes_as_miss`（直接写文件：
+    顶层 array/number/null/string → `get()` 返回 None，不抛）；
+  - `test_cache_path_treats_inner_non_object_values_as_miss`（`{"value": <array|
+    number|string|null>}` 真实缓存文件 → 公开 `source_batch()` 重建，不抛）。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **710 passed, 0 failed**（704→710，全部新增/增强，无删除/弱化） |
+| `pytest -v`（G3_007_TEST_RESULTS.txt） | 710 passed |
+| `ruff check src tests tools browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 独立复现 probe（policy 999：verify/公开缓存/最终 assembly 三路径） | 3/3 全拒（缓存路径重建为 "1"） |
+| G4 层零改动（相对 bbda503） | 0 文件 |
+| tracked 敏感文件 | 无 |
+| 未 merge / 未 tag / 未进入 G5 / 未写 ACCEPTED | 确认 |
+
+## 残余风险（诚实披露）
+
+1. `QUERY_POLICY_VERSION="1"` 是 G3-007 首次显式化的 reviewed 常量；未来任何
+   query-policy 语义变更必须修订该常量 + schema enum + verify（三处一致），否则
+   版本漂移测试立即失败。
+2. `assemble_validated_source_set` 的 run.py 接线（§8.8 journal）仍属 G4。
+3. ODP-1（live MusicBrainz 路径）未定案未实现（§8.1 不变）。
