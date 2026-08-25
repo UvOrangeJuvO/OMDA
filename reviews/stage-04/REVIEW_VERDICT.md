@@ -842,3 +842,156 @@ production-source/runtime ADR described in G4-007B/G4-009. The ADR must preserve
 architecture constraints and make external delivery fail closed until genuine candidates are
 available. After Reviewer acceptance of that decision, implement it and repair G4-002C plus
 the P2 findings, then return one new cumulative candidate against the same original base.
+
+# G4 Resume Re-review 1 — Accepted-ADR implementation audit (2026-08-25)
+
+## Reviewed object
+
+- Reviewer: GPT-5.6 Sol in Codex
+- Gate: G4 — resumed Agent & Delivery review after accepted G3-007 checkpoint / ADR-0002
+- Exact original base SHA: `68e3d453c7b803d2090cb1318f48e58eb18d6390`
+- G4 resume-control parent: `7c38f356b5c8aec009d305c272f786a1908d0ac2`
+- Exact candidate SHA: `81309b167923d02c917fd21bcf3a881c5c8265bb`
+- Candidate branch observed: `exec/g4-agent-delivery`
+- Executor report: `reviews/stage-04/REPAIR_REPORT.md`
+- Resume report: `reviews/stage-04/G4_RESUME_REPORT.md`
+- Executor test evidence: `reviews/stage-04/TEST_RESULTS.txt`
+
+The candidate is a clean descendant of the supplied original base; its merge-base with that
+base is exact. The worktree was clean at review start. The complete resume-parent-to-candidate
+delta and the cumulative G4 contracts were inspected. ADR-0002 is Accepted, so this review
+checks the implementation against that decision rather than reopening its architecture.
+
+The candidate substantially closes the earlier source-data, operation-begin, migration,
+provider-classification, deterministic-runtime and normal token-precedence findings. The
+public CLI's ordinary `--deliver` path now uses the reviewed curated packages and passes the
+positive 3x3 traceability tests. It is nevertheless not ready to merge: two public authority
+boundaries still permit exactly the untrusted/unbound states the Accepted ADRs require them to
+reject, and one explicit token override value is silently discarded.
+
+## Previous finding disposition
+
+| Previous finding | Resume re-review status | Evidence |
+|---|---|---|
+| G4-007B curated source route | **PARTIAL** | The CLI uses the reviewed curated set, but the public production builder still permits a registry-free external route; see G4-007D. |
+| G4-002C operation begin binding | **CLOSED** | SQLite and in-memory stores reject existing-key run/channel/digest mismatches. |
+| G4-002C receipt binding | **PARTIAL** | Non-null attempts are checked, but fresh v3 null-attempt receipts are still admitted; see G4-002F. |
+| G4-002D v3 migration | **PASS for reviewed layouts** | Fresh/v1/two v2 layouts/v3 and future/unknown rejection tests pass; legacy rows retain NULL. |
+| G4-002E provider classification docs | **CLOSED** | Documentation and tests now agree that only proven-zero-byte failure is retryable. |
+| G4-007C token precedence | **PARTIAL** | Normal config-only and non-empty override cases work; an explicit empty override is discarded; see G4-007E. |
+| G4-009 deterministic/no-LLM v0.1 | **CLOSED** | Provider mode fails config validation; deterministic mode records a typed marker and makes no LLM call. |
+| ADR-0002 source evidence / real 3x3 | **PASS on the curated CLI route** | Validated source evidence, outbound facts and committed MBIDs trace to the reviewed packages. |
+
+## Blocking findings
+
+### [P1] G4-007D — Public production composition still has a registry-free delivery bypass
+
+- Location: `src/omda/production.py:149-194`, especially optional
+  `source_registry: Any = None`; `src/omda/orchestrator/run.py:404-451`;
+  `tests/integration/test_production_composition.py:89-124`.
+- `build_production_engine()` is the documented real production composition for external
+  PushPlus delivery, but its trust anchor is optional. `RunEngine` validates a
+  `ValidatedSourceSet` only when the value is non-null; otherwise it falls through to raw
+  `candidates_for_genre()` data and still performs the external call and official-history
+  commit.
+- Independent reproduction invoked that public builder exactly as the repository's existing
+  production-composition test does: fake Genre/Album sources, no registry, successful injected
+  PushPlus transport. The run returned `COMPLETE`, made one external call, advanced the official
+  pick index to 3, and committed nine illustrative IDs including `bebop-1`, `krautrock-2` and
+  `tuareg-3`.
+- The positive CLI path does pass a registry, but a safe call site does not repair an unsafe
+  public production boundary. Accepted ADR-0002 D6 says trusted `build_production_engine`
+  validates the source set and that external delivery accepts only a `ValidatedSourceSet`.
+- Impact: any caller using the advertised production builder can omit one optional argument
+  and push arbitrary fixture/sample data into a user's feed and permanent exclusion history.
+- Required repair: make the trust anchor mandatory and fail closed in the production builder
+  before any run journal, external call or official-history mutation when it is absent. Keep a
+  separate explicitly local/history-neutral fixture or dry-run composition if tests need raw
+  sources. Update the old production-composition tests so no successful external test omits the
+  registry, and add a negative public-builder test asserting zero transport calls and zero
+  official-history mutation for a missing registry.
+
+### [P1] G4-002F — A fresh v3 store can create new legacy-style unbound receipts
+
+- Location: `src/omda/storage/sqlite_history.py:499-560`;
+  `tests/fakes/__init__.py:131-158`;
+  `tests/integration/test_g4_resume_acceptance.py:450-458`.
+- Both SQLite and the in-memory parity store validate attempt association only when the caller
+  supplies a non-null `attempt_id`. When the key is new and `attempt_id=None`, they insert a new
+  receipt without any operation or attempt. The candidate's AC-4 test explicitly treats a
+  *fresh-key insert* as legacy compatibility.
+- Independent reproduction opened a freshly created `user_version=3` store and inserted
+  `fresh:markdown` with `attempt_id=None`; SQLite and `InMemoryHistory` both accepted it.
+- Accepted ADR-0002 D7 says only pre-v3 existing rows whose association cannot be proven retain
+  NULL, while new v3 finalize must write its generated attempt ID. D9/AC-4 narrows compatibility
+  to an **old row** that remains readable and immutable. A new row cannot become legacy merely
+  because the caller omits the field.
+- Impact: the durable authority can still acquire new delivery-success evidence that is not
+  bound to an operation or attempt. Recovery's legacy fallback can then authorize an official
+  history commit from evidence created after the binding protocol became mandatory.
+- Required repair: query immutable existing evidence first. An already-migrated null-attempt
+  row may be read and exact-replayed but never changed; every *new* v3 receipt must carry and
+  transactionally validate its matching operation/run/channel/attempt association. Apply the
+  same rule to the in-memory contract fake and replace the fresh-null acceptance test with:
+  (1) a genuine pre-v3 row migrated to v3 remains readable/immutable, and (2) fresh null writes
+  fail in both implementations.
+
+## Non-blocking but required finding
+
+### [P2] G4-007E — An explicit empty token override silently falls back to the configured secret
+
+- Location: `src/omda/cli.py:188-206`; `src/omda/production.py:181-183`.
+- The CLI correctly distinguishes omitted from explicitly present values, but the production
+  builder recombines the value with `token_env or config.delivery.pushplus_token_env`. An
+  explicitly supplied empty string is therefore discarded instead of being rejected as an
+  invalid environment-variable name.
+- Independent public-entrypoint reproduction supplied `--token-env ''`, configured
+  `OMDA_PP_TOKEN`, and set that environment variable. The run returned `COMPLETE`, made one
+  external call and used the configured token despite the explicit override.
+- Required repair: preserve `None` as the only "omitted" sentinel through the composition
+  boundary (`token_env if token_env is not None else ...`) and validate explicit names using
+  the same environment-variable-name contract as config. Add empty/invalid explicit override
+  tests proving non-zero exit and zero transport calls without exposing either token.
+
+## Acceptance matrix
+
+| G4 criterion | Resume re-review 1 status |
+|---|---|
+| Public CLI uses reviewed non-demo curated 3x3 data | **PASS** |
+| Outbound facts and committed MBIDs trace to validated source evidence | **PASS** |
+| Every public external composition requires validated provenance | **FAIL — P1** |
+| Operation replay run/channel/digest binding | **PASS** |
+| Finalized receipt binds generated attempt | **PASS** |
+| Only genuine migrated legacy receipts may remain null-attempt | **FAIL — P1** |
+| v3 forward migrations and unknown/future fail-closed cases | **PASS** |
+| Config-only and ordinary explicit token override | **PASS** |
+| Every explicit override is honored or rejected, never discarded | **FAIL — P2** |
+| Deterministic/no-LLM v0.1 runtime | **PASS** |
+| Provider outcome classification and documentation | **PASS** |
+| Default dry-run remains local and history-neutral | **PASS** |
+| Full regression, lint and whitespace checks | **PASS** |
+
+## Independent checks and limits
+
+- Exact SHA, branch, merge-base, clean-worktree and full repair-delta inspection: passed.
+- Isolated full suite: **734 passed, 0 failed**. The archive initially lacked `.git` metadata,
+  so the one Git-tracking compliance test was rerun after creating an isolated temporary index;
+  it passed. No test was run against or allowed to alter the working repository.
+- Ruff over `src`, `tests`, `tools` and `browser_companion`: passed with cache disabled.
+- `git diff --check` for resume parent to candidate: passed.
+- Independent counterexamples: registry-free public production delivery, fresh-v3 null-attempt
+  receipt insertion in both stores, and empty explicit token override through the public CLI.
+- Tracked private-key/token-pattern scan: no match.
+- No live PushPlus, LLM, MusicBrainz, RYM or other network request was made. No production code,
+  merge, tag or push was performed.
+
+## Resume re-review 1 verdict
+
+**CHANGES_REQUESTED**
+
+Candidate `81309b167923d02c917fd21bcf3a881c5c8265bb` MUST NOT be merged, marked
+`ACCEPTED`, tagged, or used to begin G5. No new ADR is required: all three repairs are narrow
+implementations of already Accepted ADR-0002 D6/D7/D9 and the existing token-override
+contract. The Executor should repair only G4-007D, G4-002F and G4-007E, rerun the complete
+evidence set, update the G4 repair package/state to `READY_FOR_REVIEW`, commit one new
+cumulative candidate against the unchanged original base, and stop for re-review.
