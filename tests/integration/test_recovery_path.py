@@ -18,7 +18,7 @@ from omda.orchestrator.recovery import (
     resolve_recovery_action,
 )
 from omda.orchestrator.run import COMPLETE, RECOVERING, RunEngine, utc_now
-from omda.ports.domain import AlbumCandidate, DeliveryReceipt, GenreRef
+from omda.ports.domain import AlbumCandidate, GenreRef
 from omda.ports.errors import StateCommitFailureError
 
 
@@ -95,15 +95,11 @@ def test_resolve_requires_human_when_evidence_missing() -> None:
 
 def test_resolve_requires_human_on_mismatched_receipt() -> None:
     # A receipt exists but belongs to another run/channel -> ambiguous; human.
+    from tests.fakes import bound_receipt
+
     history = InMemoryHistory()
-    history.save_delivery_receipt(
-        DeliveryReceipt(
-            run_id="other-run",
-            idempotency_key="other-run:markdown",
-            delivered_at=utc_now(),
-            channel="markdown",
-            status="ok",
-        )
+    bound_receipt(
+        history, run_id="other-run", key="other-run:markdown", channel="markdown"
     )
     decision = resolve_recovery_action(history, "run-1")
     assert decision.action == REQUIRE_HUMAN
@@ -143,55 +139,93 @@ def _journal_after_delivery(history, run_id: str, at: str = "2026-08-21T00:00:00
 
 
 def test_recovery_without_post_delivery_journal_is_require_human() -> None:
-    # Reviewer reproduction: a receipt exists (correct run id) but there is NO
-    # post-delivery journal tail -> the evidence does not durably show delivery;
-    # recovery must REQUIRE_HUMAN, never COMMIT_HISTORY.
+    # G4-004: without a durable post-delivery journal tail the run never
+    # durably reached delivery, so COMMIT_HISTORY is forbidden. (G4-002F: an
+    # unbound receipt can no longer be CREATED on a v3 store — the
+    # "receipt exists but no delivery journal" legacy case is exercised below
+    # via a real migrated v1 row, see
+    # test_legacy_migrated_receipt_without_journal_is_require_human.)
     history = InMemoryHistory()
-    history.save_delivery_receipt(
-        DeliveryReceipt(
-            run_id="run-1",
-            idempotency_key="run-1:markdown",
-            delivered_at=utc_now(),
-            channel="markdown",
-            status="ok",
-        )
-    )
+    history.append_journal("run-1", "PLANNED", utc_now())
+    history.append_journal("run-1", "SELECTED", utc_now())
     decision = resolve_recovery_action(history, "run-1")
     assert decision.action == REQUIRE_HUMAN
     assert decision.reason != "delivered-but-not-committed"
+
+
+def test_legacy_migrated_receipt_without_journal_is_require_human(tmp_path) -> None:
+    # G4-002F: a GENUINE pre-v3 receipt (migrated from a v1 store, NULL
+    # attempt_id, no operation, no delivery journal) remains readable and
+    # immutable — but it never authorizes COMMIT_HISTORY without a delivery
+    # journal tail: REQUIRE_HUMAN.
+    import sqlite3
+
+    from omda.storage import SqliteHistory
+
+    path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE run_journal (journal_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "run_id TEXT NOT NULL, transition TEXT NOT NULL, at TEXT NOT NULL, detail TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE genre_pick_history (pick_index INTEGER PRIMARY KEY, "
+        "run_id TEXT NOT NULL, genre_id TEXT NOT NULL, committed_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE album_history (album_id TEXT PRIMARY KEY, canonical_id TEXT, "
+        "canonical_source TEXT, identity_confidence TEXT NOT NULL, run_id TEXT NOT NULL, "
+        "recommended_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE delivery_receipt (idempotency_key TEXT PRIMARY KEY, "
+        "run_id TEXT NOT NULL, delivered_at TEXT NOT NULL, channel TEXT NOT NULL, "
+        "status TEXT NOT NULL, target TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO delivery_receipt VALUES "
+        "('run-1:markdown', 'run-1', '2026-01-01T00:00:00Z', 'markdown', 'ok', 'old.md')"
+    )
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    conn.close()
+    store = SqliteHistory(path)
+    try:
+        assert store.schema_version() == 3
+        legacy = store.find_delivery_receipt("run-1:markdown")
+        assert legacy is not None and legacy.attempt_id is None
+        # Exact replay of the migrated row is a no-op (never changed).
+        assert store.save_delivery_receipt(legacy) == legacy
+        decision = resolve_recovery_action(store, "run-1")
+        assert decision.action == REQUIRE_HUMAN  # no delivery journal tail
+    finally:
+        store.close()
 
 
 def test_recovery_with_mismatched_receipt_key_is_require_human() -> None:
     # A returned receipt with the right run id but WRONG idempotency key/channel
     # must not authorize COMMIT_HISTORY (the stored receipt is looked up by the
     # expected key, so a corrupt entry with the correct key is the real probe).
+    from tests.fakes import bound_receipt
+
     history = InMemoryHistory()
     history.append_journal("run-1", "DELIVERING", utc_now())
     history.append_journal("run-1", "DELIVERED", utc_now())
-    history.save_delivery_receipt(
-        DeliveryReceipt(
-            run_id="run-1",
-            idempotency_key="run-1:markdown",  # expected key
-            delivered_at=utc_now(),
-            channel="pushplus",  # WRONG channel for the expected key
-            status="ok",
-        )
-    )
+    bound_receipt(
+        history, run_id="run-1", key="run-1:markdown", channel="pushplus"
+    )  # WRONG channel for the expected key
     decision = resolve_recovery_action(history, "run-1")
     assert decision.action == REQUIRE_HUMAN
 
 
 def test_recovery_with_failed_status_is_require_human() -> None:
+    from tests.fakes import bound_receipt
+
     history = InMemoryHistory()
     _journal_after_delivery(history, "run-1")
-    history.save_delivery_receipt(
-        DeliveryReceipt(
-            run_id="run-1",
-            idempotency_key="run-1:markdown",
-            delivered_at=utc_now(),
-            channel="markdown",
-            status="failed",
-        )
+    bound_receipt(
+        history, run_id="run-1", key="run-1:markdown", channel="markdown",
+        outcome="failed",
     )
     decision = resolve_recovery_action(history, "run-1")
     assert decision.action == REQUIRE_HUMAN
@@ -200,16 +234,13 @@ def test_recovery_with_failed_status_is_require_human() -> None:
 def test_recovery_only_commits_on_bound_ok_receipt_plus_delivery_journal() -> None:
     # The ONLY path to COMMIT_HISTORY: exact run/key/channel binding, status ok,
     # AND a journal that durably reached the post-delivery window.
+    from tests.fakes import bound_receipt
+
     history = InMemoryHistory()
     _journal_after_delivery(history, "run-1")
-    history.save_delivery_receipt(
-        DeliveryReceipt(
-            run_id="run-1",
-            idempotency_key="run-1:markdown",
-            delivered_at=utc_now(),
-            channel="markdown",
-            status="ok",
-        )
+    bound_receipt(
+        history, run_id="run-1", key="run-1:markdown", channel="markdown",
+        outcome="ok",
     )
     decision = resolve_recovery_action(history, "run-1")
     assert decision.action == COMMIT_HISTORY

@@ -135,14 +135,18 @@ def test_invariant_conflicts_are_not_translated(tmp_path) -> None:
     assert not isinstance(exc.value, StateCommitFailureError)
     assert exc.value.__cause__ is None
 
-    # save_delivery_receipt conflict -> InvariantFailureError.
-    db.save_delivery_receipt(RECEIPT)
+    # save_delivery_receipt conflict -> InvariantFailureError (G4-002F: a new
+    # receipt must be created via the bound finalize protocol).
+    from tests.fakes import bound_receipt
+
+    ok_receipt = bound_receipt(db, run_id="run-1", key="k", channel="markdown")
     conflicting = DeliveryReceipt(
         run_id="run-2",
         idempotency_key="k",
-        delivered_at=AT,
+        delivered_at=ok_receipt.delivered_at,
         channel="markdown",
         status="ok",
+        attempt_id=ok_receipt.attempt_id,
     )
     with pytest.raises(InvariantFailureError):
         db.save_delivery_receipt(conflicting)

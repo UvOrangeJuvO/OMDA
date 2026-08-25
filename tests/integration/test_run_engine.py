@@ -402,18 +402,17 @@ def test_misbound_failed_receipt_enters_recovery() -> None:
 
 
 def test_conflicting_receipt_fails_closed_without_overwrite() -> None:
+    from tests.fakes import bound_receipt
+
     history = InMemoryHistory()
     # Durable evidence already exists for this idempotency key (delivery happened),
     # but no run journal exists — the engine must fail closed on a conflicting
-    # receipt instead of overwriting evidence or writing history.
-    existing = DeliveryReceipt(
-        run_id="prior-run",
-        idempotency_key="run-1:markdown",
-        delivered_at=AT,
-        channel="markdown",
-        status="ok",
+    # receipt instead of overwriting evidence or writing history. G4-002F: the
+    # receipt is created through the bound claim/finalize protocol.
+    existing = bound_receipt(
+        history, run_id="prior-run", key="run-1:markdown", channel="markdown",
+        outcome="ok",
     )
-    history.save_delivery_receipt(existing)
 
     outcome = _engine(history, delivery=MisboundFailedReceiptDelivery()).run("run-1")
     # The delivery attempt already happened -> ambiguous -> RECOVERING.
@@ -854,20 +853,48 @@ def test_repeated_recovery_of_unchanged_evidence_is_bounded() -> None:
     assert history.latest_pick_index() == 0
 
 
-def test_receipt_conflict_after_external_call_enters_recovery() -> None:
+def test_receipt_conflict_after_external_call_enters_recovery(tmp_path) -> None:
     # A correctly bound ok receipt that CONFLICTS with pre-existing immutable
     # evidence (different delivered_at) after one external effect is ambiguous:
     # the side effect may have happened -> RECOVERING, one delivery call, zero
-    # history, original evidence preserved (G2-012).
-    history = InMemoryHistory()
-    existing = DeliveryReceipt(
-        run_id="prior-run",
-        idempotency_key="run-1:markdown",
-        delivered_at=AT,
-        channel="markdown",
-        status="ok",
+    # history, original evidence preserved (G2-012). G4-002F: pre-existing
+    # evidence can no longer be a fresh null-attempt insert — this scenario
+    # uses a GENUINE migrated v1 receipt (NULL attempt, no operation/journal),
+    # so the engine's begin claim succeeds and the finalize hits the conflict.
+    import sqlite3
+
+    from omda.storage import SqliteHistory
+
+    path = tmp_path / "legacy-conflict.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE run_journal (journal_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "run_id TEXT NOT NULL, transition TEXT NOT NULL, at TEXT NOT NULL, detail TEXT)"
     )
-    history.save_delivery_receipt(existing)
+    conn.execute(
+        "CREATE TABLE genre_pick_history (pick_index INTEGER PRIMARY KEY, "
+        "run_id TEXT NOT NULL, genre_id TEXT NOT NULL, committed_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE album_history (album_id TEXT PRIMARY KEY, canonical_id TEXT, "
+        "canonical_source TEXT, identity_confidence TEXT NOT NULL, run_id TEXT NOT NULL, "
+        "recommended_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE delivery_receipt (idempotency_key TEXT PRIMARY KEY, "
+        "run_id TEXT NOT NULL, delivered_at TEXT NOT NULL, channel TEXT NOT NULL, "
+        "status TEXT NOT NULL, target TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO delivery_receipt VALUES "
+        "('run-1:markdown', 'prior-run', '2026-08-19T09:00:00+00:00', 'markdown', 'ok', NULL)"
+    )
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    conn.close()
+    history = SqliteHistory(path)
+    existing = history.find_delivery_receipt("run-1:markdown")
+    assert existing is not None and existing.attempt_id is None
 
     class ConflictingOkDelivery:
         calls = 0
@@ -888,6 +915,7 @@ def test_receipt_conflict_after_external_call_enters_recovery() -> None:
     assert ConflictingOkDelivery.calls == 1
     assert history.find_delivery_receipt("run-1:markdown") == existing
     assert history.latest_pick_index() == 0
+    history.close()
 
 
 # --- G2-012 re-review 4: exactly three receipt status classes ------------------

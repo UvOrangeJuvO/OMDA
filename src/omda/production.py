@@ -44,6 +44,7 @@ from the environment variable named by ``DeliveryConfig.pushplus_token_env``.
 from __future__ import annotations
 
 import json
+import re
 import socket
 import urllib.error
 import urllib.request
@@ -62,6 +63,12 @@ from omda.adapters.llm import LLMAdapter
 from omda.config import Config
 from omda.orchestrator.run import RunEngine
 from omda.ports.errors import DeliveryFailureError
+
+# The environment-variable-name contract for PushPlus tokens — the SAME
+# pattern the config schema enforces (G4-007E): an explicit token override must
+# be a valid non-empty env var name; anything else is rejected instead of being
+# silently discarded or falling back to another secret.
+_TOKEN_ENV_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 # Repository data resolved independently of the caller's working directory
 # (G4-003 P2): package-root anchored, override with OMDA_DATA_DIR if needed.
@@ -162,12 +169,21 @@ def build_production_engine(
 
     ``transport`` is injectable for tests (a fake PushPlus transport); the
     production default is ``PushPlusHttpTransport``. The PushPlus token is
-    resolved at runtime from ``config.delivery.pushplus_token_env`` — never
+    resolved at runtime from the effective token environment variable — never
     logged and never committed.
 
-    ``source_registry`` is the reviewed source registry trust anchor
-    (ADR-0002 §8.5); when supplied the engine assembles and validates a
-    ValidatedSourceSet after FETCH and before SELECT/delivery claim (§8.4).
+    ``source_registry`` is the MANDATORY reviewed source registry trust anchor
+    (ADR-0002 D6/§8-5, G4-007D): this public external-delivery composition
+    FAILS CLOSED before any run journal, external call or official-history
+    mutation when it is absent — a registry-free external route would let
+    unvalidated/sample data reach a user's feed and permanent exclusion
+    history. When supplied, the engine assembles and validates a
+    ``ValidatedSourceSet`` after FETCH and before SELECT/delivery claim (§8.4).
+
+    ``token_env`` uses ``None`` as the ONLY "omitted" sentinel (G4-007E): an
+    explicit value must be a valid non-empty environment-variable name and is
+    NEVER silently discarded nor replaced by the configured secret. A
+    missing/invalid effective name fails closed before any network call.
 
     v0.1 is DETERMINISTIC (ADR-0002 D8): ``llm_transport`` is accepted for
     test-shape compatibility but is never invoked — no external LLM call
@@ -178,8 +194,39 @@ def build_production_engine(
         raise DeliveryFailureError(
             "--deliver requires config delivery.channel == 'pushplus'"
         )
+    if source_registry is None:
+        # G4-007D: the trust anchor is REQUIRED for any external-delivery
+        # engine. A caller that omits it must fail here — before the run
+        # journal is touched, before any transport exists and before any
+        # official history could be mutated.
+        raise DeliveryFailureError(
+            "build_production_engine requires the reviewed SourceRegistry trust "
+            "anchor (ADR-0002 D6/§8-5): refusing to construct an external-"
+            "delivery engine without validated provenance; a registry-free "
+            "external route is not supported (G4-007D)"
+        )
+    # G4-007E: preserve None as the only "omitted" sentinel; an explicit value
+    # is honored verbatim or REJECTED — never coerced to the configured secret.
+    effective_token_env = (
+        token_env
+        if token_env is not None
+        else config.delivery.pushplus_token_env
+    )
+    if (
+        effective_token_env is not None
+        and (
+            not isinstance(effective_token_env, str)
+            or not _TOKEN_ENV_PATTERN.fullmatch(effective_token_env)
+        )
+    ):
+        raise DeliveryFailureError(
+            f"invalid pushplus_token_env name {effective_token_env!r}: "
+            "explicit token overrides and the configured value must be "
+            "non-empty environment-variable names (^[A-Z_][A-Z0-9_]*$); "
+            "refusing to fall back to another secret (G4-007E)"
+        )
     delivery = PushPlusDelivery(
-        token_env=token_env or config.delivery.pushplus_token_env,
+        token_env=effective_token_env,
         transport=transport or PushPlusHttpTransport(),
     )
     return RunEngine(

@@ -129,40 +129,50 @@ class InMemoryHistory:
         )
 
     def save_delivery_receipt(self, receipt: DeliveryReceipt) -> DeliveryReceipt:
-        # G4-002C parity (ADR-0001 §15-5): a non-null attempt_id must bind to
-        # the matching operation; legacy null-attempt receipts stay compatible.
-        if receipt.attempt_id is not None:
-            op = self._operations.get(receipt.idempotency_key)
-            if op is None:
-                raise InvariantFailureError(
-                    f"receipt attempt_id {receipt.attempt_id!r} references "
-                    f"no delivery operation {receipt.idempotency_key!r}"
-                )
-            if op.run_id != receipt.run_id or op.channel != receipt.channel:
-                raise InvariantFailureError(
-                    f"receipt attempt_id {receipt.attempt_id!r} is bound to "
-                    f"operation {receipt.idempotency_key!r} but the receipt "
-                    "declares mismatched run/channel (§15-5)"
-                )
-            if not any(
-                a.attempt_id == receipt.attempt_id
-                and a.operation_key == receipt.idempotency_key
-                for a in self._attempts
-            ):
-                raise InvariantFailureError(
-                    f"receipt attempt_id {receipt.attempt_id!r} does not belong "
-                    f"to operation {receipt.idempotency_key!r}"
-                )
+        # G4-002F parity (ADR-0002 D7/D9): immutable existing evidence is
+        # consulted FIRST — an already-migrated null-attempt row may be read
+        # and exactly replayed but never changed; every NEW v3 receipt must
+        # carry and validate its operation/run/channel/attempt binding. A
+        # fresh key can never become "legacy" by omitting the attempt field.
         existing = self._receipts.get(receipt.idempotency_key)
-        if existing is None:
-            self._receipts[receipt.idempotency_key] = receipt
-            return receipt
-        if existing == receipt:
-            return existing  # exact replay: no-op
-        raise InvariantFailureError(
-            f"delivery receipt conflict for key {receipt.idempotency_key!r}; "
-            "evidence is immutable (G1-002)"
-        )
+        if existing is not None:
+            if existing == receipt:
+                return existing  # exact replay (incl. legacy rows): no-op
+            raise InvariantFailureError(
+                f"delivery receipt conflict for key {receipt.idempotency_key!r}; "
+                "evidence is immutable (G1-002)"
+            )
+        if receipt.attempt_id is None:
+            raise InvariantFailureError(
+                f"cannot create a new delivery receipt for key "
+                f"{receipt.idempotency_key!r} without a bound delivery attempt: "
+                "only pre-v3 rows migrated from an older store may carry a NULL "
+                "attempt_id (ADR-0002 D7/D9); new v3 receipts must finalize "
+                "through an operation (G4-002F)"
+            )
+        op = self._operations.get(receipt.idempotency_key)
+        if op is None:
+            raise InvariantFailureError(
+                f"receipt attempt_id {receipt.attempt_id!r} references "
+                f"no delivery operation {receipt.idempotency_key!r}"
+            )
+        if op.run_id != receipt.run_id or op.channel != receipt.channel:
+            raise InvariantFailureError(
+                f"receipt attempt_id {receipt.attempt_id!r} is bound to "
+                f"operation {receipt.idempotency_key!r} but the receipt "
+                "declares mismatched run/channel (§15-5)"
+            )
+        if not any(
+            a.attempt_id == receipt.attempt_id
+            and a.operation_key == receipt.idempotency_key
+            for a in self._attempts
+        ):
+            raise InvariantFailureError(
+                f"receipt attempt_id {receipt.attempt_id!r} does not belong "
+                f"to operation {receipt.idempotency_key!r}"
+            )
+        self._receipts[receipt.idempotency_key] = receipt
+        return receipt
 
     def find_delivery_receipt(self, idempotency_key: str) -> DeliveryReceipt | None:
         return self._receipts.get(idempotency_key)
@@ -487,6 +497,40 @@ class FakeDelivery:
         )
 
 
+def bound_receipt(
+    history,
+    *,
+    run_id: str = "run-1",
+    key: str = "k",
+    channel: str = "markdown",
+    outcome: str = "ok",
+    evidence: str = "evidence",
+    attempted_at: str = "2026-08-19T09:05:00+00:00",
+) -> DeliveryReceipt:
+    """Create a v3-BOUND delivery receipt via the real claim/finalize protocol.
+
+    G4-002F: new receipts must carry a validated operation/attempt binding, so
+    tests that need a durable ok/failed/ambiguous receipt use this helper
+    (begin + finalize) instead of constructing an unbound ``DeliveryReceipt``.
+    """
+    snapshot = history.begin_delivery_operation(
+        run_id=run_id,
+        idempotency_key=key,
+        channel=channel,
+        payload_digest="digest",
+    )
+    history.finalize_delivery_attempt(
+        operation_key=key,
+        expected_version=snapshot.operation.version,
+        outcome=outcome,
+        evidence=evidence,
+        attempted_at=attempted_at,
+    )
+    receipt = history.find_delivery_receipt(key)
+    assert receipt is not None and receipt.attempt_id is not None
+    return receipt
+
+
 __all__ = [
     "FakeAlbumSource",
     "FakeCriticRatingSource",
@@ -494,4 +538,5 @@ __all__ = [
     "FakeGenreSource",
     "FakeLLM",
     "InMemoryHistory",
+    "bound_receipt",
 ]

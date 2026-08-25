@@ -499,81 +499,86 @@ class SqliteHistory:
     def save_delivery_receipt(self, receipt: DeliveryReceipt) -> DeliveryReceipt:
         try:
             with self._conn as conn:
-                # G4-002C (ADR-0001 §15-5): a receipt carrying a non-null
-                # attempt_id MUST bind to the matching operation — operation
-                # key, run id, channel and attempt all refer to the same
-                # operation, verified in the same transaction BEFORE any write.
-                # Legacy v1 rows (attempt_id NULL) keep the narrow compatibility
-                # rule: no attempt association is asserted, they remain readable
-                # and immutable.
-                if receipt.attempt_id is not None:
-                    op = conn.execute(
-                        "SELECT run_id, channel FROM delivery_operation "
-                        "WHERE operation_key = ?",
-                        (receipt.idempotency_key,),
-                    ).fetchone()
-                    if op is None:
-                        raise InvariantFailureError(
-                            f"receipt attempt_id {receipt.attempt_id!r} references "
-                            f"no delivery operation {receipt.idempotency_key!r}"
-                        )
-                    if (
-                        op["run_id"] != receipt.run_id
-                        or op["channel"] != receipt.channel
-                    ):
-                        raise InvariantFailureError(
-                            f"receipt attempt_id {receipt.attempt_id!r} is bound to "
-                            f"operation {receipt.idempotency_key!r} "
-                            f"(run {op['run_id']!r}, channel {op['channel']!r}) but "
-                            f"the receipt declares ({receipt.run_id!r}, "
-                            f"{receipt.channel!r}) — mismatched binding (§15-5)"
-                        )
-                    bound = conn.execute(
-                        "SELECT 1 FROM delivery_attempt "
-                        "WHERE attempt_id = ? AND operation_key = ?",
-                        (receipt.attempt_id, receipt.idempotency_key),
-                    ).fetchone()
-                    if bound is None:
-                        raise InvariantFailureError(
-                            f"receipt attempt_id {receipt.attempt_id!r} does not "
-                            f"belong to operation {receipt.idempotency_key!r}"
-                        )
+                # G4-002F (ADR-0002 D7/D9): immutable existing evidence is
+                # consulted FIRST. An already-migrated row (pre-v3, null
+                # attempt_id) may be read and exactly replayed but NEVER
+                # changed; every NEW v3 receipt must carry and transactionally
+                # validate its matching operation/run/channel/attempt
+                # association — a fresh key can never become "legacy" merely
+                # by omitting the attempt field.
                 row = conn.execute(
                     "SELECT run_id, delivered_at, channel, status, target, attempt_id "
                     "FROM delivery_receipt WHERE idempotency_key = ?",
                     (receipt.idempotency_key,),
                 ).fetchone()
-                if row is None:
-                    conn.execute(
-                        "INSERT INTO delivery_receipt "
-                        "(idempotency_key, run_id, delivered_at, channel, status, target, "
-                        " attempt_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (
-                            receipt.idempotency_key,
-                            receipt.run_id,
-                            receipt.delivered_at,
-                            receipt.channel,
-                            receipt.status,
-                            receipt.target,
-                            receipt.attempt_id,
-                        ),
+                if row is not None:
+                    existing = DeliveryReceipt(
+                        run_id=row["run_id"],
+                        idempotency_key=receipt.idempotency_key,
+                        delivered_at=row["delivered_at"],
+                        channel=row["channel"],
+                        status=row["status"],
+                        target=row["target"],
+                        attempt_id=row["attempt_id"],
                     )
-                    return receipt
-                existing = DeliveryReceipt(
-                    run_id=row["run_id"],
-                    idempotency_key=receipt.idempotency_key,
-                    delivered_at=row["delivered_at"],
-                    channel=row["channel"],
-                    status=row["status"],
-                    target=row["target"],
-                    attempt_id=row["attempt_id"],
+                    if existing == receipt:
+                        return existing  # exact replay (incl. legacy rows): no-op
+                    raise InvariantFailureError(
+                        f"delivery receipt conflict for key {receipt.idempotency_key!r}; "
+                        "evidence is immutable (G1-002)"
+                    )
+                # New key: a v3 receipt MUST be bound to a real operation/attempt.
+                if receipt.attempt_id is None:
+                    raise InvariantFailureError(
+                        f"cannot create a new delivery receipt for key "
+                        f"{receipt.idempotency_key!r} without a bound delivery "
+                        "attempt: only pre-v3 rows migrated from an older store "
+                        "may carry a NULL attempt_id (ADR-0002 D7/D9); new v3 "
+                        "receipts must finalize through an operation (G4-002F)"
+                    )
+                op = conn.execute(
+                    "SELECT run_id, channel FROM delivery_operation "
+                    "WHERE operation_key = ?",
+                    (receipt.idempotency_key,),
+                ).fetchone()
+                if op is None:
+                    raise InvariantFailureError(
+                        f"receipt attempt_id {receipt.attempt_id!r} references "
+                        f"no delivery operation {receipt.idempotency_key!r}"
+                    )
+                if op["run_id"] != receipt.run_id or op["channel"] != receipt.channel:
+                    raise InvariantFailureError(
+                        f"receipt attempt_id {receipt.attempt_id!r} is bound to "
+                        f"operation {receipt.idempotency_key!r} "
+                        f"(run {op['run_id']!r}, channel {op['channel']!r}) but "
+                        f"the receipt declares ({receipt.run_id!r}, "
+                        f"{receipt.channel!r}) — mismatched binding (§15-5)"
+                    )
+                bound = conn.execute(
+                    "SELECT 1 FROM delivery_attempt "
+                    "WHERE attempt_id = ? AND operation_key = ?",
+                    (receipt.attempt_id, receipt.idempotency_key),
+                ).fetchone()
+                if bound is None:
+                    raise InvariantFailureError(
+                        f"receipt attempt_id {receipt.attempt_id!r} does not "
+                        f"belong to operation {receipt.idempotency_key!r}"
+                    )
+                conn.execute(
+                    "INSERT INTO delivery_receipt "
+                    "(idempotency_key, run_id, delivered_at, channel, status, target, "
+                    " attempt_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        receipt.idempotency_key,
+                        receipt.run_id,
+                        receipt.delivered_at,
+                        receipt.channel,
+                        receipt.status,
+                        receipt.target,
+                        receipt.attempt_id,
+                    ),
                 )
-                if existing == receipt:
-                    return existing  # exact replay: no-op
-                raise InvariantFailureError(
-                    f"delivery receipt conflict for key {receipt.idempotency_key!r}; "
-                    "evidence is immutable (G1-002)"
-                )
+                return receipt
         except sqlite3.Error as exc:
             # InvariantFailureError above is not a sqlite3.Error and passes through.
             raise StateCommitFailureError(

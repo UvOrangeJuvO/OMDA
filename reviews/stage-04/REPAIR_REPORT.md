@@ -399,3 +399,92 @@ D8 产品语义变更影响的 5 个 LLM 相关测试按新语义升级并披露
 3. ODP-1（live MusicBrainz tag-search）仍未定案未实现（§8-1 不变）；AC-9B 条件未启用。
 4. PushPlus 文档化 definitive 类别当前为零——全部非 200 均为 ambiguous（保守，符合
    ADR-0001 §9/§15-3）；未来有文档化 no-side-effect 类别时可放宽。
+
+---
+
+# G4 Resume Re-review 1 Repair（2026-08-25，candidate 81309b1）
+
+对应 Reviewer commit：`08337254be9b8c7757356f467f5271bdfaab821e`（`review(g4): keep production
+trust and receipt binding open`，结论 **CHANGES_REQUESTED**：G4-007D（P1）、G4-002F（P1）、
+G4-007E（P2））
+被审 candidate：`81309b167923d02c917fd21bcf3a881c5c8265bb`
+本轮修复范围：仅上述三项 + SQLite/InMemory parity + 公共入口负向测试；**未实施任何 G5
+功能**；未自行写 ACCEPTED；无需新 ADR（均为已接受 ADR-0002 D6/D7/D9 与 token-override
+契约的窄幅实现）。
+每项先复现 Reviewer 反例、再做最小修复；未删除/弱化既有测试（受 G4-002F 新写入规则影响
+的 receipt fixture 测试改为经 bound claim/finalize 协议构造，语义等价升级并披露）。
+
+## G4-007D（P1）— 公共生产组合存在 registry-free 交付旁路 — CLOSED
+
+- **复现**：`build_production_engine(source_registry=None)` + fake sources + 注入成功
+  PushPlus transport → run COMPLETE、1 次外部调用、官方 pick index 前进到 3、提交
+  `bebop-1` 等编造 ID。
+- **修复**：`build_production_engine` 将 `source_registry` 变为**强制信任锚**——缺失即
+  `DeliveryFailureError`，发生在**任何 run journal、外部调用或官方历史变更之前**（构造期
+  抛错，transport 不存在、history 未触碰）；docstring 更新为"mandatory trust anchor"。
+- **测试**：
+  - 新增 `test_build_production_engine_rejects_missing_registry_before_side_effects`
+    （负向：registry 缺失 → DeliveryFailureError，`transport.calls == 0`、journal 零写入、
+    pick index 0、exclusions 空）；
+  - `test_build_production_engine_returns_real_runengine_...` 改为显式传 registry
+    （`SourceRegistry({})`，构造不 run）证明正向组合；
+  - 原 run 级组合测试（success/ambiguous/zero-bytes/definitive）改为**直接构造 RunEngine**
+    （fixture sources、无 registry）——Reviewer 许可的"explicitly local/history-neutral
+    fixture composition"，与公共外部交付组合明确分离。
+
+## G4-002F（P1）— 全新 v3 store 可创建未绑定的 legacy 式收据 — CLOSED
+
+- **复现**：fresh `user_version=3` store 插入 `fresh:markdown`（attempt_id=None）→ SQLite
+  与 InMemoryHistory 均接受；AC-4 测试把 fresh-key insert 当 legacy 兼容。
+- **修复**（SQLite + InMemory parity）：`save_delivery_receipt` 先查**不可变既有证据**——
+  已迁移的 null-attempt 行可读取与**精确重放**但绝不修改（冲突 `InvariantFailureError`）；
+  **新 key 必须携带并同事务校验**匹配的 operation/run/channel/attempt 关联——attempt_id
+  为 None 的新写入一律 `InvariantFailureError`（"fresh key 不能仅靠省略字段变成 legacy"）。
+- **测试**：
+  - `test_ac4_save_receipt_rejects_unbound_attempt` 更新：fresh null 写入 → 拒绝（两种
+    实现），原 legacy 兼容断言移除；
+  - 新增 `test_ac4_bound_receipt_binding_is_validated`（绑定收据可存 + 精确重放 no-op）、
+    `test_ac4_migrated_legacy_row_stays_null_readable_and_immutable`（v1 迁移行 attempt_id
+    NULL、可读、可精确重放、冲突写入拒绝）；
+  - `test_sqlite_history.py` 新增 `test_new_receipt_without_bound_attempt_fails_closed`；
+  - recovery 决策测试改用 bound receipt（`bound_receipt` helper：begin+finalize 协议构造）；
+    "无 post-delivery journal 的 legacy receipt"场景改用**真实 SQLite 迁移 v1 行**
+    （`test_legacy_migrated_receipt_without_journal_is_require_human`）；
+  - `test_receipt_conflict_after_external_call_enters_recovery` 改用真实迁移 legacy 行
+    场景（保留原意图：external call 1 次 + RECOVERING + 原证据保留）。
+
+## G4-007E（P2）— 显式空 token 覆盖被静默丢弃并回退配置密钥 — CLOSED
+
+- **复现**：`--token-env ''` + config `OMDA_PP_TOKEN` 已设 → COMPLETE、1 次外部调用且使用
+  配置 token。
+- **修复**：
+  1. `build_production_engine` 用 `token_env if token_env is not None else config...`
+     （**None 是唯一"省略"哨兵**，空串/任意显式值原样传递）；
+  2. 生效的 token env 名用与 config 相同的 env 名契约（`^[A-Z_][A-Z0-9_]*$`）校验——
+     **空串/非法名 → `DeliveryFailureError`**（推送前、零网络调用），绝不回退另一密钥；
+  3. secret 永不落日志（负向测试用 capsys 断言输出不含 token）。
+- **测试**：`test_ac5_invalid_explicit_token_override_is_rejected_not_discarded` 参数化
+  `["", "invalid-name", "lower_case", "HAS SPACE"]`——非零退出、`calls == 0`、输出无
+  `configured-secret`；既有 config-only / CLI-override / missing-token 三态保持通过。
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **744 passed, 0 failed, 0 skipped, 0 error**（734→744，+10 新增/参数化测试） |
+| `pytest -v`（reviews/stage-04/TEST_RESULTS.txt） | 744 passed |
+| `ruff check src tests tools browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 独立复现 probe（registry-free builder / fresh null-attempt / 空 token 覆盖） | 3/3 全拒或正确处理 |
+| 既有测试未删除/弱化/skip | 确认（receipt fixture 测试改经 bound 协议构造、legacy 场景改真实 v1 迁移，语义等价升级并披露） |
+| G4 层零 G5 实现；G2 Core 零改动 | 确认 |
+| 未 merge / 未 tag / 未 push / 未进入 G5 / 未写 ACCEPTED | 确认 |
+| PROJECT_STATE | G4 / **READY_FOR_REVIEW** |
+
+## 残余风险（诚实披露）
+
+1. 迁移 legacy 行（attempt_id NULL）在 v3 store 中继续可读且可精确重放——这是 ADR-0002
+   D7/D9 明确允许的兼容语义；它们没有 operation/attempt 绑定，恢复时若无 delivery
+   journal tail 一律 REQUIRE_HUMAN（已测）。
+2. 其余残余风险沿用上一轮：curated 包规模有限（耗尽显式失败已测）、v0.1 无 LLM
+   narrative（D8 取舍）、ODP-1 未定案、PushPlus 无文档化 definitive 类别。

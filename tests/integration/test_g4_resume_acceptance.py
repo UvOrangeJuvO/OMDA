@@ -447,17 +447,104 @@ def test_ac4_save_receipt_rejects_unbound_attempt(factory, tmp_path) -> None:
                     status="ok", attempt_id="a:pushplus#99",
                 )
             )
-        # v1 legacy compatibility: a null-attempt receipt on a fresh key stores.
-        legacy = store.save_delivery_receipt(
-            DeliveryReceipt(
-                run_id="run-c", idempotency_key="c:markdown",
-                delivered_at="2026-01-01T00:00:00Z", channel="markdown",
-                status="ok", target="c.md", attempt_id=None,
+        # G4-002F: a FRESH key with attempt_id=None can no longer be inserted —
+        # only genuine pre-v3 migrated rows may keep a NULL attempt binding.
+        with pytest.raises(InvariantFailureError):
+            store.save_delivery_receipt(
+                DeliveryReceipt(
+                    run_id="run-c", idempotency_key="c:markdown",
+                    delivered_at="2026-01-01T00:00:00Z", channel="markdown",
+                    status="ok", target="c.md", attempt_id=None,
+                )
             )
-        )
-        assert legacy.attempt_id is None
+        assert store.find_delivery_receipt("c:markdown") is None
     finally:
         getattr(store, "close", lambda: None)()
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        pytest.param(lambda p: SqliteHistory(p), id="sqlite"),
+        pytest.param(lambda p: InMemoryHistory(), id="in-memory"),
+    ],
+)
+def test_ac4_bound_receipt_binding_is_validated(factory, tmp_path) -> None:
+    # AC-4 (G4-002F positive): a correctly bound receipt (operation + attempt)
+    # is accepted; its run/channel/attempt must all match the operation.
+
+    store = factory(tmp_path / "ac4b.db")
+    try:
+        snap = store.begin_delivery_operation(
+            run_id="run-a", idempotency_key="a:pushplus",
+            channel="pushplus", payload_digest="digest-a",
+        )
+        store.finalize_delivery_attempt(
+            operation_key="a:pushplus",
+            expected_version=snap.operation.version,
+            outcome="ok", evidence="ok", attempted_at="2026-08-22T00:00:01Z",
+        )
+        bound = store.find_delivery_receipt("a:pushplus")
+        assert bound is not None and bound.attempt_id == "a:pushplus#1"
+        # Exact replay of the bound receipt is a no-op (immutable).
+        assert store.save_delivery_receipt(bound) == bound
+    finally:
+        getattr(store, "close", lambda: None)()
+
+
+def test_ac4_migrated_legacy_row_stays_null_readable_and_immutable(tmp_path) -> None:
+    # G4-002F: a GENUINE pre-v3 row migrated to v3 keeps NULL attempt_id, stays
+    # readable and can be exactly replayed — but a fresh null write is rejected
+    # (covered above) and the migrated row can never be modified.
+    import sqlite3
+
+    path = tmp_path / "legacy-ac4.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE run_journal (journal_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "run_id TEXT NOT NULL, transition TEXT NOT NULL, at TEXT NOT NULL, detail TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE genre_pick_history (pick_index INTEGER PRIMARY KEY, "
+        "run_id TEXT NOT NULL, genre_id TEXT NOT NULL, committed_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE album_history (album_id TEXT PRIMARY KEY, canonical_id TEXT, "
+        "canonical_source TEXT, identity_confidence TEXT NOT NULL, run_id TEXT NOT NULL, "
+        "recommended_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE delivery_receipt (idempotency_key TEXT PRIMARY KEY, "
+        "run_id TEXT NOT NULL, delivered_at TEXT NOT NULL, channel TEXT NOT NULL, "
+        "status TEXT NOT NULL, target TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO delivery_receipt VALUES "
+        "('old:markdown', 'old', '2026-01-01T00:00:00Z', 'markdown', 'ok', 'old.md')"
+    )
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    conn.close()
+    store = SqliteHistory(path)
+    try:
+        assert store.schema_version() == 3
+        legacy = store.find_delivery_receipt("old:markdown")
+        assert legacy is not None and legacy.attempt_id is None
+        # Exact replay of the migrated legacy row is a no-op.
+        assert store.save_delivery_receipt(legacy) == legacy
+        # A conflicting write to the legacy row fails closed (immutable).
+        from omda.ports.domain import DeliveryReceipt
+
+        with pytest.raises(InvariantFailureError):
+            store.save_delivery_receipt(
+                DeliveryReceipt(
+                    run_id="new", idempotency_key="old:markdown",
+                    delivered_at="2026-02-01T00:00:00Z", channel="markdown",
+                    status="ok", attempt_id=None,
+                )
+            )
+    finally:
+        store.close()
 
 
 # --- AC-5 (G4-007C): config-only / CLI-override / missing-token -------------
@@ -534,6 +621,41 @@ def test_ac5_missing_token_fails_without_external_call(monkeypatch, tmp_path) ->
     assert code != 0  # token missing -> run fails
     assert fake.calls == 0  # never reached the network
     # The secret is never logged: stdout contains no token value (it was absent).
+
+
+@pytest.mark.parametrize("bad_override", ["", "invalid-name", "lower_case", "HAS SPACE"])
+def test_ac5_invalid_explicit_token_override_is_rejected_not_discarded(
+    bad_override, monkeypatch, tmp_path, capsys
+) -> None:
+    # G4-007E: an EXPLICIT empty/invalid --token-env must be rejected — it must
+    # never silently fall back to the configured secret. Zero network calls,
+    # non-zero exit, and neither the configured nor the (absent) override token
+    # ever appears in output.
+    from omda import cli
+
+    os.environ["OMDA_PP_TOKEN"] = "configured-secret"
+    try:
+        fake = _FakeTransport(ProviderSuccess({"code": 200}))
+        monkeypatch.setattr(cli, "_pushplus_transport", lambda: fake)
+        code = cli.main(
+            [
+                "--deliver",
+                "--config",
+                str(_pushplus_config(tmp_path, "OMDA_PP_TOKEN")),
+                "--token-env",
+                bad_override,
+                "--run-id",
+                "ac5-bad",
+                "--history",
+                str(tmp_path / f"ac5-bad-{len(bad_override)}.sqlite3"),
+            ]
+        )
+        assert code != 0  # rejected, never silently accepted
+        assert fake.calls == 0  # zero transport calls
+        captured = capsys.readouterr()
+        assert "configured-secret" not in (captured.out + captured.err)
+    finally:
+        os.environ.pop("OMDA_PP_TOKEN", None)
 
 
 # --- AC-6 (G4-002E): production docstring matches the enforced classification -

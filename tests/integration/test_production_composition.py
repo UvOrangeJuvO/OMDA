@@ -21,11 +21,14 @@ from omda.adapters.delivery import (
     NoBytesSentError,
     ProviderRejection,
     ProviderSuccess,
+    PushPlusDelivery,
 )
+from omda.adapters.llm import LLMAdapter
 from omda.config import Config, DeliveryConfig, load_config
 from omda.orchestrator.run import COMPLETE, RECOVERING, RunEngine
 from omda.ports.domain import AlbumCandidate, GenreRef
 from omda.production import PushPlusHttpTransport, build_production_engine
+from omda.sources.registry import SourceRegistry
 
 
 class FakeLLMTransport:
@@ -87,6 +90,26 @@ def _config(channel: str = "pushplus") -> Config:
 
 
 def _engine(transport, history=None, channel="pushplus"):
+    # G4-007D: delivery-behavior tests construct the REAL RunEngine directly
+    # (fixture sources, no registry) — this is a local/history-neutral engine,
+    # NOT the public external-delivery composition, which now REQUIRES the
+    # reviewed SourceRegistry trust anchor (see build_production_engine tests).
+    return RunEngine(
+        config=_config(channel),
+        history=history or InMemoryHistory(),
+        genre_source=FakeGenreSource(_genres()),
+        album_source=FakeAlbumSource({g.genre_id: _albums(g.genre_id) for g in _genres()}),
+        llm=LLMAdapter(transport=FakeLLMTransport()),
+        delivery=PushPlusDelivery(
+            token_env="PUSHPLUS_TOKEN",
+            transport=transport,
+            sleeper=NoSleep(),
+        ),
+        seed="production",
+    )
+
+
+def _production_engine(transport, history=None, *, registry=None, channel="pushplus"):
     return build_production_engine(
         config=_config(channel),
         history=history or InMemoryHistory(),
@@ -94,12 +117,19 @@ def _engine(transport, history=None, channel="pushplus"):
         album_source=FakeAlbumSource({g.genre_id: _albums(g.genre_id) for g in _genres()}),
         llm_transport=FakeLLMTransport(),
         transport=transport,
+        token_env="PUSHPLUS_TOKEN",
         seed="production",
+        source_registry=registry,
     )
 
 
 def test_build_production_engine_returns_real_runengine_with_pushplus_delivery() -> None:
-    engine = _engine(ScriptedPushPlusTransport(ProviderSuccess({"code": 200})))
+    # G4-007D: the public external-delivery builder requires the reviewed
+    # SourceRegistry trust anchor; with one supplied it composes a real engine.
+    engine = _production_engine(
+        ScriptedPushPlusTransport(ProviderSuccess({"code": 200})),
+        registry=SourceRegistry({}),
+    )
     assert isinstance(engine, RunEngine)
     assert engine._config.delivery.channel == "pushplus"
     assert engine._delivery is not None
@@ -109,7 +139,26 @@ def test_build_production_engine_rejects_non_pushplus_channel() -> None:
     from omda.ports.errors import DeliveryFailureError
 
     with pytest.raises(DeliveryFailureError):
-        _engine(ScriptedPushPlusTransport(ProviderSuccess({"code": 200})), channel="markdown")
+        _production_engine(
+            ScriptedPushPlusTransport(ProviderSuccess({"code": 200})),
+            channel="markdown",
+            registry=SourceRegistry({}),
+        )
+
+
+def test_build_production_engine_rejects_missing_registry_before_side_effects() -> None:
+    # G4-007D negative: a registry-free public external composition fails closed
+    # BEFORE any run journal, external call or official-history mutation.
+    from omda.ports.errors import DeliveryFailureError
+
+    history = InMemoryHistory()
+    transport = ScriptedPushPlusTransport(ProviderSuccess({"code": 200}))
+    with pytest.raises(DeliveryFailureError):
+        _production_engine(transport, history, registry=None)
+    assert transport.calls == 0  # zero transport calls
+    assert history.journal_after("any-run", 0) == []  # zero journal writes
+    assert history.latest_pick_index() == 0  # zero official-history mutation
+    assert history.excluded_album_identities() == frozenset()
 
 
 def test_production_run_success_commits_history_in_order() -> None:

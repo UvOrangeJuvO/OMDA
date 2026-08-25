@@ -223,7 +223,19 @@ def test_same_idempotency_key_does_not_cause_second_push() -> None:
     key = "run-1:pushplus"
     first = delivery.deliver("payload", key, token_provider=lambda: "test-token")
     assert first.status == "ok"
-    history.save_delivery_receipt(first)
+    # G4-002F: the durable receipt is created through the bound claim/finalize
+    # protocol (a fresh receipt cannot be inserted without an operation).
+    snapshot = history.begin_delivery_operation(
+        run_id="run-1", idempotency_key=key, channel="pushplus",
+        payload_digest="digest",
+    )
+    history.finalize_delivery_attempt(
+        operation_key=key,
+        expected_version=snapshot.operation.version,
+        outcome="ok",
+        evidence=first.target or "",
+        attempted_at=first.delivered_at,
+    )
     assert transport.calls == 1
 
     # Replay: the caller (recovery) sees the durable receipt for the key and
