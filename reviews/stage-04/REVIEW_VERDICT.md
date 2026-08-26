@@ -995,3 +995,70 @@ implementations of already Accepted ADR-0002 D6/D7/D9 and the existing token-ove
 contract. The Executor should repair only G4-007D, G4-002F and G4-007E, rerun the complete
 evidence set, update the G4 repair package/state to `READY_FOR_REVIEW`, commit one new
 cumulative candidate against the unchanged original base, and stop for re-review.
+
+# G4 Resume Re-review 2 — Final acceptance (2026-08-26)
+
+## Reviewed object
+
+- Reviewer: GPT-5.6 Sol in Codex
+- Exact original base SHA: `68e3d453c7b803d2090cb1318f48e58eb18d6390`
+- Previous Reviewer commit: `08337254be9b8c7757356f467f5271bdfaab821e`
+- Exact candidate SHA: `2b6e8a75382618988f048a566e2fb0497aa72ec3`
+- Candidate branch observed: `exec/g4-agent-delivery`
+- Repair evidence: `reviews/stage-04/REPAIR_REPORT.md`
+- Executor test evidence: `reviews/stage-04/TEST_RESULTS.txt`
+
+The candidate's direct parent is the previous Reviewer commit and its merge-base with the
+unchanged original G4 base is exact. The worktree was clean at review start. The complete
+Reviewer-to-candidate diff was inspected; production changes are limited to the three requested
+boundaries plus their parity/regression fixtures and governance evidence.
+
+## Finding closure
+
+| Finding | Final status | Independent evidence |
+|---|---|---|
+| G4-007D mandatory production SourceRegistry | **CLOSED** | Registry-free `build_production_engine` raises before construction; zero journal entries, zero transport calls and zero official-history change. Successful public curated delivery remains covered by the cumulative AC-1 path. |
+| G4-002F bound-only new v3 receipts | **CLOSED** | Fresh null-attempt writes are rejected by both SQLite and InMemory; a genuine migrated v1 row remains readable, exactly replayable and immutable; correctly bound receipts remain accepted. |
+| G4-007E strict token override | **CLOSED** | An explicit empty override returns non-zero and makes zero transport calls instead of falling back to the configured secret; invalid-name variants and normal config/override paths pass. |
+
+No new P0/P1/P2 finding was identified in the supplied repair range. The Accepted ADR-0002
+architecture remains unchanged: v0.1 uses reviewed curated sources, a registry-validated
+production path, non-destructive v3 persistence and deterministic/no-LLM delivery.
+
+## Final acceptance matrix
+
+| G4 criterion | Status |
+|---|---|
+| Reviewed non-demo curated 3x3 source path | **PASS** |
+| SourceRegistry/ValidatedSourceSet required for public external composition | **PASS** |
+| Outbound facts and committed MBIDs trace to the validated source evidence | **PASS** |
+| Deterministic selection and fact-only report remain outside LLM | **PASS** |
+| v0.1 provider mode fails closed; deterministic mode makes no LLM call | **PASS** |
+| Delivery ambiguity/idempotency and human recovery rules | **PASS** |
+| Operation/attempt/receipt/resolution transactional bindings | **PASS** |
+| Only genuine migrated legacy receipts may retain NULL attempt IDs | **PASS** |
+| v3 forward migration and unknown/future schema fail-closed behavior | **PASS** |
+| Token config/override/missing/invalid handling | **PASS** |
+| Default dry-run is local and official-history-neutral | **PASS** |
+| Full regression, lint and whitespace checks | **PASS** |
+
+## Independent checks and limits
+
+- Exact SHA, parent, branch, merge-base, clean-worktree and repair-delta inspection: passed.
+- Isolated full suite: **744 passed, 0 failed**.
+- Ruff over `src`, `tests`, `tools` and `browser_companion`: passed with cache disabled.
+- `git diff --check` for Reviewer commit to candidate: passed.
+- The three prior counterexamples were rerun independently and are now rejected at the intended
+  boundaries.
+- No live PushPlus, LLM, MusicBrainz, RYM or other network request was made.
+- No production code was changed by the Reviewer. No merge, tag, push or G5 work was performed.
+
+## Resume re-review 2 verdict
+
+**ACCEPTED**
+
+Candidate `2b6e8a75382618988f048a566e2fb0497aa72ec3` is the approved G4 candidate.
+G4 may now proceed to the separately controlled merge/state-close operation. This verdict does
+not itself merge the branch, create a release tag, push any ref or authorize unreviewed G5
+implementation. After the controlled merge, G5 may be prepared only through the repository's
+normal Gate transition protocol.
