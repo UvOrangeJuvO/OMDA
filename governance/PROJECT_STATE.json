@@ -3,7 +3,7 @@
   "project": "OMDA",
   "release_target": "0.1.0",
   "active_gate": "G5",
-  "status": "IN_PROGRESS",
+  "status": "READY_FOR_REVIEW",
   "executor": "deepseek-v4-flash",
   "reviewer": "gpt-5.6-sol",
   "base_commit": "d9944aa27bede364daf3ef93256016d5954792f6",
@@ -12,5 +12,5 @@
   "open_review": "reviews/stage-05/EXECUTOR_REPORT.md",
   "blocking_adr": null,
   "adr_status": "ADR_ACCEPTED",
-  "updated_at": "2026-08-26T12:11:15+0800"
+  "updated_at": "2026-08-26T13:10:00+0800"
 }
