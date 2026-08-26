@@ -29,12 +29,29 @@ from omda.core.album import dedupe_candidates, filter_candidates
 from omda.core.genre import select_daily_genres
 from omda.core.rating import rank_candidates
 from omda.core.year import AlbumSelectionResult, select_albums_for_genre
+
+# G4-004R: the REAL engine and the recovery helper share ONE decision path.
+from omda.orchestrator.recovery import (
+    COMMIT_HISTORY,
+    COMPLETE_ALREADY,
+    resolve_recovery_action,
+)
+from omda.output.markdown import (
+    build_report_data,
+    render_markdown,
+    validate_markdown,
+)
 from omda.ports.album import AlbumSource
 from omda.ports.critic import CriticRatingRow
 from omda.ports.delivery import Delivery
 from omda.ports.domain import (
+    OP_CONFIRMED_FAILED,
+    OP_RESOLVED_DELIVERED,
+    OP_RESOLVED_NOT_DELIVERED,
+    OP_SUCCEEDED,
     AlbumCandidate,
     AlbumIdentity,
+    DeliveryOperation,
     DeliveryReceipt,
     GenrePickRecord,
     GenreRef,
@@ -45,6 +62,7 @@ from omda.ports.errors import (
     DomainError,
     GenerationFailureError,
     InsufficientCandidatesError,
+    InvalidInputError,
     InvariantFailureError,
     SourceUnavailableError,
     StateCommitFailureError,
@@ -53,10 +71,16 @@ from omda.ports.errors import (
 from omda.ports.genre import GenreSource
 from omda.ports.history import HistoryPort
 from omda.ports.llm import LLM
+from omda.ports.source import (
+    ValidatedSourceSet,
+    assemble_validated_source_set,
+)
 from omda.seed import make_rng
 
 MAX_PAYLOAD_LENGTH = 4000
 MAX_RUN_ATTEMPTS = 2
+# G4-008: bounded archival length for the LLM narrative in the GENERATED entry.
+NARRATIVE_ARCHIVE_LENGTH = 1500
 
 # Run transitions (SPEC §4).
 PLANNED = "PLANNED"
@@ -252,6 +276,7 @@ class RunEngine:
         critic_rows: dict[str, list[CriticRatingRow]] | None = None,
         rating_weights: dict[str, float] | None = None,
         missing_policy: str = "skip",
+        source_registry: Any = None,
     ) -> None:
         self._config = config
         self._history = history
@@ -259,6 +284,14 @@ class RunEngine:
         self._album_source = album_source
         self._llm = llm
         self._delivery = delivery
+        # ADR-0002 §8-4: the reviewed source registry is the trust anchor. When
+        # wired (the PRODUCTION path), every run assembles and validates a
+        # ValidatedSourceSet AFTER fetch and BEFORE selection/delivery claim.
+        self._source_registry = source_registry
+        # ADR-0002 D8: v0.1 is a deterministic/no-LLM runtime — config only
+        # permits llm.mode == "deterministic" (provider fails closed in config
+        # validation); the engine therefore never calls an external LLM.
+        self._llm_mode = config.llm.mode if config.llm is not None else "deterministic"
         # G2-006/G2-008: the engine never holds a mutable long-lived RNG. The base
         # seed is explicit (caller argument takes precedence over Config.seed);
         # every run derives its own generator from durable provenance, so later
@@ -359,13 +392,63 @@ class RunEngine:
                 parents_by_genre=parents_by_genre,
             )
 
-            # FETCH: candidates per genre.
-            candidates_by_genre: dict[str, list[AlbumCandidate]] = {}
-            for genre in chosen:
-                candidates_by_genre[genre.genre_id] = self._album_source.candidates_for_genre(
-                    genre
-                )
-            self._append(run_id, FETCHED)
+            # FETCH: candidates per genre. On the PRODUCTION path (a reviewed
+            # source registry is wired) the trusted application boundary
+            # assembles and validates a ValidatedSourceSet AFTER fetch and
+            # BEFORE selection/delivery claim (ADR-0002 §8.4): every Genre
+            # descriptor and Album batch must match the reviewed registry, and
+            # the selected Genre IDs must belong to the digest-bound eligible
+            # set. The FETCHED journal records the source evidence (§8.8) so
+            # outbound facts and committed MBIDs trace to the same validated
+            # source set.
+            if self._source_registry is not None:
+                genre_descriptors = (self._genre_source.descriptor(),)
+                batches = tuple(self._album_source.source_batch(genre) for genre in chosen)
+                try:
+                    validated = assemble_validated_source_set(
+                        self._source_registry,
+                        genre_descriptors=genre_descriptors,
+                        batches=batches,
+                        selected_genre_ids=tuple(g.genre_id for g in chosen),
+                        required_candidates_per_genre=self._config.albums_per_genre,
+                    )
+                except InvalidInputError as exc:
+                    # G4-007B / ADR-0002 §8.4: sample/demo/missing/forged sources
+                    # fail closed BEFORE selection, delivery claim or any
+                    # history mutation — never substituted with unrelated data.
+                    self._append(
+                        run_id,
+                        FAILED,
+                        {
+                            "reason": "validated source set rejected",
+                            "message": str(exc),
+                        },
+                    )
+                    return RunOutcome(run_id=run_id, state=FAILED)
+                if validated.is_demo:
+                    # ADR-0002 D6/§8-2: a demo Genre or demo Album batch can
+                    # never reach external delivery — the production gate
+                    # rejects it here (the illustrative rym-sample package is
+                    # demo and must be refused on --deliver).
+                    self._append(
+                        run_id,
+                        FAILED,
+                        {
+                            "reason": "demo source set rejected for external delivery",
+                            "source_set_is_demo": True,
+                        },
+                    )
+                    return RunOutcome(run_id=run_id, state=FAILED)
+                self._append(run_id, FETCHED, _source_evidence(validated))
+                candidates_by_genre = _candidates_from_validated(validated)
+            else:
+                # Fixture path (no registry): the provider-neutral envelope is
+                # still used; selection data comes from the adapter as before.
+                candidates_by_genre = {
+                    genre.genre_id: self._album_source.candidates_for_genre(genre)
+                    for genre in chosen
+                }
+                self._append(run_id, FETCHED)
 
             # SELECT: deterministic Core selection (3x3), permanent exclusion +
             # within-run dedup + rating + year constraints.
@@ -380,14 +463,17 @@ class RunEngine:
             self._append(run_id, SELECTED, plan.digest())
 
             # GENERATE + VALIDATE.
-            payload = self._generate(plan)
-            self._append(run_id, GENERATED)
-            self._validate_payload(payload)
+            payload = self._generate(plan)  # appends GENERATED with the narrative
+            self._validate_payload(payload, plan)
             self._append(run_id, VALIDATED)
 
             # DELIVER with stable idempotency key; persist receipt first.
             return self._deliver_and_commit(run_id, plan, payload)
-        except (SourceUnavailableError, InsufficientCandidatesError) as exc:
+        except (SourceUnavailableError, InsufficientCandidatesError, InvalidInputError) as exc:
+            # InvalidInputError covers source-side rejection on the production
+            # path (e.g. a Genre whose curated package has no batch) — it must
+            # surface as an explicit FAILED run, never an unclassified crash,
+            # and never a history mutation (G1-001).
             self._append(run_id, FAILED, {"reason": type(exc).__name__, "message": str(exc)})
             return RunOutcome(run_id=run_id, state=FAILED)
         except (GenerationFailureError, ValidationFailureError, DeliveryFailureError) as exc:
@@ -452,21 +538,65 @@ class RunEngine:
         )
 
     def _generate(self, plan: Plan) -> str:
+        # ADR-0002 D8 / §8-10 / AC-8: v0.1 is a DETERMINISTIC (no-LLM) runtime.
+        # No external LLM is ever called; the GENERATED journal records a TYPED
+        # deterministic marker (never a fabricated narrative sentence), and the
+        # delivered payload is the deterministic fact report (G4-005 mechanical
+        # contract: no free-text slot, so an off-packet Album/Genre reference
+        # can never be delivered). A future provider mode requires its own
+        # implemented adapter, versioned config and Gate acceptance — it is not
+        # part of v0.1.
+        if self._llm_mode == "deterministic":
+            self._append(
+                plan.run_id,
+                GENERATED,
+                {"narrative_mode": "deterministic"},
+            )
+            return render_markdown(self._report_data(plan))
+        # Unreachable in v0.1 (config fails closed on provider mode); retained
+        # only as the documented future-provider seam.
         packet = FactPacket(run_id=plan.run_id, plan=plan)
         try:
-            return self._llm.generate_narrative(_packet_dict(packet))
+            narrative = self._llm.generate_narrative(
+                _packet_dict(packet),
+                expected_genres=len(plan.genres),
+                expected_albums=len(plan.albums),
+            )
         except DomainError:
             raise
         except Exception as exc:  # provider-side generation failure
             raise GenerationFailureError(f"narrative generation failed: {exc}") from exc
+        self._append(
+            plan.run_id,
+            GENERATED,
+            {"narrative": (narrative or "")[:NARRATIVE_ARCHIVE_LENGTH]},
+        )
+        return render_markdown(self._report_data(plan))
 
-    def _validate_payload(self, payload: str) -> None:
-        if not payload or not payload.strip():
-            raise ValidationFailureError("generated payload is empty")
-        if len(payload) > MAX_PAYLOAD_LENGTH:
-            raise ValidationFailureError(
-                f"generated payload exceeds {MAX_PAYLOAD_LENGTH} characters"
-            )
+    def _validate_payload(self, payload: str, plan: Plan) -> None:
+        # G4-001: full structure/length/fact-reference validation of the
+        # rendered report BEFORE any delivery (SPEC §8, T4.2). A payload that
+        # fails this never reaches the Delivery Port.
+        validate_markdown(payload, self._report_data(plan))
+
+    def _report_data(self, plan: Plan):
+        """Plain report facts from the selected plan (leaf data for Markdown)."""
+        return build_report_data(
+            run_id=plan.run_id,
+            genres=[
+                {"genre_id": g.genre_id, "name": g.name} for g in plan.genres
+            ],
+            albums=[
+                {
+                    "album_id": a.album_id,
+                    "genre_id": a.genre_id,
+                    "title": a.title,
+                    "artist": a.artist,
+                    "year": a.year,
+                }
+                for a in plan.albums
+            ],
+        )
 
     def _idempotency_key(self, run_id: str) -> str:
         return f"{run_id}:{self._config.delivery.channel}"
@@ -483,14 +613,60 @@ class RunEngine:
 
     def _deliver_and_commit(self, run_id: str, plan: Plan, payload: str) -> RunOutcome:
         key = self._idempotency_key(run_id)
-        self._append(run_id, DELIVERING, {"idempotency_key": key})
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        # ADR-0001 v2: the atomic claim is persisted (with the DELIVERING
+        # journal entry) BEFORE any network call. An existing operation row
+        # blocks every other automatic caller (at-most-one outbound request).
+        try:
+            snapshot = self._history.begin_delivery_operation(
+                run_id=run_id,
+                idempotency_key=key,
+                channel=self._config.delivery.channel,
+                payload_digest=digest,
+            )
+        except (StateCommitFailureError, InvariantFailureError) as exc:
+            self._append(
+                run_id,
+                RECOVERING,
+                {"reason": "delivery claim failed", "message": str(exc)},
+            )
+            return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan, payload=payload)
+        if not snapshot.created:
+            return self._existing_operation_outcome(
+                run_id, plan, payload, snapshot.operation, digest
+            )
+
+        # Won the claim: perform the (single) external call.
         receipt = self._delivery.deliver(payload, key)
-        # G2-012: validate run/key/channel binding FIRST, then interpret status.
-        # A receipt that does not belong to this run/key/channel cannot confirm
-        # anything about the CURRENT operation — even a `failed` status for
-        # another operation is malformed/ambiguous evidence, because the external
-        # call may already have delivered. Such ambiguity enters RECOVERING.
-        if not self._receipt_matches(receipt, run_id, key):
+        # G2-012/ADR-0001: a receipt that does not bind to this run/key/channel
+        # cannot confirm anything about the CURRENT operation — even an "ok"
+        # status for another operation is malformed evidence. The external call
+        # DID happen, so the attempt is recorded as AMBIGUOUS (never re-push,
+        # never commit history), and only a bound receipt's status is trusted.
+        bound = self._receipt_matches(receipt, run_id, key)
+        outcome = receipt.status if bound else "ambiguous"
+        if outcome not in ("ok", "failed", "ambiguous"):
+            outcome = "ambiguous"  # unknown/pending/empty -> ambiguous (G2-012)
+        try:
+            self._history.finalize_delivery_attempt(
+                operation_key=key,
+                expected_version=snapshot.operation.version,
+                outcome=outcome,
+                evidence=receipt.target or "",
+                attempted_at=receipt.delivered_at,
+            )
+        except (StateCommitFailureError, InvariantFailureError) as exc:
+            # The external call MAY have happened and the evidence write failed
+            # -> ambiguous; never an ordinary terminal failure (G2-012).
+            self._append(
+                run_id,
+                RECOVERING,
+                {"reason": "delivery finalize failed after external call", "message": str(exc)},
+            )
+            return RunOutcome(
+                run_id=run_id, state=RECOVERING, plan=plan, payload=payload, receipt=receipt
+            )
+        if not bound:
             self._append(
                 run_id,
                 RECOVERING,
@@ -518,10 +694,8 @@ class RunEngine:
             )
             return RunOutcome(run_id=run_id, state=FAILED, payload=payload)
         if receipt.status != "ok":
-            # G2-012: exactly three status classes — "ok" proceeds, "failed"
-            # (bound) confirms failure, and EVERY OTHER value (unknown/pending/
-            # empty/malformed) is ambiguous: the adapter never confirmed either
-            # success or failure, so preserve the anomaly and enter RECOVERING.
+            # ambiguous (or any non-ok value): the adapter never confirmed
+            # success or failure -> preserve the anomaly and enter RECOVERING.
             self._append(
                 run_id,
                 RECOVERING,
@@ -529,20 +703,6 @@ class RunEngine:
                     "reason": "delivery receipt has unrecognized status",
                     "receipt_status": receipt.status,
                 },
-            )
-            return RunOutcome(
-                run_id=run_id, state=RECOVERING, plan=plan, payload=payload, receipt=receipt
-            )
-        try:
-            self._history.save_delivery_receipt(receipt)  # durable evidence first
-        except InvariantFailureError as exc:
-            # G2-012: a receipt-storage conflict AFTER the external call is
-            # ambiguous (the side effect may have happened) -> RECOVERING, never
-            # an ordinary terminal failure; original evidence stays intact.
-            self._append(
-                run_id,
-                RECOVERING,
-                {"reason": "delivery receipt conflict after external call", "message": str(exc)},
             )
             return RunOutcome(
                 run_id=run_id, state=RECOVERING, plan=plan, payload=payload, receipt=receipt
@@ -560,6 +720,68 @@ class RunEngine:
             run_id=run_id, state=COMPLETE, plan=plan, payload=payload, receipt=receipt
         )
 
+    def _existing_operation_outcome(
+        self,
+        run_id: str,
+        plan: Plan,
+        payload: str,
+        operation: DeliveryOperation,
+        digest: str,
+    ) -> RunOutcome:
+        """Handle a replay/concurrent call whose operation row already exists.
+
+        Per ADR-0001 §5/§15-1 the transport is NEVER called again: the state
+        table decides the outcome. A digest mismatch fails closed (no network).
+        """
+        if operation.payload_digest != digest:
+            # §15-5: the same key cannot be replayed with different content.
+            self._append(
+                run_id,
+                RECOVERING,
+                {
+                    "reason": "idempotency key replay with different payload digest",
+                    "stored_digest": operation.payload_digest,
+                },
+            )
+            return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan, payload=payload)
+        state = operation.state
+        if state in (OP_SUCCEEDED, OP_RESOLVED_DELIVERED):
+            # Delivered-but-not-committed (or human-confirmed delivered):
+            # commit local history, NEVER re-push.
+            try:
+                self._commit_history(run_id, plan)
+            except StateCommitFailureError:
+                self._append(
+                    run_id, RECOVERING, {"reason": "history commit failed after delivery"}
+                )
+                return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan, payload=payload)
+            self._append(run_id, COMPLETE)
+            return RunOutcome(run_id=run_id, state=COMPLETE, plan=plan, payload=payload)
+        if state in (OP_CONFIRMED_FAILED, OP_RESOLVED_NOT_DELIVERED):
+            # Confirmed not delivered: terminal failure, no re-send, no history.
+            self._append(
+                run_id,
+                FAILED,
+                {"reason": "delivery confirmed not delivered", "operation_state": state},
+            )
+            return RunOutcome(run_id=run_id, state=FAILED, plan=plan, payload=payload)
+        # IN_FLIGHT_OR_MAY_HAVE_SENT or AMBIGUOUS: never auto-resume (the claim
+        # was committed before the call, so the call MAY have happened) -> the
+        # conservative protocol requires human review (ADR-0001 §15-2).
+        # Idempotent (G2-012): unchanged evidence never grows the journal.
+        entries = self._journal(run_id)
+        if entries and entries[-1].transition == RECOVERING:
+            return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan, payload=payload)
+        self._append(
+            run_id,
+            RECOVERING,
+            {
+                "reason": "existing delivery operation is in-flight/ambiguous; human required",
+                "operation_state": state,
+            },
+        )
+        return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan, payload=payload)
+
     def _commit_history(self, run_id: str, plan: Plan) -> None:
         self._history.commit_history(
             run_id,
@@ -571,8 +793,11 @@ class RunEngine:
     def _finish_after_delivery(
         self, run_id: str, entries: list[JournalEntry]
     ) -> RunOutcome:
-        # Rebuild the plan from durable journal evidence; confirm delivery via the
-        # immutable receipt before committing history (never blind re-delivery).
+        # Rebuild the plan from durable journal evidence, then let the SINGLE
+        # production recovery decision (resolve_recovery_action) decide the
+        # action — the decision helper and the real engine can never diverge
+        # (G4-004R). Only a delivered operation (SUCCEEDED or the human-confirmed
+        # RESOLVED_DELIVERED) may commit history; nothing is ever re-pushed.
         digest: dict[str, Any] | None = None
         for entry in reversed(entries):
             if entry.detail and "albums" in entry.detail:
@@ -584,30 +809,32 @@ class RunEngine:
 
         plan = Plan.from_digest(run_id, digest)
         key = self._idempotency_key(run_id)
-        receipt = self._history.find_delivery_receipt(key)
-        if (
-            receipt is None
-            or receipt.status != "ok"
-            or not self._receipt_matches(receipt, run_id, key)
-        ):
-            # G2-009/G2-012: missing, failed OR unbound evidence -> do NOT re-push;
-            # fail closed for human review; no official history mutation.
-            # G2-012 idempotency: unchanged evidence never appends another
-            # RECOVERING entry — the durable tail stays bounded under retries.
-            if entries[-1].transition == RECOVERING:
+        decision = resolve_recovery_action(self._history, run_id, idempotency_key=key)
+        if decision.action == COMMIT_HISTORY:
+            try:
+                self._commit_history(run_id, plan)
+            except StateCommitFailureError:
+                # Idempotent: unchanged failing evidence does not grow the journal.
+                if entries[-1].transition == RECOVERING:
+                    return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
+                self._append(run_id, RECOVERING, {"reason": "history commit still failing"})
                 return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
-            self._append(run_id, RECOVERING, {"reason": "delivery evidence missing or mismatched"})
+            self._append(run_id, COMPLETE)
+            return RunOutcome(
+                run_id=run_id,
+                state=COMPLETE,
+                plan=plan,
+                receipt=decision.receipt,
+            )
+        if decision.action == COMPLETE_ALREADY:
+            return RunOutcome(run_id=run_id, state=COMPLETE, plan=plan)
+        # REQUIRE_HUMAN (missing/mismatched/in-flight/ambiguous evidence or a
+        # confirmed-not-delivered operation): fail closed, never re-push, and
+        # keep the journal bounded under retries (G2-012).
+        if entries[-1].transition == RECOVERING:
             return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
-        try:
-            self._commit_history(run_id, plan)
-        except StateCommitFailureError:
-            # Idempotent: unchanged failing evidence does not grow the journal.
-            if entries[-1].transition == RECOVERING:
-                return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
-            self._append(run_id, RECOVERING, {"reason": "history commit still failing"})
-            return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
-        self._append(run_id, COMPLETE)
-        return RunOutcome(run_id=run_id, state=COMPLETE, plan=plan, receipt=receipt)
+        self._append(run_id, RECOVERING, {"reason": decision.reason})
+        return RunOutcome(run_id=run_id, state=RECOVERING, plan=plan)
 
 
 def _packet_dict(packet: FactPacket) -> dict[str, Any]:
@@ -619,6 +846,84 @@ def _packet_dict(packet: FactPacket) -> dict[str, Any]:
             for a in packet.plan.albums
         ],
     }
+
+
+def _source_evidence(validated: ValidatedSourceSet) -> dict[str, Any]:
+    """ADR-0002 §8.8: journal the validated Genre/Album source evidence.
+
+    Records the source IDs, content/batch digests, schema/query-policy/package
+    versions and demo flags of the validated source set, so outbound facts and
+    committed MBIDs can be traced back to the SAME ValidatedSourceSet.
+    """
+    return {
+        "source_evidence": {
+            "genres": [
+                {
+                    "source_id": d.source_id,
+                    "content_digest": d.content_digest,
+                    "eligible_digest": d.eligible_digest,
+                    "schema_version": d.schema_version,
+                    "package_version": d.dataset_version,
+                    "demo": d.demo,
+                }
+                for d in validated.genre_descriptors
+            ],
+            "albums": [
+                {
+                    "source_id": b.source.source_id,
+                    "batch_digest": b.digest,
+                    "genre_id": b.genre_id,
+                    "schema_version": b.schema_version,
+                    "query_policy_version": b.query_policy_version,
+                    "package_version": b.source.dataset_version,
+                    "demo": b.source.demo,
+                }
+                for b in validated.batches
+            ],
+            "selected_genre_ids": sorted(b.genre_id for b in validated.batches),
+        }
+    }
+
+
+def _candidates_from_validated(
+    validated: ValidatedSourceSet,
+) -> dict[str, list[AlbumCandidate]]:
+    """Derive the SELECT input strictly from the VALIDATED source set.
+
+    The candidates come from the digest-bound batches that already passed
+    registry + content validation (ADR-0002 §8.4), so selection can never
+    consume unvalidated or substituted records on the production path.
+    """
+    by_genre: dict[str, list[AlbumCandidate]] = {}
+    for batch in validated.batches:
+        by_genre[batch.genre_id] = [
+            AlbumCandidate(
+                album_id=record.album_id,
+                title=record.title,
+                artist=record.artist,
+                year=record.year,
+                genres=(record.genre_id,),
+                identity=_identity_for_record(record),
+            )
+            for record in batch.candidates
+        ]
+    return by_genre
+
+
+def _identity_for_record(record) -> AlbumIdentity | None:
+    """Canonical release-group identity from a validated batch record (G3-007-002).
+
+    Mirrors ``CuratedAlbumSource`` identity semantics: a production record's
+    verified MusicBrainz MBID becomes the permanent-exclusion identity.
+    """
+    if not record.mbid:
+        return None
+    return AlbumIdentity(
+        album_id=record.album_id,
+        canonical_id=record.mbid,
+        canonical_source="musicbrainz",
+        identity_confidence="exact",
+    )
 
 
 __all__ = [

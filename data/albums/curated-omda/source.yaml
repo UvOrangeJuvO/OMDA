@@ -1,0 +1,24 @@
+# OMDA curated Album package (G3-007, ADR-0002).
+# Independently curated factual metadata: real album titles/artists/release years
+# are public factual information; each record carries a VERIFIED MusicBrainz
+# release-group MBID (core facts, CC0) obtained via the official search API for
+# this curation (see tools/curate_mbids.py). The package's license layers are
+# recorded below per ADR-0002 D1 — no blanket CC0 claim covers search-index or
+# tag material.
+source_id: "curated-omda"
+kind: "album"
+display_name: "OMDA Curated Albums"
+license: "CC0-1.0 (independently curated factual metadata only)"
+origin_url: "https://musicbrainz.org/ws/2/release-group"
+retrieved_at: "2026-08-22T14:45:00+00:00"
+dataset_version: "2026-08-22"
+schema_version: "2"
+data_scope: "20 reviewed, non-demo album candidates (4 per genre) sufficient for one 3x3 run"
+records_file: "albums.jsonl"
+demo: false
+data_derivation: "independently_curated"
+upstream_license: "MusicBrainz database core facts are CC0-1.0; the official search API index/tags are CC BY-NC-SA 3.0 supplementary and are NOT incorporated"
+license_core_facts: "CC0-1.0 (release-group facts: MBID/title/artist/year)"
+license_supplementary_used: "none incorporated (MusicBrainz search index/tag associations are supplementary and not part of this package)"
+license_service_terms: "MusicBrainz web service is free for non-commercial use; commercial use requires a commercial plan (https://musicbrainz.org/doc/MusicBrainz_API)"
+license_derived_package: "CC0-1.0 (this curation: independently selected factual records; see README.md)"

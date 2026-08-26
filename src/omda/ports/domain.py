@@ -126,17 +126,130 @@ class DeliveryReceipt:
     idempotency_key: str
     delivered_at: str
     channel: str
-    status: str  # "ok" | "failed"
+    status: str  # "ok" | "failed" | "ambiguous" (ADR-0001 v2)
     target: str | None = None
+    attempt_id: str | None = None  # bound immutable attempt (G4-002B)
+
+
+# Delivery operation states (ADR-0001 v2, §5).
+OP_IN_FLIGHT_OR_MAY_HAVE_SENT = "IN_FLIGHT_OR_MAY_HAVE_SENT"
+OP_SUCCEEDED = "SUCCEEDED"
+OP_CONFIRMED_FAILED = "CONFIRMED_FAILED"
+OP_AMBIGUOUS = "AMBIGUOUS"
+OP_RESOLVED_DELIVERED = "RESOLVED_DELIVERED"
+OP_RESOLVED_NOT_DELIVERED = "RESOLVED_NOT_DELIVERED"
+
+OPERATION_STATES = frozenset(
+    {
+        OP_IN_FLIGHT_OR_MAY_HAVE_SENT,
+        OP_SUCCEEDED,
+        OP_CONFIRMED_FAILED,
+        OP_AMBIGUOUS,
+        OP_RESOLVED_DELIVERED,
+        OP_RESOLVED_NOT_DELIVERED,
+    }
+)
+
+# Human resolution outcomes (ADR-0001 v2, §6).
+RESOLUTION_CONFIRMED_DELIVERED = "CONFIRMED_DELIVERED"
+RESOLUTION_CONFIRMED_NOT_DELIVERED = "CONFIRMED_NOT_DELIVERED"
+RESOLUTION_STILL_UNKNOWN = "STILL_UNKNOWN"
+
+RESOLUTION_OUTCOMES = frozenset(
+    {
+        RESOLUTION_CONFIRMED_DELIVERED,
+        RESOLUTION_CONFIRMED_NOT_DELIVERED,
+        RESOLUTION_STILL_UNKNOWN,
+    }
+)
+
+
+@dataclass(frozen=True)
+class DeliveryOperation:
+    """The durable per-key delivery intent (ADR-0001 v2).
+
+    One row per stable idempotency key; created atomically BEFORE any network
+    call with a conservative ``IN_FLIGHT_OR_MAY_HAVE_SENT`` state, so every
+    existing row blocks every other automatic caller (at-most-one outbound
+    request per operation). ``version`` is the compare-and-swap counter used by
+    ``finalize_delivery_attempt`` / ``record_delivery_resolution``.
+    """
+
+    idempotency_key: str
+    run_id: str
+    channel: str
+    payload_digest: str
+    state: str
+    version: int
+    created_at: str
+
+
+@dataclass(frozen=True)
+class DeliveryOperationSnapshot:
+    """Result of ``begin_delivery_operation``.
+
+    ``created=True`` means this caller won the atomic claim and may proceed to
+    the external call; ``created=False`` returns the authoritative existing
+    operation (the caller must follow the state table and NOT call the
+    transport again).
+    """
+
+    created: bool
+    operation: DeliveryOperation
+
+
+@dataclass(frozen=True)
+class DeliveryAttempt:
+    """Append-only, immutable record of ONE outbound attempt (ADR-0001 v2)."""
+
+    attempt_id: str
+    operation_key: str
+    outcome: str  # "ok" | "failed" | "ambiguous"
+    evidence: str
+    attempted_at: str
+
+
+@dataclass(frozen=True)
+class DeliveryResolution:
+    """Append-only human/operator decision bound to an operation (ADR-0001 v2).
+
+    ``outcome`` is one of ``RESOLUTION_*``. A ``STILL_UNKNOWN`` entry does not
+    change the operation state (remains blocked); the other two advance the
+    operation only from IN_FLIGHT_OR_MAY_HAVE_SENT / AMBIGUOUS (§15-4).
+    """
+
+    operation_key: str
+    run_id: str
+    idempotency_key: str
+    attempt_id: str | None
+    outcome: str
+    actor: str
+    reason: str
+    decided_at: str
 
 
 __all__ = [
     "AlbumCandidate",
     "AlbumIdentity",
+    "DeliveryAttempt",
+    "DeliveryOperation",
+    "DeliveryOperationSnapshot",
     "DeliveryReceipt",
+    "DeliveryResolution",
     "GenrePickRecord",
     "GenreRef",
     "JournalEntry",
+    "OP_AMBIGUOUS",
+    "OP_CONFIRMED_FAILED",
+    "OP_IN_FLIGHT_OR_MAY_HAVE_SENT",
+    "OP_RESOLVED_DELIVERED",
+    "OP_RESOLVED_NOT_DELIVERED",
+    "OP_SUCCEEDED",
+    "OPERATION_STATES",
+    "RESOLUTION_CONFIRMED_DELIVERED",
+    "RESOLUTION_CONFIRMED_NOT_DELIVERED",
+    "RESOLUTION_OUTCOMES",
+    "RESOLUTION_STILL_UNKNOWN",
     "freeze_json",
     "thaw_json",
 ]

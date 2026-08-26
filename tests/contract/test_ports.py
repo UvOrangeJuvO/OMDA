@@ -95,7 +95,9 @@ def test_domain_error_carries_message_and_detail() -> None:
 
 def test_all_ports_define_minimal_method_sets() -> None:
     assert _protocol_methods(GenreSource) == {"list_eligible_genres"}
-    assert _protocol_methods(AlbumSource) == {"candidates_for_genre"}
+    # G3-007-004: the ADR-authorized provider-neutral source-envelope contract
+    # is part of the public Port (not a concrete-only parallel API).
+    assert _protocol_methods(AlbumSource) == {"candidates_for_genre", "source_batch"}
     assert _protocol_methods(AlbumEnricher) == {"enrich"}
     assert _protocol_methods(CriticRatingSource) == {"ratings_for"}
     assert _protocol_methods(LLM) == {"generate_narrative"}
@@ -111,6 +113,11 @@ def test_all_ports_define_minimal_method_sets() -> None:
         "commit_history",
         "save_delivery_receipt",
         "find_delivery_receipt",
+        # ADR-0001 v2: atomic delivery claim / CAS finalize / resolution.
+        "begin_delivery_operation",
+        "finalize_delivery_attempt",
+        "record_delivery_resolution",
+        "find_delivery_operation",
     }
 
 
@@ -148,14 +155,12 @@ def test_inmemory_history_journal_and_atomic_commit() -> None:
     assert history.excluded_album_identities() == frozenset(identities)
     assert [e.transition for e in history.journal_after("run-1", 2)] == ["HISTORY_COMMITTED"]
 
-    receipt = DeliveryReceipt(
-        run_id="run-1",
-        idempotency_key="run-1/markdown",
-        delivered_at="2026-08-19T09:05:00+00:00",
-        channel="markdown",
-        status="ok",
+    # G4-002F: receipts are created through the bound claim/finalize protocol.
+    from tests.fakes import bound_receipt
+
+    receipt = bound_receipt(
+        history, run_id="run-1", key="run-1/markdown", channel="markdown"
     )
-    history.save_delivery_receipt(receipt)
     assert history.find_delivery_receipt("run-1/markdown") == receipt
     assert history.find_delivery_receipt("missing") is None
 
@@ -190,24 +195,22 @@ def test_fake_delivery_is_idempotent() -> None:
 
 
 def test_inmemory_receipts_immutable_exact_replay_and_conflict() -> None:
+    from tests.fakes import bound_receipt
+
     history = InMemoryHistory()
-    ok_receipt = DeliveryReceipt(
-        run_id="run-1",
-        idempotency_key="k",
-        delivered_at="2026-08-19T09:05:00+00:00",
-        channel="markdown",
-        status="ok",
+    ok_receipt = bound_receipt(
+        history, run_id="run-1", key="k", channel="markdown", outcome="ok"
     )
-    assert history.save_delivery_receipt(ok_receipt) == ok_receipt
     # Exact replay: no-op, original preserved.
     assert history.save_delivery_receipt(ok_receipt) == ok_receipt
     # Success -> failed overwrite attempt must fail closed.
     failed_receipt = DeliveryReceipt(
         run_id="run-1",
         idempotency_key="k",
-        delivered_at="2026-08-19T09:06:00+00:00",
+        delivered_at=ok_receipt.delivered_at,
         channel="markdown",
         status="failed",
+        attempt_id=ok_receipt.attempt_id,
     )
     from omda.ports.errors import InvariantFailureError
 

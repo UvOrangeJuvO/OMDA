@@ -13,7 +13,10 @@ from omda.storage import SqliteHistory
 
 EXPECTED_TABLES = {
     "album_history",
+    "delivery_attempt",
+    "delivery_operation",
     "delivery_receipt",
+    "delivery_resolution",
     "genre_pick_history",
     "run_journal",
 }
@@ -32,9 +35,10 @@ def _albums(*album_ids: str) -> list[AlbumIdentity]:
 # --- migration ---
 
 
-def test_fresh_database_migrates_to_v1(tmp_path) -> None:
+def test_fresh_database_migrates_to_v3(tmp_path) -> None:
+    # ADR-0001 v2: delivery_operation/attempt/resolution tables join the store.
     db = SqliteHistory(tmp_path / "state.sqlite3")
-    assert db.schema_version() == 1
+    assert db.schema_version() == 3
     assert set(db.table_names()) >= EXPECTED_TABLES
 
 
@@ -42,7 +46,7 @@ def test_migration_is_idempotent_on_reopen(tmp_path) -> None:
     path = tmp_path / "state.sqlite3"
     SqliteHistory(path)
     reopened = SqliteHistory(path)  # must not raise
-    assert reopened.schema_version() == 1
+    assert reopened.schema_version() == 3
 
 
 def test_memory_database_works() -> None:
@@ -213,28 +217,19 @@ def test_no_public_per_row_history_write_methods(tmp_path) -> None:
 def test_delivery_receipt_round_trip(tmp_path) -> None:
     db = SqliteHistory(tmp_path / "state.sqlite3")
     assert db.find_delivery_receipt("run-1/markdown") is None
-    receipt = DeliveryReceipt(
-        run_id="run-1",
-        idempotency_key="run-1/markdown",
-        delivered_at="2026-08-19T09:05:00+00:00",
-        channel="markdown",
-        status="ok",
-        target="out/run-1.md",
-    )
-    assert db.save_delivery_receipt(receipt) == receipt
+    # G4-002F: a receipt must be created through the bound finalize protocol.
+    from tests.fakes import bound_receipt
+
+    receipt = bound_receipt(db, run_id="run-1", key="run-1/markdown", channel="markdown")
     assert db.find_delivery_receipt("run-1/markdown") == receipt
+    assert receipt.attempt_id == "run-1/markdown#1"
 
 
 def test_delivery_receipt_exact_replay_is_noop(tmp_path) -> None:
     db = SqliteHistory(tmp_path / "state.sqlite3")
-    receipt = DeliveryReceipt(
-        run_id="run-1",
-        idempotency_key="k",
-        delivered_at=AT,
-        channel="markdown",
-        status="ok",
-    )
-    db.save_delivery_receipt(receipt)
+    from tests.fakes import bound_receipt
+
+    receipt = bound_receipt(db, run_id="run-1", key="k", channel="markdown")
     # Exact replay returns the original record and leaves storage unchanged.
     assert db.save_delivery_receipt(receipt) == receipt
     assert db.find_delivery_receipt("k") == receipt
@@ -242,22 +237,18 @@ def test_delivery_receipt_exact_replay_is_noop(tmp_path) -> None:
 
 def test_delivery_receipt_conflict_fails_closed(tmp_path) -> None:
     db = SqliteHistory(tmp_path / "state.sqlite3")
-    ok_receipt = DeliveryReceipt(
-        run_id="run-1",
-        idempotency_key="k",
-        delivered_at=AT,
-        channel="markdown",
-        status="ok",
-    )
-    db.save_delivery_receipt(ok_receipt)
+    from tests.fakes import bound_receipt
+
+    ok_receipt = bound_receipt(db, run_id="run-1", key="k", channel="markdown")
 
     # Same key, different run: conflict must fail closed.
     other_run = DeliveryReceipt(
         run_id="run-2",
         idempotency_key="k",
-        delivered_at=AT,
+        delivered_at=ok_receipt.delivered_at,
         channel="markdown",
         status="ok",
+        attempt_id=ok_receipt.attempt_id,
     )
     with pytest.raises(InvariantFailureError):
         db.save_delivery_receipt(other_run)
@@ -266,15 +257,34 @@ def test_delivery_receipt_conflict_fails_closed(tmp_path) -> None:
     failed_receipt = DeliveryReceipt(
         run_id="run-1",
         idempotency_key="k",
-        delivered_at=AT,
+        delivered_at=ok_receipt.delivered_at,
         channel="markdown",
         status="failed",
+        attempt_id=ok_receipt.attempt_id,
     )
     with pytest.raises(InvariantFailureError):
         db.save_delivery_receipt(failed_receipt)
 
     # Original evidence byte-for-byte identical.
     assert db.find_delivery_receipt("k") == ok_receipt
+
+
+def test_new_receipt_without_bound_attempt_fails_closed(tmp_path) -> None:
+    # G4-002F: a FRESH v3 key cannot become a null-attempt "legacy" row.
+    db = SqliteHistory(tmp_path / "state.sqlite3")
+
+    with pytest.raises(InvariantFailureError):
+        db.save_delivery_receipt(
+            DeliveryReceipt(
+                run_id="run-1",
+                idempotency_key="fresh:markdown",
+                delivered_at=AT,
+                channel="markdown",
+                status="ok",
+                attempt_id=None,
+            )
+        )
+    assert db.find_delivery_receipt("fresh:markdown") is None
 
 
 def test_file_persistence_across_reopen(tmp_path) -> None:

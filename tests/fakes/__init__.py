@@ -11,14 +11,33 @@ Semantics must match the SQLite adapter exactly — especially all-or-nothing
 from __future__ import annotations
 
 from omda.ports.domain import (
+    OP_AMBIGUOUS,
+    OP_CONFIRMED_FAILED,
+    OP_IN_FLIGHT_OR_MAY_HAVE_SENT,
+    OP_RESOLVED_DELIVERED,
+    OP_RESOLVED_NOT_DELIVERED,
+    OP_SUCCEEDED,
+    RESOLUTION_CONFIRMED_DELIVERED,
+    RESOLUTION_CONFIRMED_NOT_DELIVERED,
     AlbumCandidate,
     AlbumIdentity,
+    DeliveryAttempt,
+    DeliveryOperation,
+    DeliveryOperationSnapshot,
     DeliveryReceipt,
     GenrePickRecord,
     GenreRef,
     JournalEntry,
 )
 from omda.ports.errors import InvariantFailureError
+from omda.ports.source import (
+    BATCH_SCHEMA_VERSION,
+    QUERY_POLICY_VERSION,
+    AlbumCandidateRecord,
+    CandidateBatch,
+    SourceDescriptor,
+    digest_batch,
+)
 
 
 class InMemoryHistory:
@@ -30,6 +49,9 @@ class InMemoryHistory:
         self._picks: list[GenrePickRecord] = []
         self._albums: dict[str, AlbumIdentity] = {}
         self._receipts: dict[str, DeliveryReceipt] = {}
+        self._operations: dict[str, DeliveryOperation] = {}
+        self._attempts: list[DeliveryAttempt] = []
+        self._resolutions: list[dict] = []
 
     def append_journal(
         self,
@@ -107,19 +129,226 @@ class InMemoryHistory:
         )
 
     def save_delivery_receipt(self, receipt: DeliveryReceipt) -> DeliveryReceipt:
+        # G4-002F parity (ADR-0002 D7/D9): immutable existing evidence is
+        # consulted FIRST — an already-migrated null-attempt row may be read
+        # and exactly replayed but never changed; every NEW v3 receipt must
+        # carry and validate its operation/run/channel/attempt binding. A
+        # fresh key can never become "legacy" by omitting the attempt field.
         existing = self._receipts.get(receipt.idempotency_key)
-        if existing is None:
-            self._receipts[receipt.idempotency_key] = receipt
-            return receipt
-        if existing == receipt:
-            return existing  # exact replay: no-op
-        raise InvariantFailureError(
-            f"delivery receipt conflict for key {receipt.idempotency_key!r}; "
-            "evidence is immutable (G1-002)"
-        )
+        if existing is not None:
+            if existing == receipt:
+                return existing  # exact replay (incl. legacy rows): no-op
+            raise InvariantFailureError(
+                f"delivery receipt conflict for key {receipt.idempotency_key!r}; "
+                "evidence is immutable (G1-002)"
+            )
+        if receipt.attempt_id is None:
+            raise InvariantFailureError(
+                f"cannot create a new delivery receipt for key "
+                f"{receipt.idempotency_key!r} without a bound delivery attempt: "
+                "only pre-v3 rows migrated from an older store may carry a NULL "
+                "attempt_id (ADR-0002 D7/D9); new v3 receipts must finalize "
+                "through an operation (G4-002F)"
+            )
+        op = self._operations.get(receipt.idempotency_key)
+        if op is None:
+            raise InvariantFailureError(
+                f"receipt attempt_id {receipt.attempt_id!r} references "
+                f"no delivery operation {receipt.idempotency_key!r}"
+            )
+        if op.run_id != receipt.run_id or op.channel != receipt.channel:
+            raise InvariantFailureError(
+                f"receipt attempt_id {receipt.attempt_id!r} is bound to "
+                f"operation {receipt.idempotency_key!r} but the receipt "
+                "declares mismatched run/channel (§15-5)"
+            )
+        if not any(
+            a.attempt_id == receipt.attempt_id
+            and a.operation_key == receipt.idempotency_key
+            for a in self._attempts
+        ):
+            raise InvariantFailureError(
+                f"receipt attempt_id {receipt.attempt_id!r} does not belong "
+                f"to operation {receipt.idempotency_key!r}"
+            )
+        self._receipts[receipt.idempotency_key] = receipt
+        return receipt
 
     def find_delivery_receipt(self, idempotency_key: str) -> DeliveryReceipt | None:
         return self._receipts.get(idempotency_key)
+
+    # -- delivery operations (ADR-0001 v2; semantics mirror SqliteHistory) -----
+
+    def begin_delivery_operation(
+        self,
+        *,
+        run_id: str,
+        idempotency_key: str,
+        channel: str,
+        payload_digest: str,
+    ) -> DeliveryOperationSnapshot:
+        existing = self._operations.get(idempotency_key)
+        if existing is not None:
+            # G4-002C parity (ADR-0001 §15-5): an existing operation row must
+            # bind to the SAME run/channel/payload digest — a mismatched replay
+            # fails closed before any external call, mirroring SqliteHistory.
+            if (
+                existing.run_id != run_id
+                or existing.channel != channel
+                or existing.payload_digest != payload_digest
+            ):
+                raise InvariantFailureError(
+                    f"delivery operation {idempotency_key!r} already exists bound "
+                    f"to run/channel/digest ({existing.run_id!r}, {existing.channel!r}, "
+                    f"{existing.payload_digest!r}); caller supplied "
+                    f"({run_id!r}, {channel!r}, {payload_digest!r}) — "
+                    "mismatched binding fails closed (§15-5)"
+                )
+            return DeliveryOperationSnapshot(created=False, operation=existing)
+        operation = DeliveryOperation(
+            idempotency_key=idempotency_key,
+            run_id=run_id,
+            channel=channel,
+            payload_digest=payload_digest,
+            state=OP_IN_FLIGHT_OR_MAY_HAVE_SENT,
+            version=1,
+            created_at="2026-08-21T00:00:00Z",
+        )
+        self._operations[idempotency_key] = operation
+        self.append_journal(
+            run_id,
+            "DELIVERING",
+            operation.created_at,
+            {"idempotency_key": idempotency_key, "payload_digest": payload_digest},
+        )
+        return DeliveryOperationSnapshot(created=True, operation=operation)
+
+    def finalize_delivery_attempt(
+        self,
+        *,
+        operation_key: str,
+        expected_version: int,
+        outcome: str,
+        evidence: str,
+        attempted_at: str,
+    ) -> DeliveryOperation:
+        op = self._operations.get(operation_key)
+        if op is None:
+            raise InvariantFailureError(f"no delivery operation for key {operation_key!r}")
+        if op.version != expected_version:
+            raise InvariantFailureError(
+                f"delivery operation version mismatch for {operation_key!r}"
+            )
+        if operation_key in self._receipts:
+            raise InvariantFailureError(
+                f"delivery receipt already exists for key {operation_key!r}"
+            )
+        state = {
+            "ok": OP_SUCCEEDED,
+            "failed": OP_CONFIRMED_FAILED,
+            "ambiguous": OP_AMBIGUOUS,
+        }[outcome]
+        seq = sum(1 for a in self._attempts if a.operation_key == operation_key) + 1
+        self._attempts.append(
+            DeliveryAttempt(
+                attempt_id=f"{operation_key}#{seq}",
+                operation_key=operation_key,
+                outcome=outcome,
+                evidence=evidence,
+                attempted_at=attempted_at,
+            )
+        )
+        self._receipts[operation_key] = DeliveryReceipt(
+            run_id=op.run_id,
+            idempotency_key=operation_key,
+            delivered_at=attempted_at,
+            channel=op.channel,
+            status=outcome,
+            target=evidence,
+            attempt_id=f"{operation_key}#{seq}",
+        )
+        updated = DeliveryOperation(
+            idempotency_key=op.idempotency_key,
+            run_id=op.run_id,
+            channel=op.channel,
+            payload_digest=op.payload_digest,
+            state=state,
+            version=op.version + 1,
+            created_at=op.created_at,
+        )
+        self._operations[operation_key] = updated
+        return updated
+
+    def record_delivery_resolution(
+        self,
+        *,
+        operation_key: str,
+        run_id: str,
+        idempotency_key: str,
+        attempt_id: str | None,
+        outcome: str,
+        actor: str,
+        reason: str,
+        decided_at: str,
+    ) -> DeliveryOperation:
+        op = self._operations.get(operation_key)
+        if op is None:
+            raise InvariantFailureError(f"no delivery operation for key {operation_key!r}")
+        # G4-002B (§15-5): redundant fields must bind to the SAME operation.
+        if op.run_id != run_id:
+            raise InvariantFailureError(
+                f"resolution run_id {run_id!r} does not match operation {operation_key!r}"
+            )
+        if idempotency_key != operation_key:
+            raise InvariantFailureError(
+                f"resolution idempotency_key {idempotency_key!r} does not match "
+                f"operation_key {operation_key!r}"
+            )
+        if attempt_id is not None and not any(
+            a.attempt_id == attempt_id and a.operation_key == operation_key
+            for a in self._attempts
+        ):
+            raise InvariantFailureError(
+                f"resolution attempt_id {attempt_id!r} does not belong to "
+                f"operation {operation_key!r}"
+            )
+        self._resolutions.append(
+            {
+                "operation_key": operation_key,
+                "run_id": run_id,
+                "idempotency_key": idempotency_key,
+                "attempt_id": attempt_id,
+                "outcome": outcome,
+                "actor": actor,
+                "reason": reason,
+                "decided_at": decided_at,
+            }
+        )
+        new_state = {
+            RESOLUTION_CONFIRMED_DELIVERED: OP_RESOLVED_DELIVERED,
+            RESOLUTION_CONFIRMED_NOT_DELIVERED: OP_RESOLVED_NOT_DELIVERED,
+        }.get(outcome)
+        if new_state is None:  # STILL_UNKNOWN: record appended, state stays blocked
+            return op
+        if op.state not in (OP_IN_FLIGHT_OR_MAY_HAVE_SENT, OP_AMBIGUOUS):
+            raise InvariantFailureError(
+                f"resolution cannot advance operation {operation_key!r} "
+                "from its current state (evidence immutable)"
+            )
+        updated = DeliveryOperation(
+            idempotency_key=op.idempotency_key,
+            run_id=op.run_id,
+            channel=op.channel,
+            payload_digest=op.payload_digest,
+            state=new_state,
+            version=op.version + 1,
+            created_at=op.created_at,
+        )
+        self._operations[operation_key] = updated
+        return updated
+
+    def find_delivery_operation(self, idempotency_key: str) -> DeliveryOperation | None:
+        return self._operations.get(idempotency_key)
 
     # -- test-only helpers (not part of HistoryPort) ---------------------------
 
@@ -137,6 +366,13 @@ class FakeGenreSource:
 
 
 class FakeAlbumSource:
+    """Contract-parity fake: candidates_for_genre + provider-neutral source_batch.
+
+    ``source_batch`` returns a digest-bound CandidateBatch for the requested
+    Genre (G3-007-004), so the trusted boundary can assemble a
+    ValidatedSourceSet without importing a concrete adapter.
+    """
+
     def __init__(self, by_genre: dict[str, list[AlbumCandidate]] | None = None) -> None:
         self._by_genre = by_genre or {}
 
@@ -145,6 +381,50 @@ class FakeAlbumSource:
     ) -> list[AlbumCandidate]:
         found = self._by_genre.get(genre.genre_id, [])
         return found[:limit] if limit is not None else list(found)
+
+    def source_batch(self, genre: GenreRef) -> CandidateBatch:
+        found = self._by_genre.get(genre.genre_id, [])
+        records = tuple(
+            AlbumCandidateRecord(
+                album_id=c.album_id,
+                genre_id=genre.genre_id,
+                title=c.title,
+                artist=c.artist,
+                year=c.year,
+                mbid=c.identity.canonical_id if c.identity else None,
+            )
+            for c in found
+        )
+        source = SourceDescriptor(
+            source_id="fake",
+            kind="album",
+            display_name="Fake Albums",
+            license="CC0-1.0 (fake)",
+            origin_url="https://fake.example/albums",
+            retrieved_at="2026-08-22T00:00:00+00:00",
+            dataset_version="1",
+            schema_version="1",
+            data_scope="fake",
+            records_file="albums.jsonl",
+            demo=False,
+            data_derivation="independently_curated",
+            upstream_license="none",
+            license_core_facts="CC0-1.0",
+            license_supplementary_used="none",
+            license_service_terms="n/a",
+            license_derived_package="CC0-1.0",
+        )
+        batch = CandidateBatch(
+            schema_version=BATCH_SCHEMA_VERSION,
+            query_policy_version=QUERY_POLICY_VERSION,
+            genre_id=genre.genre_id,
+            source=source,
+            digest="",
+            candidates=records,
+        )
+        from dataclasses import replace
+
+        return replace(batch, digest=digest_batch(batch))
 
 
 class FakeCriticRatingSource:
@@ -164,7 +444,13 @@ class FakeLLM:
     def __init__(self, text: str = "Fake narrative.") -> None:
         self._text = text
 
-    def generate_narrative(self, fact_packet: dict) -> str:
+    def generate_narrative(
+        self,
+        fact_packet: dict,
+        *,
+        expected_genres: int | None = None,
+        expected_albums: int | None = None,
+    ) -> str:
         return self._text
 
 
@@ -211,6 +497,40 @@ class FakeDelivery:
         )
 
 
+def bound_receipt(
+    history,
+    *,
+    run_id: str = "run-1",
+    key: str = "k",
+    channel: str = "markdown",
+    outcome: str = "ok",
+    evidence: str = "evidence",
+    attempted_at: str = "2026-08-19T09:05:00+00:00",
+) -> DeliveryReceipt:
+    """Create a v3-BOUND delivery receipt via the real claim/finalize protocol.
+
+    G4-002F: new receipts must carry a validated operation/attempt binding, so
+    tests that need a durable ok/failed/ambiguous receipt use this helper
+    (begin + finalize) instead of constructing an unbound ``DeliveryReceipt``.
+    """
+    snapshot = history.begin_delivery_operation(
+        run_id=run_id,
+        idempotency_key=key,
+        channel=channel,
+        payload_digest="digest",
+    )
+    history.finalize_delivery_attempt(
+        operation_key=key,
+        expected_version=snapshot.operation.version,
+        outcome=outcome,
+        evidence=evidence,
+        attempted_at=attempted_at,
+    )
+    receipt = history.find_delivery_receipt(key)
+    assert receipt is not None and receipt.attempt_id is not None
+    return receipt
+
+
 __all__ = [
     "FakeAlbumSource",
     "FakeCriticRatingSource",
@@ -218,4 +538,5 @@ __all__ = [
     "FakeGenreSource",
     "FakeLLM",
     "InMemoryHistory",
+    "bound_receipt",
 ]

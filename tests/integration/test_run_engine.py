@@ -129,13 +129,15 @@ class FailingAlbumSource:
 
 
 class FailingLLM:
-    def generate_narrative(self, fact_packet):
+    def generate_narrative(self, fact_packet, *, expected_genres=None, expected_albums=None):
         raise GenerationFailureError("simulated llm failure")
 
 
-class EmptyLLM:
-    def generate_narrative(self, fact_packet):
-        return "   "
+class ExplodingLLM:
+    """A provider that fails outright -> generation failure (G4-005)."""
+
+    def generate_narrative(self, fact_packet, *, expected_genres=None, expected_albums=None):
+        raise GenerationFailureError("provider unavailable")
 
 
 class FailingDelivery:
@@ -160,19 +162,32 @@ def test_fetch_failure_does_not_pollute_history(factory) -> None:
 
 
 @pytest.mark.parametrize("factory", HISTORY_FACTORIES)
-def test_generation_failure_does_not_pollute_history(factory) -> None:
+def test_deterministic_runtime_never_invokes_llm(factory) -> None:
+    # ADR-0002 D8 / AC-8: v0.1 is a DETERMINISTIC (no-LLM) runtime. Even an
+    # injected LLM that would fail on invocation is NEVER called — the run
+    # completes with the deterministic fact report and official history
+    # advances normally. (Provider-mode failure semantics live in
+    # LLMAdapter/GenerationFailureError; the v0.1 engine has no LLM slot.)
     history = factory()
     outcome = _engine(history, llm=FailingLLM()).run("run-1")
-    assert outcome.state == FAILED
-    _assert_history_untouched(history, "run-1")
+    assert outcome.state == COMPLETE
+    assert history.latest_pick_index() == 3
+    # No "narrative" was archived — only the typed deterministic marker.
+    generated = [
+        e for e in history.journal_after("run-1", 0) if e.transition == "GENERATED"
+    ]
+    assert generated and generated[-1].detail == {"narrative_mode": "deterministic"}
 
 
 @pytest.mark.parametrize("factory", HISTORY_FACTORIES)
-def test_validation_failure_does_not_pollute_history(factory) -> None:
+def test_deterministic_runtime_ignores_provider_breakage(factory) -> None:
+    # Same contract for a provider that would "explode": v0.1 never constructs
+    # or invokes an external LLM transport (ADR-0002 §8-10), so the run is
+    # unaffected and history is committed once.
     history = factory()
-    outcome = _engine(history, llm=EmptyLLM()).run("run-1")
-    assert outcome.state == FAILED
-    _assert_history_untouched(history, "run-1")
+    outcome = _engine(history, llm=ExplodingLLM()).run("run-1")
+    assert outcome.state == COMPLETE
+    assert history.latest_pick_index() == 3
 
 
 @pytest.mark.parametrize("factory", HISTORY_FACTORIES)
@@ -387,18 +402,17 @@ def test_misbound_failed_receipt_enters_recovery() -> None:
 
 
 def test_conflicting_receipt_fails_closed_without_overwrite() -> None:
+    from tests.fakes import bound_receipt
+
     history = InMemoryHistory()
     # Durable evidence already exists for this idempotency key (delivery happened),
     # but no run journal exists — the engine must fail closed on a conflicting
-    # receipt instead of overwriting evidence or writing history.
-    existing = DeliveryReceipt(
-        run_id="prior-run",
-        idempotency_key="run-1:markdown",
-        delivered_at=AT,
-        channel="markdown",
-        status="ok",
+    # receipt instead of overwriting evidence or writing history. G4-002F: the
+    # receipt is created through the bound claim/finalize protocol.
+    existing = bound_receipt(
+        history, run_id="prior-run", key="run-1:markdown", channel="markdown",
+        outcome="ok",
     )
-    history.save_delivery_receipt(existing)
 
     outcome = _engine(history, delivery=MisboundFailedReceiptDelivery()).run("run-1")
     # The delivery attempt already happened -> ambiguous -> RECOVERING.
@@ -488,8 +502,12 @@ def test_historical_latest_pick_from_absent_genre_advances_global_index() -> Non
 
 @pytest.mark.parametrize("factory", HISTORY_FACTORIES)
 def test_failed_run_consumes_no_pick_indices(factory) -> None:
+    # A failed delivery run must not consume any pick indices or album history
+    # (G1-001: official history only after validated delivery). The failure is
+    # injected at the DELIVERY boundary — the v0.1 engine has no LLM slot
+    # (ADR-0002 D8), so the LLM is not a valid failure injection point.
     history = factory()
-    engine = _engine(history, llm=FailingLLM())
+    engine = _engine(history, delivery=FailingDelivery())
     outcome = engine.run("run-1")
     assert outcome.state == FAILED
     assert history.latest_pick_index() == 0  # nothing consumed
@@ -683,12 +701,15 @@ def test_misbound_receipt_never_commits_history(factory, overrides, label) -> No
     history = factory()
     delivery = MisboundReceiptDelivery(**overrides)
     outcome = _engine(history, delivery=delivery).run("run-1")
-    # G2-012: an ok-but-misbound receipt is delivery AMBIGUITY -> RECOVERING
-    # (manual review), never an ordinary terminal failure and never history.
+    # G2-012/ADR-0001: an ok-but-misbound receipt is delivery AMBIGUITY ->
+    # RECOVERING (manual review), never an ordinary terminal failure and never
+    # history. The attempt IS recorded as ambiguous (durable at-most-one
+    # evidence), so no re-push can ever happen after restart.
     assert outcome.state == RECOVERING, f"{label} must enter recovery"
     assert history.latest_pick_index() == 0
     assert history.excluded_album_identities() == frozenset()
-    assert history.find_delivery_receipt("run-1:markdown") is None
+    stored = history.find_delivery_receipt("run-1:markdown")
+    assert stored is None or stored.status != "ok"
     tails = [e.transition for e in history.journal_after("run-1", 0)]
     assert tails[-1] == RECOVERING
     # Anomaly is auditable in the journal.
@@ -832,20 +853,48 @@ def test_repeated_recovery_of_unchanged_evidence_is_bounded() -> None:
     assert history.latest_pick_index() == 0
 
 
-def test_receipt_conflict_after_external_call_enters_recovery() -> None:
+def test_receipt_conflict_after_external_call_enters_recovery(tmp_path) -> None:
     # A correctly bound ok receipt that CONFLICTS with pre-existing immutable
     # evidence (different delivered_at) after one external effect is ambiguous:
     # the side effect may have happened -> RECOVERING, one delivery call, zero
-    # history, original evidence preserved (G2-012).
-    history = InMemoryHistory()
-    existing = DeliveryReceipt(
-        run_id="prior-run",
-        idempotency_key="run-1:markdown",
-        delivered_at=AT,
-        channel="markdown",
-        status="ok",
+    # history, original evidence preserved (G2-012). G4-002F: pre-existing
+    # evidence can no longer be a fresh null-attempt insert — this scenario
+    # uses a GENUINE migrated v1 receipt (NULL attempt, no operation/journal),
+    # so the engine's begin claim succeeds and the finalize hits the conflict.
+    import sqlite3
+
+    from omda.storage import SqliteHistory
+
+    path = tmp_path / "legacy-conflict.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE run_journal (journal_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "run_id TEXT NOT NULL, transition TEXT NOT NULL, at TEXT NOT NULL, detail TEXT)"
     )
-    history.save_delivery_receipt(existing)
+    conn.execute(
+        "CREATE TABLE genre_pick_history (pick_index INTEGER PRIMARY KEY, "
+        "run_id TEXT NOT NULL, genre_id TEXT NOT NULL, committed_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE album_history (album_id TEXT PRIMARY KEY, canonical_id TEXT, "
+        "canonical_source TEXT, identity_confidence TEXT NOT NULL, run_id TEXT NOT NULL, "
+        "recommended_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE delivery_receipt (idempotency_key TEXT PRIMARY KEY, "
+        "run_id TEXT NOT NULL, delivered_at TEXT NOT NULL, channel TEXT NOT NULL, "
+        "status TEXT NOT NULL, target TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO delivery_receipt VALUES "
+        "('run-1:markdown', 'prior-run', '2026-08-19T09:00:00+00:00', 'markdown', 'ok', NULL)"
+    )
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    conn.close()
+    history = SqliteHistory(path)
+    existing = history.find_delivery_receipt("run-1:markdown")
+    assert existing is not None and existing.attempt_id is None
 
     class ConflictingOkDelivery:
         calls = 0
@@ -866,6 +915,7 @@ def test_receipt_conflict_after_external_call_enters_recovery() -> None:
     assert ConflictingOkDelivery.calls == 1
     assert history.find_delivery_receipt("run-1:markdown") == existing
     assert history.latest_pick_index() == 0
+    history.close()
 
 
 # --- G2-012 re-review 4: exactly three receipt status classes ------------------

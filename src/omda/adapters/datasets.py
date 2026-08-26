@@ -18,6 +18,11 @@ from omda.adapters._miniyaml import load_flat_yaml
 from omda.ports.critic import CriticRatingRow
 from omda.ports.domain import GenreRef
 from omda.ports.errors import InvalidInputError
+from omda.ports.source import (
+    GenreSourceDescriptor,
+    digest_genre_ids,
+    digest_genre_records,
+)
 from omda.schemas import validate
 from omda.schemas.validator import RecordValidationError
 
@@ -36,6 +41,8 @@ class DatasetProvenance:
     dataset_version: str
     data_scope: str
     records_file: str
+    demo: bool = False  # G3-007: demo policy flag (registry is the authority)
+    schema_version: str = "1"  # G3-007: package schema/query-policy version
 
 
 def _validate_record(schema_name: str, record: dict, location: str) -> None:
@@ -69,6 +76,8 @@ def _provenance_from_meta(meta: dict, records_file: str) -> DatasetProvenance:
         dataset_version=meta.get("dataset_version") or meta.get("scrape_date"),
         data_scope=meta.get("data_scope", ""),
         records_file=meta.get("records_file", records_file),
+        demo=bool(meta.get("demo", False)),
+        schema_version=str(meta.get("schema_version", "1")),
     )
 
 
@@ -127,6 +136,68 @@ class GenreDatasetAdapter:
 
     def provenance(self) -> DatasetProvenance:
         return _provenance_from_meta(self._source_meta(), "genres.jsonl")
+
+    def descriptor(self) -> GenreSourceDescriptor:
+        """G3-007: versioned GenreSourceDescriptor for registry verification.
+
+        ``content_digest`` is the SHA-256 over the reviewed manifest + Genre
+        records (G3-007-003): the registry records the digest reviewed at
+        install time, so a tampered Genre package fails closed at the source-set
+        boundary. The demo flag is read from the package; the reviewed
+        SourceRegistry remains the authority for demo/derivation/license.
+        """
+        meta = self._source_meta()
+        prov = self.provenance()
+        return GenreSourceDescriptor(
+            source_id=prov.source_id,
+            kind="genre",
+            display_name=prov.display_name,
+            license=prov.license,
+            origin_url=prov.origin_url,
+            retrieved_at=prov.retrieved_at,
+            dataset_version=prov.dataset_version,
+            schema_version=prov.schema_version,
+            data_scope=prov.data_scope,
+            records_file=prov.records_file,
+            demo=prov.demo,
+            data_derivation=meta["data_derivation"],
+            upstream_license=meta["upstream_license"],
+            license_core_facts=meta["license_core_facts"],
+            license_supplementary_used=meta["license_supplementary_used"],
+            license_service_terms=meta["license_service_terms"],
+            license_derived_package=meta["license_derived_package"],
+            content_digest=self._content_digest(),
+            eligible_genre_ids=self._eligible_genre_ids(),
+            eligible_digest=digest_genre_ids(self._eligible_genre_ids()),
+        )
+
+    def _eligible_genre_ids(self) -> tuple[str, ...]:
+        """Digest-bound eligible Genre IDs from the reviewed records (G3-007-003).
+
+        Only records whose validated ``eligible`` is true may be selected; the
+        set is derived from the same records the content digest covers, so a
+        selected ID that is absent here can never cross the source boundary.
+        """
+        return tuple(
+            sorted(record["genre_id"] for record in self._records() if record["eligible"])
+        )
+
+    def _content_digest(self) -> str:
+        """Deterministic SHA-256 over canonical Genre records (G3-007-003)."""
+        lines: list[tuple[str, ...]] = []
+        for record in self._records():
+            lines.append(
+                (
+                    record["genre_id"],
+                    record["name"],
+                    record["family"],
+                    ",".join(sorted(record["parents"])),
+                    "true" if record["eligible"] else "false",
+                    record["url"],
+                    record["source"],
+                )
+            )
+        return digest_genre_records(tuple(lines))
 
     # -- internals -------------------------------------------------------------
     def _source_meta(self) -> dict:

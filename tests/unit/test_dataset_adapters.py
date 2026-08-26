@@ -72,6 +72,12 @@ retrieved_at: 2026-08-20T00:00:00+00:00
 dataset_version: v1
 data_scope: test
 records_file: genres.jsonl
+data_derivation: independently_curated
+upstream_license: none incorporated
+license_core_facts: CC0-1.0
+license_supplementary_used: none
+license_service_terms: n/a
+license_derived_package: CC0-1.0
 """,
         encoding="utf-8",
     )
@@ -217,6 +223,12 @@ retrieved_at: 2026-08-20T00:00:00+00:00
 dataset_version: v1
 data_scope: test
 records_file: genres.jsonl
+data_derivation: independently_curated
+upstream_license: none incorporated
+license_core_facts: CC0-1.0
+license_supplementary_used: none
+license_service_terms: n/a
+license_derived_package: CC0-1.0
 """,
         )
         with pytest.raises(InvalidInputError) as exc:
@@ -251,6 +263,12 @@ retrieved_at: yesterday
 dataset_version: v1
 data_scope: test
 records_file: genres.jsonl
+data_derivation: independently_curated
+upstream_license: none incorporated
+license_core_facts: CC0-1.0
+license_supplementary_used: none
+license_service_terms: n/a
+license_derived_package: CC0-1.0
 """,
         )
         with pytest.raises(InvalidInputError) as exc:
@@ -472,6 +490,12 @@ retrieved_at: 2026-08-20T00:00:00+00:00
 dataset_version: v1
 data_scope: test
 records_file: genres.jsonl
+data_derivation: independently_curated
+upstream_license: none incorporated
+license_core_facts: CC0-1.0
+license_supplementary_used: none
+license_service_terms: n/a
+license_derived_package: CC0-1.0
 """,
         encoding="utf-8",
     )
@@ -555,6 +579,12 @@ retrieved_at: 2026-08-20T00:00:00+00:00
 dataset_version: v1
 data_scope: test
 records_file: genres.jsonl
+data_derivation: independently_curated
+upstream_license: none incorporated
+license_core_facts: CC0-1.0
+license_supplementary_used: none
+license_service_terms: n/a
+license_derived_package: CC0-1.0
 """,
             encoding="utf-8",
         )

@@ -1,6 +1,6 @@
 {
   "schema_name": "genre_source",
-  "schema_version": 1,
+  "schema_version": 3,
   "fields": {
     "source_id": {"type": "string", "required": true, "pattern": "^[a-z0-9-]+$"},
     "display_name": {"type": "string", "required": true, "min_length": 1},
@@ -9,6 +9,18 @@
     "retrieved_at": {"type": "string", "required": true, "format": "iso8601-datetime"},
     "dataset_version": {"type": "string", "required": true, "min_length": 1},
     "data_scope": {"type": "string", "required": true, "min_length": 1},
-    "records_file": {"type": "string", "required": true, "min_length": 1}
+    "records_file": {"type": "string", "required": true, "min_length": 1},
+    "demo": {"type": "boolean", "required": false},
+    "schema_version": {"type": "string", "required": false, "min_length": 1},
+    "data_derivation": {
+      "type": "string",
+      "required": true,
+      "enum": ["independently_curated", "derived_from_upstream"]
+    },
+    "upstream_license": {"type": "string", "required": true, "min_length": 1},
+    "license_core_facts": {"type": "string", "required": true, "min_length": 1},
+    "license_supplementary_used": {"type": "string", "required": true, "min_length": 1},
+    "license_service_terms": {"type": "string", "required": true, "min_length": 1},
+    "license_derived_package": {"type": "string", "required": true, "min_length": 1}
   }
 }

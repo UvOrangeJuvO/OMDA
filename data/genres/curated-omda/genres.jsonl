@@ -1,0 +1,5 @@
+{"genre_id": "ambient", "name": "Ambient", "url": "https://en.wikipedia.org/wiki/Ambient_music", "family": "Electronic", "parents": ["electronic"], "eligible": true, "source": "curated-omda"}
+{"genre_id": "bebop", "name": "Bebop", "url": "https://en.wikipedia.org/wiki/Bebop", "family": "Jazz", "parents": ["jazz"], "eligible": true, "source": "curated-omda"}
+{"genre_id": "krautrock", "name": "Krautrock", "url": "https://en.wikipedia.org/wiki/Krautrock", "family": "Rock", "parents": ["rock"], "eligible": true, "source": "curated-omda"}
+{"genre_id": "tuareg-music", "name": "Tuareg Music", "url": "https://en.wikipedia.org/wiki/Music_of_Mali", "family": "Regional", "parents": ["regional"], "eligible": true, "source": "curated-omda"}
+{"genre_id": "idm", "name": "IDM", "url": "https://en.wikipedia.org/wiki/Intelligent_dance_music", "family": "Electronic", "parents": ["electronic"], "eligible": true, "source": "curated-omda"}

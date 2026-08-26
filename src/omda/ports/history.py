@@ -22,6 +22,8 @@ from typing import Protocol
 
 from omda.ports.domain import (
     AlbumIdentity,
+    DeliveryOperation,
+    DeliveryOperationSnapshot,
     DeliveryReceipt,
     GenrePickRecord,
     JournalEntry,
@@ -87,4 +89,66 @@ class HistoryPort(Protocol):
 
     def find_delivery_receipt(self, idempotency_key: str) -> DeliveryReceipt | None:
         """Return the stored receipt for an idempotency key, if any."""
+        ...
+
+    # --- delivery operations (ADR-0001 v2: atomic claim, CAS, resolution) ---
+    def begin_delivery_operation(
+        self,
+        *,
+        run_id: str,
+        idempotency_key: str,
+        channel: str,
+        payload_digest: str,
+    ) -> DeliveryOperationSnapshot:
+        """Atomically create (or return) the per-key delivery operation.
+
+        Runs in ONE SQLite transaction with the ``DELIVERING`` journal entry,
+        BEFORE any network call. A brand-new key is created in the conservative
+        ``IN_FLIGHT_OR_MAY_HAVE_SENT`` state (``created=True``); an existing row
+        is returned with ``created=False`` so every other automatic caller is
+        blocked from the transport (at-most-one outbound request).
+        """
+        ...
+
+    def finalize_delivery_attempt(
+        self,
+        *,
+        operation_key: str,
+        expected_version: int,
+        outcome: str,
+        evidence: str,
+        attempted_at: str,
+    ) -> DeliveryOperation:
+        """Append the immutable attempt + receipt and CAS the operation state.
+
+        ``outcome`` is "ok" -> SUCCEEDED, "failed" -> CONFIRMED_FAILED or
+        "ambiguous" -> AMBIGUOUS. A version mismatch or an existing receipt for
+        the key fails closed (``InvariantFailureError``) without altering
+        evidence. All three writes share one transaction.
+        """
+        ...
+
+    def record_delivery_resolution(
+        self,
+        *,
+        operation_key: str,
+        run_id: str,
+        idempotency_key: str,
+        attempt_id: str | None,
+        outcome: str,
+        actor: str,
+        reason: str,
+        decided_at: str,
+    ) -> DeliveryOperation:
+        """Append a human resolution and CAS the operation state.
+
+        ``CONFIRMED_DELIVERED`` / ``CONFIRMED_NOT_DELIVERED`` advance the
+        operation only from ``IN_FLIGHT_OR_MAY_HAVE_SENT`` / ``AMBIGUOUS``;
+        ``STILL_UNKNOWN`` appends the record and leaves the state blocked.
+        Rewriting a SUCCEEDED/CONFIRMED_FAILED operation fails closed (§15-4).
+        """
+        ...
+
+    def find_delivery_operation(self, idempotency_key: str) -> DeliveryOperation | None:
+        """Return the durable operation for a key, if any."""
         ...

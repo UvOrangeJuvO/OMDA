@@ -42,6 +42,36 @@ _SEMANTIC_FIELDS = frozenset(
 _CHANNELS = ("markdown", "pushplus")
 _ENV_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
+# ADR-0002 D8 / §8-10: v0.1 is a DETERMINISTIC (no-LLM) runtime. The config
+# schema permits only llm.mode == "deterministic"; any provider value fails
+# closed during validation, BEFORE any run/journal/network side effect.
+LLM_MODES = ("deterministic",)
+DEFAULT_LLM_MODE = "deterministic"
+
+
+@dataclass(frozen=True)
+class LLMConfig:
+    """v0.1 LLM runtime mode (ADR-0002 D8).
+
+    Only ``deterministic`` is allowed in v0.1: the deliverable is a
+    deterministic fact report and NO external LLM is ever called. A
+    ``provider`` mode fails closed at construction/validation (explicit
+    "not supported in v0.1"), so no run, journal or network side effect can
+    precede the rejection.
+    """
+
+    mode: str = DEFAULT_LLM_MODE
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mode, str):
+            raise ValueError(f"llm.mode: must be a string, got {type(self.mode).__name__}")
+        if self.mode not in LLM_MODES:
+            raise ValueError(
+                f"llm.mode={self.mode!r} is not supported in v0.1: only "
+                f"{list(LLM_MODES)} is allowed (deterministic/no-LLM runtime, "
+                "ADR-0002 D8)"
+            )
+
 
 @dataclass(frozen=True)
 class DeliveryConfig:
@@ -84,6 +114,7 @@ class Config:
     # snapshot; a caller-owned mapping never stays attached to Config.
     genre_parent_limits: Mapping[str, int] = field(default_factory=dict)
     delivery: DeliveryConfig = field(default_factory=DeliveryConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
 
     def __post_init__(self) -> None:
         # G2-011: ONE complete validation boundary for EVERY construction path
@@ -95,6 +126,10 @@ class Config:
         if self.delivery is not None and not isinstance(self.delivery, DeliveryConfig):
             raise ValueError(
                 f"delivery: must be a DeliveryConfig, got {type(self.delivery).__name__}"
+            )
+        if self.llm is not None and not isinstance(self.llm, LLMConfig):
+            raise ValueError(
+                f"llm: must be an LLMConfig, got {type(self.llm).__name__}"
             )
         if self.genre_parent_limits is not None and not isinstance(
             self.genre_parent_limits, Mapping
@@ -152,6 +187,11 @@ def config_to_dict(config: Config) -> dict[str, Any]:
             "channel": delivery.channel,
             "pushplus_token_env": delivery.pushplus_token_env,
         }
+    llm = config.llm
+    if llm is None or not isinstance(llm, LLMConfig):
+        llm_value: Any = llm  # None/non-LLMConfig -> schema rejects
+    else:
+        llm_value = {"mode": llm.mode}
     return {
         "daily_genre_count": config.daily_genre_count,
         "albums_per_genre": config.albums_per_genre,
@@ -160,6 +200,7 @@ def config_to_dict(config: Config) -> dict[str, Any]:
         "seed": config.seed,
         "genre_parent_limits": parent_value,
         "delivery": delivery_value,
+        "llm": llm_value,
     }
 
 
@@ -191,6 +232,7 @@ def _normalise(d: dict[str, Any]) -> dict[str, Any]:
 
 def _from_dict(merged: dict[str, Any]) -> Config:
     delivery = merged.get("delivery") or {}
+    llm = merged.get("llm") or {}
     return Config(
         daily_genre_count=merged.get("daily_genre_count", DEFAULT_DAILY_GENRE_COUNT),
         albums_per_genre=merged.get("albums_per_genre", DEFAULT_ALBUMS_PER_GENRE),
@@ -202,6 +244,7 @@ def _from_dict(merged: dict[str, Any]) -> Config:
             channel=delivery.get("channel", "markdown"),
             pushplus_token_env=delivery.get("pushplus_token_env"),
         ),
+        llm=LLMConfig(mode=llm.get("mode", DEFAULT_LLM_MODE)),
     )
 
 
