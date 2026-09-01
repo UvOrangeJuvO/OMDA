@@ -1,5 +1,4 @@
 {"genre_id": "ambient", "name": "Ambient", "url": "https://example.com/genre/ambient", "family": "Electronic", "parents": ["electronic"], "eligible": true, "source": "demo-omda"}
 {"genre_id": "bebop", "name": "Bebop", "url": "https://example.com/genre/bebop", "family": "Jazz", "parents": ["jazz"], "eligible": true, "source": "demo-omda"}
 {"genre_id": "krautrock", "name": "Krautrock", "url": "https://example.com/genre/krautrock", "family": "Rock", "parents": ["rock"], "eligible": true, "source": "demo-omda"}
-{"genre_id": "tuareg", "name": "Tuareg Music", "url": "https://example.com/genre/tuareg-music", "family": "Regional", "parents": ["regional"], "eligible": true, "source": "demo-omda"}
-{"genre_id": "tradit-xy", "name": "Tradit XY", "url": "https://example.org/xy/", "family": "Regional", "parents": ["regional"], "eligible": false, "source": "sample-invalid-marker"}
+{"genre_id": "tuareg", "name": "Tuareg", "url": "https://example.com/genre/tuareg", "family": "World", "parents": ["world"], "eligible": true, "source": "demo-omda"}

@@ -1,0 +1,22 @@
+# OMDA demo Genre package — INDEPENDENTLY AUTHORED illustrative fixture.
+# These four records are ORIGINAL demo data created for this repository to
+# exercise the local, history-neutral dry-run path. They do NOT derive from,
+# quote, or mirror any external taxonomy; the genre names are generic public
+# terms and the URLs are illustrative examples. This package is DEMO ONLY and
+# is never accepted for external delivery (ADR-0002 D6 / G4-007B).
+source_id: "demo-omda"
+display_name: "OMDA Demo Genres (independently authored fixture)"
+license: "CC0-1.0 (independently authored demo fixture; see data/genres/README.md)"
+origin_url: "https://example.com/omda/demo-genres"
+retrieved_at: "2026-08-27T00:00:00+00:00"
+dataset_version: "2026-08-27"
+schema_version: "3"
+data_scope: "4 illustrative demo genre records; local dry-run only; never an external-delivery source"
+records_file: "genres.jsonl"
+demo: true
+data_derivation: "independently_curated"
+upstream_license: "none (independently authored; no upstream material incorporated)"
+license_core_facts: "CC0-1.0 (original demo records)"
+license_supplementary_used: "none incorporated"
+license_service_terms: "not applicable (no live service dependency)"
+license_derived_package: "CC0-1.0 (this independently authored demo fixture)"

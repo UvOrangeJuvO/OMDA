@@ -38,7 +38,7 @@ def test_genre_package_schema_version_matches_tracked_genre_source_schema() -> N
     # G3-007-007: every Genre package manifest declares the version of the
     # tracked genre_source schema that governs it.
     expected = str(_schema("genre_source")["schema_version"])  # "3"
-    for pkg in (REPO / "data" / "genres" / "curated-omda", REPO / "data" / "genres" / "rym-sample"):
+    for pkg in (REPO / "data" / "genres" / "curated-omda", REPO / "data" / "genres" / "demo-omda"):
         meta = _load_meta(pkg / "source.yaml")
         assert meta["schema_version"] == expected, pkg
     # And the registry records the same version for the reviewed Genre package.

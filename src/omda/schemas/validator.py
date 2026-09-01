@@ -14,8 +14,35 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+
 # src/omda/schemas/validator.py -> parents[0]=schemas, [1]=omda, [2]=src, [3]=repo root
-DEFAULT_SCHEMA_DIR = Path(__file__).resolve().parents[3] / "data" / "schemas"
+#
+# G5-001: resolve the schema directory the same way the runtime data directory
+# is resolved — explicit OMDA_DATA_DIR override, then the source-checkout
+# `data/schemas`, then the data tree shipped inside the installed wheel/sdist
+# (setuptools data-files target `<sys.prefix>/omda/data/schemas`). Kept
+# dependency-free (no import of omda.production) so this low-level module can
+# never form an import cycle.
+def _resolve_schema_dir() -> Path:
+    import os
+    import sys
+
+    override = os.environ.get("OMDA_DATA_DIR")
+    if override:
+        return Path(override) / "schemas"
+    checkout = Path(__file__).resolve().parents[3] / "data" / "schemas"
+    if checkout.is_dir():
+        return checkout
+    for candidate in (
+        Path(__file__).resolve().parents[1] / "data" / "schemas",
+        Path(sys.prefix) / "omda" / "data" / "schemas",
+    ):
+        if candidate.is_dir():
+            return candidate
+    return checkout  # import must not fail; load/validation errors surface later
+
+
+DEFAULT_SCHEMA_DIR = _resolve_schema_dir()
 
 _SUPPORTED_TYPES = frozenset({"string", "integer", "number", "boolean", "array", "object", "null"})
 _SUPPORTED_FORMATS = frozenset({"iso8601-date", "iso8601-datetime"})

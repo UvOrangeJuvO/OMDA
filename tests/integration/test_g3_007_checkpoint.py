@@ -38,7 +38,7 @@ REPO = Path(__file__).resolve().parents[2]
 REGISTRY = REPO / "data" / "sources" / "registry.jsonl"
 GENRES = REPO / "data" / "genres" / "curated-omda"
 ALBUMS = REPO / "data" / "albums" / "curated-omda"
-RYM_SAMPLE = REPO / "data" / "genres" / "rym-sample"
+DEMO_GENRES = REPO / "data" / "genres" / "demo-omda"
 
 ALBUMS_PER_GENRE = 3
 
@@ -147,12 +147,12 @@ def test_demo_genre_with_production_albums_yields_demo_source_set() -> None:
     # is_demo=True (the production-facing source-set result, not the raw flag).
     # Registry entries are derived from the REAL package descriptors so every
     # immutable field matches (G3-007-005).
-    demo_genre = GenreDatasetAdapter(RYM_SAMPLE).descriptor()
+    demo_genre = GenreDatasetAdapter(DEMO_GENRES).descriptor()
     assert demo_genre.demo is True
     base = {
         e.key: e for e in SourceRegistry.load(REGISTRY).entries()
     }  # curated-omda genre + album (reviewed)
-    base["rym-sample:genre"] = RegistryEntry(
+    base["demo-omda:genre"] = RegistryEntry(
         source_id=demo_genre.source_id,
         kind="genre",
         display_name=demo_genre.display_name,

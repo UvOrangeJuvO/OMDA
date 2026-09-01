@@ -133,3 +133,59 @@ final release audit and return `RELEASE_CANDIDATE_ACCEPTED`.
 published; no automatic scheduling enabled; no `ACCEPTED` /
 `RELEASE_CANDIDATE_ACCEPTED` written; no production semantic/architecture
 change.
+
+---
+
+# G5 Release Audit Re-review 1 Repair（2026-08-29，candidate 98681dd）
+
+对应 Reviewer commit：`98681dd1def88a563c9fff6cb8645c0058d2870e`
+（`reviews/final/RELEASE_AUDIT.md`，结论 **CHANGES_REQUESTED**：G5-001～G5-008）
+被退修 candidate：`69ccad929eb9092083ad0a098c12dd9b56d37f8d`
+Owner 决策（OD-8 / G5-005）：**Apache-2.0**（2026-08-29 确认）。
+本轮仅修复上述 8 项；未重开 G0–G4、未改变已接受产品语义、未进入发布阶段。
+
+## 逐项修复映射（G5-001 → G5-008）
+
+| Finding | 修复 | 验收证据 |
+|---|---|---|
+| **G5-001**（P1，wheel 无法在 checkout 外运行） | ① 安装资源布局：`pyproject.toml` data-files 按子目录目标打包 `omda/data/*`（schemas/sources/genres/albums/critics）；`MANIFEST.in` 让 sdist 携带 data 树 + LICENSE；② `production.DEFAULT_DATA_DIR` 三源解析（OMDA_DATA_DIR → checkout `data/` → `<sys.prefix>/omda/data`），缺失 fail-closed；`schemas/validator.DEFAULT_SCHEMA_DIR` 同步；`cli` 默认 history 路径在 wheel 安装下回退 `<cwd>/var`；③ `clean_env_check.sh` 改为**构建 wheel+sdist → 全新 Python 3.12 venv 安装 wheel → checkout 外** import/config/dry-run，并记录工具版本 | `tools/release_audit/clean_env_check.sh`：构建 `omda-0.1.0-py3-none-any.whl` + `omda-0.1.0.tar.gz`；全新 py3.12 venv 从 /tmp 安装后 `import`/config 校验/`--dry-run` → COMPLETE + 预览文件；METADATA `License-Expression: Apache-2.0`；sdist 含 data/ 与 LICENSE |
+| **G5-002**（P1，Album 排除测试未进入选择路径） | 受控 fixture：40 Genres（cooldown 满足）保持 Genre 规划可满足，把已提交 canonical identity 植入每个可选中 Genre 池的候选路径；断言 9 个全新真实 Album、committed 拒绝、无重复；shortage 变体断言显式失败由 Album 排除导致（journal 含 album/candidate 原因、无历史污染） | `test_g5_class3_album_exclusion_operates_in_selection_path`、`test_g5_class3_album_shortage_is_explicitly_caused_by_exclusion`（原 false-positive 测试删除）；观察 8 同步替换 |
+| **G5-003**（P1，崩溃矩阵非真实持久化模拟） | `CrashHistoryWrapper` 委托**真实 SqliteHistory**（临时文件）；每次崩溃后关闭旧连接、新建 `SqliteHistory` + 新 engine；9 个窗口逐点断言精确 state/calls/receipt+operation/journal tail/0-or-3 与 0-or-9；DELIVERED→COMPLETE（无第二次 push）；AFTER_CLAIM（claim 持久化后死）→ RECOVERING + IN_FLIGHT operation；pre-delivery→FAILED | `test_g5_class7_crash_matrix_real_sqlite`（参数化 9 窗口） |
+| **G5-004**（P1，secret 扫描漏检 + 泄露） | 两层策略：① tracked-path denylist（cookie jar/browser profile/runtime DB/.env/私钥/ssh/netrc/credential/service-account 文件——空文件或二进制同样命中）；② 文本 content patterns（PushPlus/通用 token/私钥块/AWS/GitHub/bearer/basic/Slack/Google/Stripe/JWT/session）；二进制（NUL 探测）永不文本解码；输出仅 kind+path+line 脱敏，**绝不打印 secret 原文**；正负 fixtures + force-add 集成测试 | `tests/unit/test_scan_secrets.py`（5 项，含 Reviewer force-add 复现）；仓库扫描 **0 命中** |
+| **G5-005**（P1/OWNER，许可未定 + RYM 声明无依据 + 依赖清单不全） | Owner 决策 **Apache-2.0**：新增 `LICENSE`（全文）+ `pyproject` SPDX + wheel METADATA；`data/genres/rym-sample` **re-author** 为独立创作 `data/genres/demo-omda`（自创记录、通用流派名、example.com URL，不再声明派生自任何上游，目录/代码/测试/文档引用全部同步）；`LICENSES.md` 补全 build 依赖（setuptools/wheel/build）+ 已解析版本快照（含 pytest/ruff/transitive） | `LICENSE`、`pyproject.toml`、`LICENSES.md`（§1/§3/§4.3）、wheel METADATA |
+| **G5-006**（P1，7 次观察不成立） | `observation_run.py` 重写：观察 1–7 = 七次**公共 `--dry-run` 入口**调用，逐条记录 UTC 时间戳、candidate SHA、命令/模式、data 版本、**零 live calls**（注入爆炸 transport 工厂证明不构造）、预览 SHA-256、before/after 官方历史（保持 absent）、同日自动化如实标注；观察 8 = G5-002 的 Album 排除证据（替换原无效 exhaustion 观察） | `reviews/stage-05/OBSERVATION_LOG.md`（8 条 JSON 记录，全部不变量满足） |
+| **G5-007**（P2，运维文档与备份演练不完整） | `README.md` 重写为新用户文档（安装、dry-run、--deliver、配置、数据/历史位置、**用户级备份恢复步骤**、故障排查、许可）；`backup_restore.py` 严格化：停止写入者后一致备份、备份自校验、损坏**必须被拒绝**（domain 打开失败或 integrity_check 失败，否则非零退出）、保留损坏副本、**原子替换**（temp+rename）、恢复后逻辑完整性验证 | `README.md`；`tools/release_audit/backup_restore.py`（exit 0） |
+| **G5-008**（P2，风险登记过期） | `RISK_REGISTER.md` 逐条与精确 test/report/ADR 引用核对：全部 P0/P1 → **CLOSED**（或 v0.1 范围限制），P2 持续控制；已知非阻塞限制单列 | `governance/RISK_REGISTER.md`（2026-08-29） |
+
+## 验证
+
+| 命令 | 结果 |
+|---|---|
+| `pytest -q -p no:cacheprovider` | **767 passed, 0 failed, 0 skipped, 0 error**（761→767；+6：scan_secrets fixtures 5 + 参数化矩阵净变化 0；既有测试未删除/弱化/skip） |
+| `pytest -v`（reviews/stage-05/TEST_RESULTS.txt） | 767 passed（776 行） |
+| `ruff check src tests tools browser_companion` | All checks passed |
+| `git diff --check` | clean |
+| 干净环境安装（wheel + sdist，checkout 外） | PASS（全新 Python 3.12 venv；import/config/dry-run 全通过） |
+| Secret 扫描（含合成泄漏 fixtures） | 仓库 0 命中；5 项 fixtures 全过 |
+| 备份恢复演练（严格版） | PASS（损坏拒绝 + 保留 + 原子恢复 + 校验） |
+| 8 次受控观察 | 全过（7 次 public dry-run + 1 次 Album 排除证据） |
+| G5-002 选择路径 / G5-003 真实 SQLite 崩溃矩阵 | 全部定向测试通过 |
+| 未 merge / 未 tag / 未 push / 未发布 / 未进入后续阶段 / 未写 ACCEPTED | 确认 |
+
+## 残余风险（诚实披露）
+
+1. curated 包规模有限（5 Genre × 4 Album）：真实 3×3 可完成，连续多日运行会快速
+   耗尽（显式失败已测）；扩充属 G5 后贡献流程。
+2. v0.1 交付物无 LLM narrative（ADR-0002 D8 取舍）；未来 provider 需独立实现 +
+   Gate 接受。
+3. ODP-1（live MusicBrainz tag-search）仍未定案未实现（ADR-0002 §8-1）。
+4. PushPlus 无文档化 definitive 类别，非 200 全按 ambiguous（保守）。
+5. wheel 数据经 setuptools data-files 安装到 `<sys.prefix>/omda/data`（而非
+   site-packages 包内）；已在 `_resolve_data_dir`/`_resolve_schema_dir` 双解析器与
+   README 安装契约中完整文档化。
+
+## Executor Conclusion（本轮）
+
+G5-001～G5-008 全部按 Required repair 修复，完整验证集通过。`PROJECT_STATE` 保持
+**G5 / READY_FOR_REVIEW**（未写 ACCEPTED / RELEASE_CANDIDATE_ACCEPTED），工作树干净，
+Executor 停止等待 Reviewer 最终发布审计。

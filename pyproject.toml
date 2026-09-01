@@ -7,15 +7,37 @@ name = "omda"
 version = "0.1.0"
 description = "Open Music Discovery Agent — a local-first, auditable daily music discovery agent"
 requires-python = ">=3.12"
-license = { text = "UNLICENSED" }
+license = "Apache-2.0"
 authors = [{ name = "OMDA Owner" }]
 dependencies = []
+readme = "README.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# G5-001: install the runtime data tree (schemas, reviewed curated packages,
+# the independently authored demo package, the registry) INSIDE the installed
+# package at `omda/data/...`. `omda.production.DEFAULT_DATA_DIR` resolves the
+# source-checkout `data/` first and this installed layout second, so the built
+# wheel runs from outside the repository without any editable checkout.
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.data-files]
+# Each runtime sub-tree gets its own install target so the on-disk layout of
+# the installed data matches the repository layout (schemas/, sources/,
+# genres/<pkg>/, albums/<pkg>/, critics/...).
+"omda/data/schemas" = ["data/schemas/*.json"]
+"omda/data/sources" = ["data/sources/registry.jsonl"]
+"omda/data/genres" = ["data/genres/README.md"]
+"omda/data/genres/curated-omda" = ["data/genres/curated-omda/*"]
+"omda/data/genres/demo-omda" = ["data/genres/demo-omda/*"]
+"omda/data/albums/curated-omda" = ["data/albums/curated-omda/*"]
+"omda/data/critics" = ["data/critics/README.md"]
+"omda/data/critics/example-source" = ["data/critics/example-source/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

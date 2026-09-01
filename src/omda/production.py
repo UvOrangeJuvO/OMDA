@@ -62,7 +62,7 @@ from omda.adapters.delivery import (
 from omda.adapters.llm import LLMAdapter
 from omda.config import Config
 from omda.orchestrator.run import RunEngine
-from omda.ports.errors import DeliveryFailureError
+from omda.ports.errors import DeliveryFailureError, SourceUnavailableError
 
 # The environment-variable-name contract for PushPlus tokens — the SAME
 # pattern the config schema enforces (G4-007E): an explicit token override must
@@ -71,11 +71,38 @@ from omda.ports.errors import DeliveryFailureError
 _TOKEN_ENV_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 # Repository data resolved independently of the caller's working directory
-# (G4-003 P2): package-root anchored, override with OMDA_DATA_DIR if needed.
-_PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
-DEFAULT_DATA_DIR = Path(
-    __import__("os").environ.get("OMDA_DATA_DIR", str(_PACKAGE_ROOT / "data"))
-)
+# (G4-003 P2 / G5-001): resolution order is
+#   1. OMDA_DATA_DIR environment override (explicit, always wins);
+#   2. the source-checkout `data/` tree (a sibling of the package root) when
+#      running from the repository;
+#   3. the INSTALLED data tree shipped by the wheel/sdist (setuptools
+#      data-files target `omda/data` installs at `<sys.prefix>/omda/data`, so
+#      both the site-packages sibling and the sys.prefix target are checked).
+# Any other location fails closed with a clear error instead of guessing.
+def _resolve_data_dir() -> Path:
+    import os
+    import sys
+
+    override = os.environ.get("OMDA_DATA_DIR")
+    if override:
+        return Path(override)
+    checkout = Path(__file__).resolve().parent.parent.parent / "data"
+    if checkout.is_dir():
+        return checkout
+    for candidate in (
+        Path(__file__).resolve().parent / "data",
+        Path(sys.prefix) / "omda" / "data",
+    ):
+        if candidate.is_dir():
+            return candidate
+    raise SourceUnavailableError(
+        "OMDA data directory not found (checked source-checkout data/, the "
+        "installed package data/ and the sys.prefix data-files target); set "
+        "OMDA_DATA_DIR explicitly"
+    )
+
+
+DEFAULT_DATA_DIR = _resolve_data_dir()
 
 
 class PushPlusHttpTransport:

@@ -38,5 +38,6 @@ The `GenreDatasetAdapter` (implements the `GenreSource` port) parses and
 validates the package and exposes its provenance. Errors pinpoint the file,
 line and field.
 
-The repository ships `data/genres/rym-sample/` as a working example (an
-illustrative 4-record subset, not a full RYM mirror).
+The repository ships `data/genres/demo-omda/` as a working example: an
+independently authored 4-record demo fixture for the local, history-neutral
+dry-run path (never an external-delivery source).

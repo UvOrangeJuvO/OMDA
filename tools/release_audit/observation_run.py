@@ -1,126 +1,237 @@
 #!/usr/bin/env python3
-"""G5 T5.5 — controlled observations (OPH §14-9 / IMPLEMENTATION_PLAN T5.5).
+"""G5 T5.5 — honest controlled observations (G5-006).
 
-Runs the REAL production composition (reviewed curated sources + registry)
-against a FAKE PushPlus transport — zero live calls — and records a structured
-observation per run: run_id, state, picks, album count, within-run repeats and
-official-history pick index.
+Observations 1-7: SEVEN invocations of the PUBLIC ``--dry-run`` entry point
+(``omda.cli.main``), each recording:
 
-Observations 1-7: each run uses an ISOLATED history (dry-run semantics) to
-demonstrate that repeated daily-style runs are history-neutral and always
-produce a valid 3x3 with no repeats.
-Observation 8: the SAME durable history is reused so permanent exclusion can be
-observed — a second run never repeats a committed identity and either completes
-with fresh identities or fails explicitly on exhaustion.
+- UTC timestamp and the exact candidate SHA (``git rev-parse HEAD``);
+- the command/mode string;
+- the packaged data version (demo-omda manifest) and default config;
+- ZERO live calls: an exploding PushPlus transport factory is installed, so
+  any attempt to construct a transport for dry-run would fail the observation;
+- the SHA-256 digest of the produced preview file;
+- before/after official-history checks on the CLI default runtime store (the
+  dry-run path never creates or mutates it).
 
-Output: JSON lines to stdout (and written to reviews/stage-05/OBSERVATION_LOG.md
-by the Executor). Exit 0 only if every observation satisfies its invariants.
+The runs are intentionally same-day and automated; they are labeled as such,
+NOT as elapsed operational stability.
+
+Observation 8 (G5-002 replacement): the targeted Album-exclusion evidence —
+one already-committed canonical identity is planted inside every selectable
+Genre pool; a full engine run must complete with nine NEW real albums, never
+the committed identity.
+
+Output: JSON lines to stdout. Exit 0 only if every observation satisfies its
+invariants.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
-import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-from omda.adapters.delivery import ProviderSuccess
-from omda.config import DeliveryConfig, load_config
-from omda.orchestrator.run import COMPLETE, FAILED
-from omda.production import build_curated_sources, build_production_engine
-from omda.storage import SqliteHistory
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "src"))
+
+from omda import cli  # noqa: E402
+from omda.orchestrator.run import COMPLETE  # noqa: E402
 
 
-class _FakeTransport:
-    def __init__(self) -> None:
-        self.calls = 0
-        self.last_payload = None
+class _ExplodingTransportFactory:
+    """Any attempt to construct a PushPlus transport during a dry-run fails."""
 
-    def post(self, url: str, payload: dict) -> ProviderSuccess:
-        self.calls += 1
-        self.last_payload = payload
-        return ProviderSuccess({"code": 200})
+    def __call__(self):
+        raise AssertionError(
+            "dry-run must never construct a PushPlus transport (zero live calls)"
+        )
 
 
-def _config() -> object:
-    from dataclasses import replace
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
-    return replace(
-        load_config(),
-        delivery=DeliveryConfig(channel="pushplus", pushplus_token_env="OMDA_PP_TOKEN"),
+
+def _candidate_sha() -> str:
+    out = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, check=True, text=True
     )
+    return out.stdout.strip()
 
 
-def _engine(history, transport):
-    genre_source, album_source, registry = build_curated_sources()
-    return build_production_engine(
-        config=_config(),
-        history=history,
-        genre_source=genre_source,
-        album_source=album_source,
-        transport=transport,
-        token_env="OMDA_PP_TOKEN",
-        source_registry=registry,
-        seed="g5-observation",
-    )
+def _demo_data_version() -> str:
+    from omda.production import DEFAULT_DATA_DIR
+
+    meta = (
+        DEFAULT_DATA_DIR / "genres" / "demo-omda" / "source.yaml"
+    ).read_text(encoding="utf-8")
+    for line in meta.splitlines():
+        if line.startswith("dataset_version:"):
+            return line.split(":", 1)[1].strip().strip('"')
+    return "unknown"
+
+
+def _official_history_state() -> str:
+    from omda.cli import DEFAULT_HISTORY_PATH
+
+    if not DEFAULT_HISTORY_PATH.exists():
+        return "absent"
+    from omda.storage import SqliteHistory
+
+    store = SqliteHistory(DEFAULT_HISTORY_PATH)
+    try:
+        return f"picks={store.latest_pick_index()}"
+    finally:
+        store.close()
 
 
 def main() -> int:
-    os.environ["OMDA_PP_TOKEN"] = "observation-token"
+    sha = _candidate_sha()
+    data_version = _demo_data_version()
     observations: list[dict] = []
-    try:
-        # Observations 1-7: isolated history each (history-neutral daily rehearsal).
-        for i in range(1, 8):
-            history = SqliteHistory(":memory:")
-            transport = _FakeTransport()
-            engine = _engine(history, transport)
-            outcome = engine.run(f"g5-obs-{i}")
-            ids = [a.album_id for a in (outcome.plan.albums if outcome.plan else [])]
+
+    # --- Observations 1-7: public --dry-run (same-day, automated) ------------
+    for i in range(1, 8):
+        with tempfile.TemporaryDirectory() as d:
+            out_dir = Path(d) / "previews"
+            out_dir.mkdir()
+            run_id = f"g5-obs-{i}"
+            argv = [
+                "--dry-run",
+                "--output-dir", str(out_dir),
+                "--run-id", run_id,
+            ]
+            transport = _ExplodingTransportFactory()
+            before = _official_history_state()
+            import datetime as _dt
+
+            ts = _dt.datetime.now(_dt.UTC).isoformat().replace("+00:00", "Z")
+            saved = cli._pushplus_transport
+            cli._pushplus_transport = transport  # type: ignore[attr-defined]
+            try:
+                code = cli.main(argv)
+            finally:
+                cli._pushplus_transport = saved  # type: ignore[attr-defined]
+            after = _official_history_state()
+
+            preview = out_dir / f"{run_id}.md"
             obs = {
                 "observation": i,
-                "run_id": f"g5-obs-{i}",
-                "state": outcome.state,
-                "transport_calls": transport.calls,
-                "committed_picks_in_isolated_history": history.latest_pick_index(),
-                "albums": len(ids),
-                "within_run_repeats": len(ids) - len(set(ids)),
-                "mode": "isolated-history dry rehearsal",
+                "timestamp": ts,
+                "candidate_sha": sha,
+                "command": "omda.cli --dry-run --output-dir <tmp> --run-id " + run_id,
+                "mode": "public dry-run (CLI main entry)",
+                "data_version": data_version,
+                "config": "defaults (llm.mode=deterministic)",
+                "live_calls": 0,
+                "exit_code": code,
+                "state": "COMPLETE",
+                "preview_digest_sha256": _sha256(preview) if preview.exists() else None,
+                "official_history_before": before,
+                "official_history_after": after,
+                "same_day_automated": True,
+                "note": "not elapsed operational stability; rehearsals only",
             }
             observations.append(obs)
-            assert outcome.state == COMPLETE, obs
-            assert len(ids) == 9 and len(set(ids)) == 9, obs
-            assert transport.calls == 1, obs
-            assert history.latest_pick_index() == 3, obs
-            history.close()
+            assert code == 0, obs
+            assert preview.exists(), obs
+            assert obs["preview_digest_sha256"], obs
+            assert obs["official_history_before"] == "absent", obs
+            assert obs["official_history_after"] == "absent", obs
+            # A dry-run must never mutate the official store (before/after equal).
+            assert obs["official_history_before"] == obs["official_history_after"]
 
-        # Observation 8: shared durable history — permanent exclusion behavior.
-        import tempfile
+    # --- Observation 8 (G5-002 evidence): Album exclusion in the selection path
+    from omda.adapters.delivery import MarkdownFileDelivery
+    from omda.config import load_config
+    from omda.orchestrator.run import RunEngine
+    from omda.ports.domain import AlbumCandidate, AlbumIdentity, GenrePickRecord, GenreRef
+    from omda.storage import SqliteHistory
 
-        with tempfile.TemporaryDirectory() as d:
-            db = Path(d) / "obs.sqlite3"
-            transport = _FakeTransport()
-            engine = _engine(SqliteHistory(db), transport)
-            first = engine.run("g5-obs-shared-1")
-            first_ids = {a.album_id for a in (first.plan.albums if first.plan else [])}
-            second = engine.run("g5-obs-shared-2")
-            second_ids = {a.album_id for a in (second.plan.albums if second.plan else [])}
-            obs = {
-                "observation": 8,
-                "run_id": "g5-obs-shared-1/2",
-                "state": f"{first.state} -> {second.state}",
-                "transport_calls": transport.calls,
-                "picks": engine._history.latest_pick_index(),
-                "shared_history_no_repeat": bool(second_ids.isdisjoint(first_ids)),
-                "mode": "shared durable history (permanent exclusion)",
-            }
-            observations.append(obs)
-            if second.state == COMPLETE:
-                assert len(second_ids) == 9 and second_ids.isdisjoint(first_ids), obs
-            else:
-                assert second.state == FAILED, obs  # explicit exhaustion, no repeat
-            engine._history.close()
-    finally:
-        os.environ.pop("OMDA_PP_TOKEN", None)
+    class _WideGenreSource:
+        def __init__(self, genres):
+            self._genres = genres
+
+        def list_eligible_genres(self):
+            return self._genres
+
+    class _PoolAlbumSource:
+        def __init__(self, by_genre):
+            self._by_genre = by_genre
+
+        def candidates_for_genre(self, genre, limit=None):
+            found = self._by_genre.get(genre.genre_id, [])
+            return found[:limit] if limit is not None else list(found)
+
+    genres = [
+        GenreRef(f"g{i:02d}", f"Genre {i:02d}", "Electronic", eligible=True)
+        for i in range(40)
+    ]
+
+    def _cid(gid: str, idx: int) -> str:
+        return f"00000000-0000-0000-{gid}-{idx:04d}"
+
+    def _candidate(gid: str, idx: int, *, identity=None):
+        return AlbumCandidate(
+            album_id=f"{gid}-a{idx}", title=f"{gid} Album {idx}", artist="Artist",
+            year=2000 + idx,
+            identity=identity or AlbumIdentity(
+                album_id=f"{gid}-a{idx}", canonical_id=_cid(gid, idx),
+                canonical_source="musicbrainz",
+            ),
+        )
+
+    committed = _candidate("g00", 1).identity
+    by_genre = {}
+    for g in genres:
+        pool = [_candidate(g.genre_id, i) for i in (1, 2, 3, 4)]
+        pool.append(
+            AlbumCandidate(f"{g.genre_id}-planted", "Planted Repeat", "Artist", 2010,
+                           identity=committed)
+        )
+        by_genre[g.genre_id] = pool
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        db = d / "obs8.sqlite3"
+        store = SqliteHistory(db)
+        store.commit_history(
+            "seed-run",
+            [GenrePickRecord(1, "g99"), GenrePickRecord(2, "g98"), GenrePickRecord(3, "g97")],
+            [committed],
+            "2026-08-27T00:00:00Z",
+        )
+        engine = RunEngine(
+            config=load_config(),
+            history=store,
+            genre_source=_WideGenreSource(genres),
+            album_source=_PoolAlbumSource(by_genre),
+            llm=None,
+            delivery=MarkdownFileDelivery(output_dir=d / "preview"),
+            seed="g5-obs8",
+        )
+        outcome = engine.run("g5-obs8")
+        selected = outcome.plan.albums if outcome.plan else []
+        selected_canonical = {a.canonical_id for a in selected}
+        obs8 = {
+            "observation": 8,
+            "timestamp": _dt.datetime.now(_dt.UTC).isoformat().replace("+00:00", "Z"),
+            "candidate_sha": sha,
+            "mode": "Album-exclusion evidence (G5-002 replacement)",
+            "state": outcome.state,
+            "selected_albums": len(selected),
+            "committed_identity_rejected": committed.canonical_id not in selected_canonical,
+            "no_repeat_within_run": len({a.album_id for a in selected}) == len(selected),
+            "official_history_picks_after": store.latest_pick_index(),
+        }
+        observations.append(obs8)
+        assert outcome.state == COMPLETE, obs8
+        assert len(selected) == 9, obs8
+        assert committed.canonical_id not in selected_canonical, obs8
+        assert obs8["no_repeat_within_run"], obs8
+        store.close()
 
     for obs in observations:
         print(json.dumps(obs, ensure_ascii=False, sort_keys=True))
