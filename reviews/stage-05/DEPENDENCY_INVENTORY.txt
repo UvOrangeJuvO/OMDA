@@ -1,0 +1,71 @@
+# G5-R1-002 — Resolved dependency & license inventory (generated evidence)
+
+Generated: 2026-09-11 (UTC+08) from ONE clean release-audit environment:
+
+```bash
+python3.12 -m venv /tmp/g5-r1-audit-venv
+/tmp/g5-r1-audit-venv/bin/python -m pip install --upgrade pip
+/tmp/g5-r1-audit-venv/bin/python -m pip install build setuptools wheel pytest ruff
+/tmp/g5-r1-audit-venv/bin/python tools/release_audit/dependency_inventory.py
+```
+
+## pip freeze (raw, sorted)
+
+```text
+Pygments==2.21.0
+build==1.6.1
+iniconfig==2.3.0
+packaging==26.3
+pluggy==1.6.0
+pyproject_hooks==1.2.0
+pytest==9.1.1
+ruff==0.16.7
+setuptools==84.0.0
+wheel==0.48.0
+```
+
+## Generated inventory (verbatim tool output)
+
+```text
+Environment: Python 3.12.14 (/tmp/g5-r1-audit-venv/bin/python)
+Resolved distributions: 11
+
+| Package | Version | Role | License / SPDX | License source | Authoritative source |
+|---|---|---|---|---|---|
+| build | 1.6.1 | build (PEP 517 frontend, release check) | MIT | metadata License-Expression (PEP 639) | https://build.pypa.io |
+| iniconfig | 2.3.0 | test tooling (transitive of pytest) | MIT | metadata License-Expression (PEP 639) | https://github.com/pytest-dev/iniconfig |
+| packaging | 26.3 | build tooling (transitive of build/setuptools) | Apache-2.0 OR BSD-2-Clause | metadata License-Expression (PEP 639) | https://github.com/pypa/packaging |
+| pip | 26.2.1 | environment tooling (NOT a dependency of OMDA) | MIT | metadata License-Expression (PEP 639) | https://pip.pypa.io/ |
+| pluggy | 1.6.0 | test tooling (transitive of pytest) | License :: OSI Approved :: MIT License | metadata Classifier: License :: | /tmp/g5-r1-audit-venv/lib/python3.12/site-packages/pluggy-1.6.0.dist-info |
+| Pygments | 2.21.0 | test tooling (transitive of pytest) | BSD-2-Clause | metadata License-Expression (PEP 639) | https://pygments.org |
+| pyproject_hooks | 1.2.0 | build tooling (transitive of build) | License :: OSI Approved :: MIT License | metadata Classifier: License :: | https://github.com/pypa/pyproject-hooks |
+| pytest | 9.1.1 | test runner (dev extra) | MIT | metadata License-Expression (PEP 639) | https://docs.pytest.org/en/latest/ |
+| ruff | 0.16.7 | linter/formatter (dev extra) | MIT | metadata License-Expression (PEP 639) | https://github.com/astral-sh/ruff |
+| setuptools | 84.0.0 | build (PEP 517 build backend) | MIT | metadata License-Expression (PEP 639) | https://github.com/pypa/setuptools |
+| wheel | 0.48.0 | build (wheel builder) | MIT | metadata License-Expression (PEP 639) | https://github.com/pypa/wheel |
+
+### Required-by (base install, non-extra requirements)
+
+- **iniconfig**: pytest (iniconfig>=1.0.1)
+- **packaging**: build (packaging >= 24.0); wheel (packaging >= 24.0); pytest (packaging>=22)
+- **pluggy**: pytest (pluggy<2,>=1.5)
+- **Pygments**: pytest (pygments>=2.7.2)
+- **pyproject_hooks**: build (pyproject_hooks)
+
+### Interpreter/platform-conditional requirements not resolved here
+
+- `build` → `colorama; os_name == "nt"`
+- `build` → `importlib-metadata >= 4.6; python_full_version < "3.10.2"`
+- `build` → `tomli >= 1.1.0; python_version < "3.11"`
+- `pytest` → `colorama>=0.4; sys_platform == "win32"`
+- `pytest` → `exceptiongroup>=1; python_version < "3.11"`
+- `pytest` → `tomli>=1; python_version < "3.11"`
+
+### Optional extras (opt-in groups, NOT part of this environment)
+
+- Pygments: 1 requirement(s) behind `extra == "..."` markers
+- build: 3 requirement(s) behind `extra == "..."` markers
+- pluggy: 5 requirement(s) behind `extra == "..."` markers
+- pytest: 7 requirement(s) behind `extra == "..."` markers
+- setuptools: 50 requirement(s) behind `extra == "..."` markers
+```

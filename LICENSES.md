@@ -2,7 +2,10 @@
 
 > G5 T5.3 (SPEC §7-14, MP §7): dependency and data license inventory.
 > Audit date: 2026-08-26; updated 2026-08-29 (G5-005: Owner license decision,
-> complete versioned dependency inventory, demo package re-authored).
+> demo package re-authored); **updated 2026-09-11 (G5-R1-002: dependency
+> inventory regenerated from one clean Python 3.12 release-audit environment,
+> per-package license/SPDX and authoritative source added, `pyproject_hooks`
+> included, `typing_extensions` correction recorded)**.
 > This file is an audit artifact; it does not itself grant or change any
 > license. The Owner retains final license authority.
 
@@ -21,44 +24,89 @@
   (`dependencies = []` in `pyproject.toml`). No third-party runtime package is
   imported by `src/omda/**`.
 
-## 3. Build / development / test dependencies
+## 3. Build / development / test dependencies — RESOLVED INVENTORY
 
-### 3.1 Build dependencies (required to build wheel/sdist from source)
+> G5-R1-002: this section is GENERATED from one clean Python 3.12 release-audit
+> environment, not hand-written. Reproduce with:
+>
+> ```bash
+> python3.12 -m venv /tmp/g5-r1-audit-venv
+> /tmp/g5-r1-audit-venv/bin/python -m pip install --upgrade pip
+> /tmp/g5-r1-audit-venv/bin/python -m pip install build setuptools wheel pytest ruff
+> /tmp/g5-r1-audit-venv/bin/python tools/release_audit/dependency_inventory.py
+> ```
+>
+> Raw `pip freeze` and the verbatim tool output are committed as
+> `reviews/stage-05/DEPENDENCY_INVENTORY.txt`.
+> Environment: **Python 3.12.14**. Generated 2026-09-11.
 
-| Package | Role | License (SPDX) |
+### 3.1 Every distribution actually resolved (with license and source)
+
+License/SPDX is read from the installed distribution metadata (PEP 639
+`License-Expression` first, then the `Classifier: License ::` entries); the
+"Source" column is the authoritative project/metadata location for that exact
+version.
+
+| Package | Version | Dependency role | License / SPDX | License read from | Source |
+|---|---|---|---|---|---|
+| build | 1.6.1 | build (PEP 517 frontend, release check) | MIT | License-Expression (PEP 639) | https://build.pypa.io |
+| iniconfig | 2.3.0 | test tooling (transitive of pytest) | MIT | License-Expression (PEP 639) | https://github.com/pytest-dev/iniconfig |
+| packaging | 26.3 | build tooling (transitive of build/wheel/pytest) | Apache-2.0 OR BSD-2-Clause | License-Expression (PEP 639) | https://github.com/pypa/packaging |
+| pip | 26.2.1 | environment tooling — **NOT a dependency of OMDA** | MIT | License-Expression (PEP 639) | https://pip.pypa.io/ |
+| pluggy | 1.6.0 | test tooling (transitive of pytest) | MIT | Classifier: License :: OSI Approved :: MIT License | pluggy-1.6.0.dist-info (metadata) |
+| Pygments | 2.21.0 | test tooling (transitive of pytest) | BSD-2-Clause | License-Expression (PEP 639) | https://pygments.org |
+| pyproject_hooks | 1.2.0 | build tooling (transitive of build) | MIT | Classifier: License :: OSI Approved :: MIT License | https://github.com/pypa/pyproject-hooks |
+| pytest | 9.1.1 | test runner (`dev` extra) | MIT | License-Expression (PEP 639) | https://docs.pytest.org/en/latest/ |
+| ruff | 0.16.7 | linter/formatter (`dev` extra) | MIT | License-Expression (PEP 639) | https://github.com/astral-sh/ruff |
+| setuptools | 84.0.0 | build (PEP 517 build backend) | MIT | License-Expression (PEP 639) | https://github.com/pypa/setuptools |
+| wheel | 0.48.0 | build (wheel builder) | MIT | License-Expression (PEP 639) | https://github.com/pypa/wheel |
+
+Transitive roles are evidence-based: `pip install`-resolved requirements of the
+base install are `pyproject_hooks` (required by build), `packaging` (required by
+build/wheel/pytest), `pluggy`, `iniconfig`, `Pygments` (required by pytest).
+
+### 3.2 Declared constraints vs resolved versions
+
+`pyproject.toml` declares minimum ranges for the dev extra and the build
+backend; the table above records what a clean environment resolves today.
+
+| Package | Declared in `pyproject.toml` | Resolved 2026-09-11 |
 |---|---|---|
-| setuptools | build backend | MIT |
-| wheel | wheel builder | MIT |
-| build | PEP 517 frontend (release check only) | MIT |
+| setuptools | `>=68` (build-system requires) | 84.0.0 |
+| pytest | `>=8` (`dev` extra) | 9.1.1 |
+| ruff | `>=0.6` (`dev` extra) | 0.16.7 |
+| wheel / build / pyproject_hooks / packaging / pluggy / iniconfig / Pygments | not declared (build tooling / transitive) | see 3.1 |
 
-### 3.2 Development / test dependencies (`[project.optional-dependencies] dev`)
+### 3.3 Interpreter/platform-conditional requirements NOT resolved here
 
-| Package | Role | License (SPDX) |
-|---|---|---|
-| pytest | test runner | MIT |
-| ruff | linter/formatter | MIT |
+These are declared by resolved packages but do not apply to CPython 3.12 on
+POSIX, so they are absent from the environment — documented rather than dropped:
 
-### 3.3 Resolved version snapshot (release-audit run, 2026-08-29)
+- `build` → `colorama; os_name == "nt"`
+- `build` → `importlib-metadata >= 4.6; python_full_version < "3.10.2"`
+- `build` → `tomli >= 1.1.0; python_version < "3.11"`
+- `pytest` → `colorama>=0.4; sys_platform == "win32"`
+- `pytest` → `exceptiongroup>=1; python_version < "3.11"`
+- `pytest` → `tomli>=1; python_version < "3.11"`
 
-Resolved versions recorded from the G5 clean-env rehearsal and the dev venv —
-the versioned inventory required by G5-005:
+Optional `extra == "..."` groups (e.g. setuptools' own test/doc/type extras) are
+opt-in and are NOT installed; their counts are recorded in
+`reviews/stage-05/DEPENDENCY_INVENTORY.txt`.
 
-| Package | Resolved version | Role |
-|---|---|---|
-| setuptools | 84.0.0 | build |
-| wheel | 0.48.0 | build |
-| build | 1.6.0 | build (release check) |
-| pip | 26.2.1 (build env) / 25.0.1 (clean env) | tooling |
-| pytest | 9.1.1 | dev/test |
-| ruff | 0.16.3 | dev/lint |
-| pluggy | 1.6.0 | transitive (pytest) |
-| iniconfig | 2.3.0 | transitive (pytest) |
-| packaging | 26.3 | transitive (pytest/setuptools) |
-| Pygments | 2.21.0 | transitive (pytest) |
-| typing_extensions | 4.15.0 | transitive (pytest) |
+### 3.4 Correction: `typing_extensions` is NOT a dependency of this project
 
-These are installed only in build/dev/test environments; they are not shipped
-in the wheel or at runtime.
+The previous revision of this file listed `typing_extensions==4.15.0` as a
+"pytest transitive". That was wrong and has been removed: in the clean Python
+3.12 release-audit environment **nothing requires `typing_extensions`** (verified
+against every installed distribution's metadata). It was present only because the
+Executor's shared Python 3.13 development environment contains unrelated
+third-party packages that require it — `python-docx (typing_extensions>=4.9.0)`,
+`beautifulsoup4 (typing-extensions>=4.0.0)`, `pyee (typing_extensions)`. It is a
+leftover of that shared environment, not a dependency of OMDA's build, dev, test
+or runtime set.
+
+These packages are installed only in build/dev/test environments; they are not
+shipped in the wheel and are never imported at runtime.
 
 ## 4. Curated data packages (Git source of truth)
 

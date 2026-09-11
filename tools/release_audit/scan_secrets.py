@@ -41,7 +41,15 @@ from pathlib import Path
 # (name, compiled pattern) matched against the POSIX-style relative path.
 TRACKED_FORBIDDEN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("dotenv", re.compile(r"(^|/)\.env(\.[A-Za-z0-9_]+)?$")),
-    ("cookie-jar", re.compile(r"(^|/)cookies?[^/]*\.json$", re.IGNORECASE)),
+    # G5-R1-001: cookie artifacts come in many shapes — `cookies.json`,
+    # `cookies.txt`, bare browser `Cookies` (no extension), `cookie_store.txt`,
+    # `cookiejar`, `cookie-jar.txt`. Any path whose basename is a cookie-store
+    # name is refused, extension or not (conservative by design: a release gate
+    # must never ship cookie material).
+    ("cookie-jar", re.compile(
+        r"(^|/)(cookie|cookies|cookiejar|cookie[-_]?store|cookie[-_]?jar)[^/]*$",
+        re.IGNORECASE,
+    )),
     ("browser-profile", re.compile(r"(^|/)browser-profile(/|$)", re.IGNORECASE)),
     ("runtime-db", re.compile(
         r"\.(sqlite|sqlite3|db|sqlite3-journal|db-wal|db-shm)$", re.IGNORECASE
