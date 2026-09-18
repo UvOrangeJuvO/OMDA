@@ -1,0 +1,133 @@
+OMDA G6 — TEST RESULTS (real captured output)
+Generated: 2026-09-18T23:30:49+0800
+Working directory: skills/omda-daily-discovery/tests
+
+================================================================
+[1/3] Unit/acceptance suite — Python 3.13.12 (managed)
+================================================================
+test_ac10_skill_structure (test_daily_pick.SkillTestCase.test_ac10_skill_structure) ... ok
+test_ac11_zip_whitelist_and_validation (test_daily_pick.SkillTestCase.test_ac11_zip_whitelist_and_validation) ... ok
+test_ac14_display_fields_do_not_change_selection (test_daily_pick.SkillTestCase.test_ac14_display_fields_do_not_change_selection) ... ok
+test_ac14_free_text_profile_never_read (test_daily_pick.SkillTestCase.test_ac14_free_text_profile_never_read) ... ok
+test_ac15_exhausted (test_daily_pick.SkillTestCase.test_ac15_exhausted) ... ok
+test_ac15_exhausted_after_permanent_exclusion (test_daily_pick.SkillTestCase.test_ac15_exhausted_after_permanent_exclusion) ... ok
+test_ac16_history_commit_failure_never_reports_success (test_daily_pick.SkillTestCase.test_ac16_history_commit_failure_never_reports_success) ... ok
+test_ac16_output_failure_recovers_without_new_selection (test_daily_pick.SkillTestCase.test_ac16_output_failure_recovers_without_new_selection) ... ok
+test_ac17_single_source_flow (test_daily_pick.SkillTestCase.test_ac17_single_source_flow) ... ok
+test_ac18_multi_source_attribution (test_daily_pick.SkillTestCase.test_ac18_multi_source_attribution) ... ok
+test_ac19_source_and_row_order_invariance (test_daily_pick.SkillTestCase.test_ac19_source_and_row_order_invariance) ... ok
+test_ac1_clean_env_manual_flow (test_daily_pick.SkillTestCase.test_ac1_clean_env_manual_flow)
+Simulates the README manual path in an isolated workspace using ... ok
+test_ac20_duplicate_only_source_no_effect (test_daily_pick.SkillTestCase.test_ac20_duplicate_only_source_no_effect) ... ok
+test_ac21_opinions_kept_per_source (test_daily_pick.SkillTestCase.test_ac21_opinions_kept_per_source) ... ok
+test_ac22_genre_conflict_fail_closed (test_daily_pick.SkillTestCase.test_ac22_genre_conflict_fail_closed) ... ok
+test_ac23_sources_untouched_and_shareable (test_daily_pick.SkillTestCase.test_ac23_sources_untouched_and_shareable) ... ok
+test_ac24_unrated_source_valid (test_daily_pick.SkillTestCase.test_ac24_unrated_source_valid) ... ok
+test_ac25_history_evidence (test_daily_pick.SkillTestCase.test_ac25_history_evidence) ... ok
+test_ac26_pinned_selection_vector (test_daily_pick.SkillTestCase.test_ac26_pinned_selection_vector) ... ok
+test_ac27_no_date_option (test_daily_pick.SkillTestCase.test_ac27_no_date_option) ... ok
+test_ac28_license_and_version (test_daily_pick.SkillTestCase.test_ac28_license_and_version) ... ok
+test_ac29_example_block_never_recommended (test_daily_pick.SkillTestCase.test_ac29_example_block_never_recommended) ... ok
+test_ac29_pristine_templates_zero_candidates (test_daily_pick.SkillTestCase.test_ac29_pristine_templates_zero_candidates) ... ok
+test_ac2_two_consecutive_days (test_daily_pick.SkillTestCase.test_ac2_two_consecutive_days) ... ok
+test_ac3_same_day_idempotent (test_daily_pick.SkillTestCase.test_ac3_same_day_idempotent) ... ok
+test_ac4_profile_status_excludes (test_daily_pick.SkillTestCase.test_ac4_profile_status_excludes) ... ok
+test_ac5_same_day_source_lock (test_daily_pick.SkillTestCase.test_ac5_same_day_source_lock) ... ok
+test_ac6_frontmatter_anchor_alias_tag_rejected (test_daily_pick.SkillTestCase.test_ac6_frontmatter_anchor_alias_tag_rejected) ... ok
+test_ac6_frontmatter_duplicate_rejected (test_daily_pick.SkillTestCase.test_ac6_frontmatter_duplicate_rejected) ... ok
+test_ac6_frontmatter_missing_required (test_daily_pick.SkillTestCase.test_ac6_frontmatter_missing_required) ... ok
+test_ac6_frontmatter_nested_rejected (test_daily_pick.SkillTestCase.test_ac6_frontmatter_nested_rejected) ... ok
+test_ac6_frontmatter_sequence_rejected (test_daily_pick.SkillTestCase.test_ac6_frontmatter_sequence_rejected) ... ok
+test_ac6_frontmatter_unknown_rejected (test_daily_pick.SkillTestCase.test_ac6_frontmatter_unknown_rejected) ... ok
+test_ac6_header_variants (test_daily_pick.SkillTestCase.test_ac6_header_variants) ... ok
+test_ac7_blank_rows_ignored (test_daily_pick.SkillTestCase.test_ac7_blank_rows_ignored) ... ok
+test_ac7_corrupt_history_fail_closed (test_daily_pick.SkillTestCase.test_ac7_corrupt_history_fail_closed) ... ok
+test_ac7_partial_row_fails_closed (test_daily_pick.SkillTestCase.test_ac7_partial_row_fails_closed) ... ok
+test_ac8_import_allowlist (test_daily_pick.SkillTestCase.test_ac8_import_allowlist) ... ok
+test_ac9_secret_scan (test_daily_pick.SkillTestCase.test_ac9_secret_scan) ... ok
+
+----------------------------------------------------------------------
+Ran 39 tests in 0.319s
+
+OK
+
+================================================================
+[2/3] Unit/acceptance suite — Python 3.9.6 (system)
+================================================================
+Python 3.9.6
+test_ac10_skill_structure (test_daily_pick.SkillTestCase) ... ok
+test_ac11_zip_whitelist_and_validation (test_daily_pick.SkillTestCase) ... ok
+test_ac14_display_fields_do_not_change_selection (test_daily_pick.SkillTestCase) ... ok
+test_ac14_free_text_profile_never_read (test_daily_pick.SkillTestCase) ... ok
+test_ac15_exhausted (test_daily_pick.SkillTestCase) ... ok
+test_ac15_exhausted_after_permanent_exclusion (test_daily_pick.SkillTestCase) ... ok
+test_ac16_history_commit_failure_never_reports_success (test_daily_pick.SkillTestCase) ... ok
+test_ac16_output_failure_recovers_without_new_selection (test_daily_pick.SkillTestCase) ... ok
+test_ac17_single_source_flow (test_daily_pick.SkillTestCase) ... ok
+test_ac18_multi_source_attribution (test_daily_pick.SkillTestCase) ... ok
+test_ac19_source_and_row_order_invariance (test_daily_pick.SkillTestCase) ... ok
+test_ac1_clean_env_manual_flow (test_daily_pick.SkillTestCase)
+Simulates the README manual path in an isolated workspace using ... ok
+test_ac20_duplicate_only_source_no_effect (test_daily_pick.SkillTestCase) ... ok
+test_ac21_opinions_kept_per_source (test_daily_pick.SkillTestCase) ... ok
+test_ac22_genre_conflict_fail_closed (test_daily_pick.SkillTestCase) ... ok
+test_ac23_sources_untouched_and_shareable (test_daily_pick.SkillTestCase) ... ok
+test_ac24_unrated_source_valid (test_daily_pick.SkillTestCase) ... ok
+test_ac25_history_evidence (test_daily_pick.SkillTestCase) ... ok
+test_ac26_pinned_selection_vector (test_daily_pick.SkillTestCase) ... ok
+test_ac27_no_date_option (test_daily_pick.SkillTestCase) ... ok
+test_ac28_license_and_version (test_daily_pick.SkillTestCase) ... ok
+test_ac29_example_block_never_recommended (test_daily_pick.SkillTestCase) ... ok
+test_ac29_pristine_templates_zero_candidates (test_daily_pick.SkillTestCase) ... ok
+test_ac2_two_consecutive_days (test_daily_pick.SkillTestCase) ... ok
+test_ac3_same_day_idempotent (test_daily_pick.SkillTestCase) ... ok
+test_ac4_profile_status_excludes (test_daily_pick.SkillTestCase) ... ok
+test_ac5_same_day_source_lock (test_daily_pick.SkillTestCase) ... ok
+test_ac6_frontmatter_anchor_alias_tag_rejected (test_daily_pick.SkillTestCase) ... ok
+test_ac6_frontmatter_duplicate_rejected (test_daily_pick.SkillTestCase) ... ok
+test_ac6_frontmatter_missing_required (test_daily_pick.SkillTestCase) ... ok
+test_ac6_frontmatter_nested_rejected (test_daily_pick.SkillTestCase) ... ok
+test_ac6_frontmatter_sequence_rejected (test_daily_pick.SkillTestCase) ... ok
+test_ac6_frontmatter_unknown_rejected (test_daily_pick.SkillTestCase) ... ok
+test_ac6_header_variants (test_daily_pick.SkillTestCase) ... ok
+test_ac7_blank_rows_ignored (test_daily_pick.SkillTestCase) ... ok
+test_ac7_corrupt_history_fail_closed (test_daily_pick.SkillTestCase) ... ok
+test_ac7_partial_row_fails_closed (test_daily_pick.SkillTestCase) ... ok
+test_ac8_import_allowlist (test_daily_pick.SkillTestCase) ... ok
+test_ac9_secret_scan (test_daily_pick.SkillTestCase) ... ok
+
+----------------------------------------------------------------------
+Ran 39 tests in 0.332s
+
+OK
+
+================================================================
+[3/3] Additional captured evidence (separate runs, same day)
+================================================================
+[3.1] Real subprocess CLI smoke (isolated /tmp workspace, deleted after)
+- Command: python3 scripts/daily_pick.py --profile profile/MY_PROFILE.md
+  --source sources/alice.md --history var/omda-skill/history.json
+  --output-dir var/omda-skill/output  (3-entry source table, template-based)
+- Run 1 stdout: committed 2026-09-18: Karaoke Tundra — Immersion (trip hop)
+  exit=0
+- Run 2 stdout (same day, --lang en): already committed today: 2026-09-18
+  (source set locked: alice — Alice's picks) / The --source arguments of
+  this run were ignored; nothing was re-drawn.  exit=0
+- Output file re-rendered byte-identically (replay path), history JSON
+  validated by eye: schema_version 2, algorithm_version 1, timezone evidence
+  +08:00, selection_pool_digest + per-source content digests present.
+- Workspace deleted after the smoke (no user data retained).
+
+[3.2] T6.9 isolated ZIP build/extract/validate (temp dir, deleted after)
+- whitelist exact match: True (14 files, tests/ and __pycache__ excluded)
+- extracted LICENSE contains "Apache License"; VERSION == 0.1.0-beta.1
+- extracted-package functional run exit: 0
+- extracted imports: argparse, datetime, hashlib, json, os, pathlib, re,
+  sys, tempfile, unicodedata (allowlist respected; no network/process
+  modules)
+- T6.9 ISOLATED ZIP VALIDATION: PASS (archive deleted with tempdir)
+
+Summary: 39 tests, 39 passed, 0 failed, 0 skipped — on BOTH Python 3.13.12
+and Python 3.9.6. AC-12 (live Codex install) and AC-30 (bilingual preface
+vs Owner draft) are not automatable and are disclosed in the Executor
+report (AC-30 = OWNER_INPUT_REQUIRED).
