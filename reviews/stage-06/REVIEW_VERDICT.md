@@ -182,3 +182,90 @@ the G6 repair report, real test evidence and `PROJECT_STATE` to `G6 / READY_FOR_
 Candidate `88324ae3a3a95d4372a6548da31d836a514ada3d` must not be merged or distributed.
 Open blocking findings: G6-001 through G6-006. G6-007 is also required for this friend-facing
 Beta because silently dropping user source data conflicts with its fail-closed contract.
+
+---
+
+## Re-review 1 — candidate `64b805e6518462ed6346aa7a3fd8a87cac277cdd`
+
+### Identity and verification
+
+- Direct parent: Reviewer checkpoint `3c39aae24af2ef721422aafd947f782d0506d67c`
+- Original base and merge-base: `c15fbbe63fb7409483bf092fe7df926868ef5dda`
+- Candidate scope: 10 files, limited to the G6 Skill, G6 plan/state and G6 evidence
+- Worktree at review start: clean
+- Independent suite: **54/54 passed** on Python 3.9.6 and **54/54 passed** on
+  bundled Python 3.12.14; `git diff --check` passed
+
+### Prior finding status
+
+| Finding | Re-review result |
+|---|---|
+| G6-001 seed/final selection projection | **RESOLVED** — cooldown now precedes projection; seed inputs match ADR D11/C1 exactly; excluded-Genre mutation fixture passes. |
+| G6-002 unique-Genre disclosure | **RESOLVED** — true waiver and applied-cooldown branches are distinct and covered end to end. |
+| G6-003 history/language/clock | **PARTIAL** — the reported probes are repaired, but semantic date/time corruption remains open as G6-R1-003. |
+| G6-004 canonical audit evidence | **PARTIAL** — content digest and source-set evidence are stable, but display/history still depend on row order for canonical-equivalent duplicate identities (G6-R1-001). |
+| G6-005 Codex Skill installation | **RESOLVED** — `interface:` metadata is valid in shape, `$omda-daily-discovery` is present, and separate Skill/workspace simulation passes. |
+| G6-006 bilingual Owner preface | **CONTENT RESTORED / OWNER CONFIRMATION PENDING** — the complete source structure is present; one wording mismatch remains noted below. |
+| G6-007 second live table | **PARTIAL** — identical headers are rejected, but a second equivalent header using another supported language is parsed as Album data (G6-R1-002). |
+
+### [P1] G6-R1-001 — Canonical-equivalent duplicate rows still make output depend on file order
+
+- Location: `skills/omda-daily-discovery/scripts/daily_pick.py:380-398`, `:478-510`
+- Evidence: the content digest sorts records canonically, but `merge_sources()` still iterates
+  `source.records` in file order and chooses `occs[0]` as the displayed Artist/Album. Two rows
+  `A Ref | Alpha` and `a ref | Alpha.` normalize to the same identity and have the same Genre.
+  Reversing those rows preserves the content digest and selection-pool digest but changes the
+  committed/displayed Artist and Album text.
+- Impact: equivalent file permutations can produce different history and daily output, contrary
+  to D19/D23 and the candidate's claim that full history is permutation invariant.
+- Required repair: order records/occurrences by the documented canonical content tuple before
+  selecting display facts and annotations. Add a permutation fixture containing two distinct raw
+  spellings that normalize to one identity and require identical full history/output bytes.
+
+### [P1] G6-R1-002 — A second live table with another supported header language becomes a fake Album
+
+- Location: `skills/omda-daily-discovery/scripts/daily_pick.py:247-327`
+- Evidence: while `phase == "table"`, the parser detects a second table only when
+  `cells == header`. An English first header followed (after a blank line) by a Chinese header is
+  not equal to the first header, so the Chinese header is accepted as a data row. Independent
+  reproduction returned Albums `A/Alpha`, `艺人/专辑`, and `B/Beta` instead of failing closed.
+- Impact: a header marker can become a recommendable fake Album and the second live table is not
+  rejected, so G6-007 remains open.
+- Required repair: before interpreting any in-table row as data, test whether it matches the
+  required semantic header fields under any supported alias set. Treat every later matching
+  header as a second live table regardless of language or exact spelling. Add English→Chinese and
+  Chinese→English fixtures (including blank-only separation) and assert exact line-number errors.
+
+### [P1] G6-R1-003 — “Deep” history validation accepts impossible dates and non-time timestamps
+
+- Location: `skills/omda-daily-discovery/scripts/daily_pick.py:582-669`, `:964-973`
+- Evidence: day keys are checked only by `\d{4}-\d{2}-\d{2}` and the ISO timestamp fields only
+  for non-empty strings. A real committed record mutated to day `2026-99-99` with
+  `local_iso`, `utc_iso`, and `selected_at` set to `not-a-time` passes `_validate_history()`.
+  Runtime then misclassifies it as clock rollback (exit 2), creates no corrupt copy, and does not
+  use the history-corruption exit 3 path.
+- Impact: schema-shaped history corruption can bypass the documented preservation/recovery path
+  and influence latest-day/cooldown logic.
+- Required repair: semantically parse day keys and all ISO timestamps; require valid aware
+  datetimes, `utc_iso` in UTC, `local_iso` calendar date equal to the day key, and offset evidence
+  consistent with `local_iso`. Invalid values must preserve a corrupt copy and exit 3. Add focused
+  cases for impossible day/month, malformed timestamps and offset/date mismatch.
+
+### AC-30 wording status
+
+The restored preface is materially faithful, but the added Calvino pair is not yet a strict
+sentence-level counterpart of the Owner's words: Chinese says `最近读了` while English says
+`after rereading`; the Owner said `读过`/reading, not “recently” or “rereading”. Remove those two
+new qualifications (for example, `读过…之后` / `After reading…`) unless the Owner explicitly
+chooses them. After that edit, the Owner must still confirm checklist rows 20–21 before AC-30 can
+be marked PASS.
+
+### Re-review 1 verdict
+
+**CHANGES_REQUESTED**
+
+The repair is close, and the multi-source/Skill architecture remains accepted. Candidate
+`64b805e6518462ed6346aa7a3fd8a87cac277cdd` must not be merged or distributed. Repair only
+G6-R1-001 through G6-R1-003 plus the two-word AC-30 correspondence correction, rerun the complete
+matrix, return `G6 / READY_FOR_REVIEW`, and stop. Do not reopen resolved findings or alter the
+accepted 3x3 Core.
