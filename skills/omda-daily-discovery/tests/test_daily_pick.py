@@ -13,6 +13,7 @@ import datetime
 import hashlib
 import io
 import json
+import re
 import os
 import shutil
 import sys
@@ -503,7 +504,7 @@ class SkillTestCase(unittest.TestCase):
         # not)
         shuffled = [albums[2], albums[0], albums[1]]
         s3 = self.write_source("a2.md", "alice", shuffled)
-        s4 = self.write_source("b2.md", "bob", shuffled[:1])
+        s4 = self.write_source("b2.md", "bob", [albums[0]])
         self.history.unlink()
         code, _out, _err = self.run_pick([s3, s4])
         rec3 = self.read_history()["days"]["2026-09-18"]
@@ -511,6 +512,13 @@ class SkillTestCase(unittest.TestCase):
                          rec3["selection_pool_digest"])
         self.assertEqual(rec1["selected"]["album"],
                          rec3["selected"]["album"])
+        # G6-004 extension: audit digests, history evidence and the record
+        # as a whole are identical under permutations (canonical content
+        # representation + canonical source_id order + fixed clock).
+        self.assertEqual(rec1["per_source_content_digests"],
+                         rec3["per_source_content_digests"])
+        self.assertEqual(rec1["source_ids"], rec3["source_ids"])
+        self.assertEqual(rec1, rec3)
 
     # -- AC-20: duplicate albums never increase probability ---------------------
 
@@ -634,6 +642,22 @@ class SkillTestCase(unittest.TestCase):
             self.assertIn(field, rec)
         self.assertEqual(rec["source_ids"], ["alice"])
         self.assertEqual(rec["timezone_evidence"]["utc_offset"], "+08:00")
+        # G6-004: row order must not change the canonical audit digest
+        s1b = self.write_source("a-reordered.md", "alice",
+                                [("A Ref", "Alpha", "2001", "rock", "9", "")])
+        # (a-reordered has identical content in identical order; the real
+        # row-order invariance is asserted in test_g6004_content_digest)
+        self.assertEqual(dp.load_source(s1).content_digest,
+                         dp.load_source(s1b).content_digest)
+
+    def test_g6004_content_digest_row_order_invariant(self):
+        albums = [("A Ref", "Alpha", "2001", "rock", "9", "n1"),
+                  ("B Ref", "Beta", "2002", "jazz", "", "n2"),
+                  ("C Ref", "Gamma", "2003", "ambient", "", "")]
+        forward = self.write_source("f.md", "alice", albums)
+        reverse = self.write_source("r.md", "alice", list(reversed(albums)))
+        self.assertEqual(dp.load_source(forward).content_digest,
+                         dp.load_source(reverse).content_digest)
 
     # -- AC-26: pinned cross-version vector -----------------------------------------
 
@@ -645,10 +669,11 @@ class SkillTestCase(unittest.TestCase):
         self.assertEqual(
             digest,
             "15085063635068ec34ba129b1cfdc9002c2f6dfb48c63b666e25c0ba3b851431")
-        seed = dp.seed_material_digest("2026-09-18", digest, 0)
+        # G6-001: seed = exactly (day_key, algorithm_version, pool digest)
+        seed = dp.seed_material_digest("2026-09-18", digest)
         genre_index = dp.uniform_index(seed, b"genre", 2)
         album_index = dp.uniform_index(seed, b"album", 1)
-        self.assertEqual((genre_index, album_index), (0, 0))
+        self.assertEqual((genre_index, album_index), (1, 0))
 
     # -- AC-29: pristine templates ----------------------------------------------------
 
@@ -810,6 +835,297 @@ class SkillTestCase(unittest.TestCase):
             self.assertIn("Alpha", (work / "var" / "omda-skill" / "output" /
                                     "2026-09-18.md").read_text(
                                         encoding="utf-8"))
+
+
+    # ================= G6-001: seed protocol ==============================
+
+    def test_g6001_seed_independent_of_history_length(self):
+        """Same day + same final pool must give the same seed and choice no
+        matter how long the history is; the protocol has no history-length
+        input at all (G6-001)."""
+        import inspect
+        params = list(inspect.signature(
+            dp.seed_material_digest).parameters)
+        self.assertEqual(params, ["day_key", "pool_digest"])
+        by_group = {"jazz": ["b|beta"], "rock": ["a|alpha"]}
+        first = dp.select(by_group, None, "2026-09-18")
+        second = dp.select(by_group, None, "2026-09-18")
+        self.assertEqual(first, second)
+        # a same projection from a "longer history" (simulated by calling
+        # again after hypothetically more commits) is by construction
+        # identical because history length is not an input
+        self.assertEqual(first[2], second[2])
+        self.assertEqual(first[3], second[3])
+
+    def test_g6001_excluded_genre_mutation_invariant(self):
+        """Mutating an album that is only in the cooldown-excluded previous
+        genre must not change the pool digest, seed, or choice (G6-001)."""
+        base = {"rock": ["a|alpha", "a|alpha2"], "jazz": ["b|beta"]}
+        mutated = {"rock": ["a|alpha", "a|alpha2", "a|mutated"],
+                   "jazz": ["b|beta"]}
+        r1 = dp.select(base, "rock", "2026-09-18")
+        r2 = dp.select(mutated, "rock", "2026-09-18")
+        self.assertEqual(r1[2], r2[2])  # selection_pool_digest
+        self.assertEqual(r1[3], r2[3])  # seed
+        self.assertEqual(r1[0], r2[0])  # chosen group
+        self.assertEqual(r1[1], r2[1])  # chosen album
+
+    # ================= G6-002: genre note branches ========================
+
+    def test_g6002_true_waiver_unique_genre_note(self):
+        result = dp.select({"rock": ["a|alpha"]}, "rock", "2026-09-18")
+        self.assertIsNotNone(result[4])
+        self.assertIn("唯一可用流派", result[4])
+        self.assertIn("waived", result[4])
+        self.assertIsNone(result[5])
+
+    def test_g6002_cooldown_applied_single_remainder_note(self):
+        result = dp.select({"rock": ["a|alpha"], "jazz": ["b|beta"]},
+                           "rock", "2026-09-18")
+        self.assertIsNone(result[4])  # NOT a waiver
+        self.assertIsNotNone(result[5])
+        self.assertIn("applied", result[5])
+        self.assertEqual(result[0], "jazz")  # non-repeating group chosen
+
+    def test_g6002_normal_multi_group_no_notes(self):
+        result = dp.select({"rock": ["a|alpha"], "jazz": ["b|beta"]},
+                           None, "2026-09-18")
+        self.assertIsNone(result[4])
+        self.assertIsNone(result[5])
+
+    def test_g6002_end_to_end_cooldown_note(self):
+        self.write_profile()
+        src1 = self.write_source("a.md", "alice",
+                                 [("A Ref", "Alpha", "2001", "rock", "", ""),
+                                  ("A Ref", "Alpha II", "2002", "rock",
+                                   "", "")])
+        code, _out, _err = self.run_pick([src1])
+        self.assertEqual(code, dp.EXIT_OK)
+        first_group = self.read_history()["days"]["2026-09-18"]["selected"][
+            "genre_group"]
+        self.assertEqual(first_group, "rock")
+        dp.now_local = lambda: _fixed_now(day="2026-09-19")
+        src2 = self.write_source("b.md", "alice",
+                                 [("A Ref", "Alpha", "2001", "rock", "", ""),
+                                  ("A Ref", "Alpha II", "2002", "rock",
+                                   "", ""),
+                                  ("B Ref", "Beta", "2003", "jazz", "", "")])
+        code, _out, _err = self.run_pick([src2])
+        self.assertEqual(code, dp.EXIT_OK)
+        rec = self.read_history()["days"]["2026-09-19"]
+        self.assertIsNone(rec["selected"]["forced_note"])
+        self.assertIsNotNone(rec["selected"]["cooldown_note"])
+        self.assertEqual(rec["selected"]["album"], "Beta")
+        self.assertIn("防重复规则已执行", self.output_text("2026-09-19"))
+
+    def test_g6002_end_to_end_forced_unique_note(self):
+        self.write_profile()
+        src = self.write_source("a.md", "alice",
+                                [("A Ref", "Alpha", "2001", "rock", "", ""),
+                                 ("A Ref", "Alpha II", "2002", "rock", "", "")])
+        code, _out, _err = self.run_pick([src])
+        self.assertEqual(code, dp.EXIT_OK)
+        dp.now_local = lambda: _fixed_now(day="2026-09-19")
+        code, _out, _err = self.run_pick([src])
+        self.assertEqual(code, dp.EXIT_OK)
+        rec = self.read_history()["days"]["2026-09-19"]
+        self.assertIsNotNone(rec["selected"]["forced_note"])
+        self.assertIn("唯一可用流派", rec["selected"]["forced_note"])
+        self.assertIsNone(rec["selected"]["cooldown_note"])
+
+    # ================= G6-003: history semantics ==========================
+
+    def test_g6003_shaped_corrupt_history_exit3(self):
+        self.write_profile()
+        shaped = {
+            "schema_version": 2, "algorithm_version": 1,
+            "days": {"2026-09-18": {
+                "day_key": "2026-09-18", "selected": {},
+                "source_ids": ["alice"],
+                "source_display_names": {"alice": "A"},
+                "per_source_content_digests": {"alice": "0" * 64},
+                "selection_pool_digest": "0" * 64,
+                "seed_material_digest": "0" * 64,
+                "algorithm_version": 1, "schema_version": 2,
+                "selected_at": "x",
+                "timezone_evidence": {"utc_offset": "+08:00",
+                                      "local_iso": "x", "utc_iso": "x"},
+                "render_lang": "zh", "forced_note": None,
+                "cooldown_note": None,
+            }},
+        }
+        self.history.parent.mkdir(parents=True, exist_ok=True)
+        self.history.write_text(json.dumps(shaped), encoding="utf-8")
+        before = self.history.read_bytes()
+        src = self.write_source("a.md", "alice",
+                                [("A Ref", "Alpha", "2001", "rock", "", "")])
+        code, _out, _err = self.run_pick([src])
+        self.assertEqual(code, dp.EXIT_HISTORY_CORRUPT)  # no uncaught KeyError
+        corrupt_copies = list(self.history.parent.glob("history.corrupt-*.json"
+                                                       ""))
+        self.assertEqual(len(corrupt_copies), 1)
+        self.assertEqual(self.history.read_bytes(), before)
+
+    def test_g6003_language_locked_for_same_day(self):
+        self.write_profile()
+        src = self.write_source("a.md", "alice",
+                                [("A Ref", "Alpha", "2001", "rock", "", "")])
+        code, _out, _err = self.run_pick([src])  # default zh
+        self.assertEqual(code, dp.EXIT_OK)
+        committed = self.output_text()
+        self.assertIn("今天的推荐", committed)
+        code, out, _err = self.run_pick([src], lang="en")
+        self.assertEqual(code, dp.EXIT_OK)
+        self.assertEqual(self.output_text(), committed)  # byte-identical
+        self.assertIn("ignored", out)
+
+    def test_g6003_clock_rollback_rejected(self):
+        self.write_profile()
+        src = self.write_source("a.md", "alice",
+                                [("A Ref", "Alpha", "2001", "rock", "", "")])
+        code, _out, _err = self.run_pick([src])
+        self.assertEqual(code, dp.EXIT_OK)
+        dp.now_local = lambda: _fixed_now(day="2026-09-17")
+        code, _out, err = self.run_pick([src])
+        self.assertEqual(code, dp.EXIT_INPUT_ERROR)
+        self.assertIn("earlier than the latest committed day", err)
+        self.assertNotIn("2026-09-17", self.read_history()["days"])
+
+    # ================= G6-005: Codex Skill packaging ======================
+
+    def test_g6005_openai_yaml_interface_structure(self):
+        text = (_SKILL_DIR / "agents" / "openai.yaml").read_text(
+            encoding="utf-8")
+        self.assertIn("interface:", text)
+        self.assertIn('display_name: "OMDA Daily Discovery"', text)
+        self.assertIn('short_description: "Pick one local album each day '
+                      'from chosen source lists"', text)
+        self.assertIn("$omda-daily-discovery", text)
+        self.assertIn('default_prompt: "Use $omda-daily-discovery', text)
+        # the invalid top-level structure must be gone
+        top_level_banned = re.compile(r"^(name|display_name|description|"
+                                      r"default_prompt|version):",
+                                      re.MULTILINE)
+        self.assertIsNone(top_level_banned.search(text))
+
+    def test_g6005_install_simulation_separate_dirs(self):
+        """Skill installed under a skills directory; user data lives in a
+        completely separate workspace; the first recommendation still
+        succeeds when the script is invoked from the installed skill root
+        (G6-005)."""
+        import subprocess
+        with tempfile.TemporaryDirectory(prefix="omda-install-") as tmp:
+            base = Path(tmp)
+            skill_root = base / "codex-skills" / "omda-daily-discovery"
+            shutil.copytree(_SKILL_DIR, skill_root,
+                            ignore=shutil.ignore_patterns(
+                                "tests", "__pycache__"))
+            workspace = base / "user-workspace"
+            (workspace / "profile").mkdir(parents=True)
+            (workspace / "sources").mkdir()
+            shutil.copy(skill_root / "templates" /
+                        "OMDA_PROFILE.template.en.md",
+                        workspace / "profile" / "MY_PROFILE.md")
+            src = workspace / "sources" / "alice.md"
+            shutil.copy(skill_root / "templates" /
+                        "OMDA_SOURCE.template.en.md", src)
+            text = src.read_text(encoding="utf-8").replace(
+                "|---|---|---|---|---|---|\n",
+                "|---|---|---|---|---|---|\n"
+                "| A Ref | Alpha | 2001 | rock | | |\n", 1)
+            src.write_text(text, encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(skill_root / "scripts" / "daily_pick.py"),
+                 "--profile", str(workspace / "profile" / "MY_PROFILE.md"),
+                 "--source", str(src),
+                 "--history",
+                 str(workspace / "var" / "omda-skill" / "history.json"),
+                 "--output-dir",
+                 str(workspace / "var" / "omda-skill" / "output"),
+                 "--lang", "en"],
+                cwd=str(workspace), capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            outputs = list((workspace / "var" / "omda-skill" / "output")
+                           .glob("*.md"))
+            self.assertEqual(len(outputs), 1)
+            output = outputs[0].read_text(encoding="utf-8")
+            self.assertIn("Alpha", output)
+            self.assertIn("Today's pick", output)
+            # the installed skill root must not have received user data
+            self.assertFalse((skill_root / "var").exists())
+            self.assertFalse((skill_root / "profile").exists())
+
+    # ================= G6-007: second live table ==========================
+
+    def test_g6007_second_live_table_fails_with_line_number(self):
+        self.write_profile()
+        path = self.sources / "two-tables.md"
+        lines = [
+            "---",
+            "format_version: 1",
+            "source_id: alice",
+            "display_name: D",
+            "curator: C",
+            "provenance: P",
+            "sharing_note: S",
+            "---",
+            "",
+            "# list",
+            "",
+            "| Artist 艺人 | Album 专辑 | Year 年份 | Genre 流派 | "
+            "Rating 评分 | Note 备注 |",
+            "|---|---|---|---|---|---|",
+            "| A Ref | Alpha | 2001 | rock |  |  |",
+            "",
+            "一些说明文字。",
+            "",
+            "| Artist 艺人 | Album 专辑 | Year 年份 | Genre 流派 | "
+            "Rating 评分 | Note 备注 |",
+            "|---|---|---|---|---|---|",
+            "| B Ref | Beta | 2002 | jazz |  |  |",
+        ]
+        path.write_text("\n".join(lines), encoding="utf-8")
+        header_line = ("| Artist 艺人 | Album 专辑 | Year 年份 | Genre 流派 | "
+                       "Rating 评分 | Note 备注 |")
+        first_header = lines.index(header_line)
+        second_header_line = lines.index(header_line, first_header + 1) + 1
+        code, _out, err = self.run_pick([path])
+        self.assertEqual(code, dp.EXIT_INPUT_ERROR)
+        self.assertIn("second live source album table starts at line %d"
+                      % second_header_line, err)
+        self.assertFalse(self.history.exists())
+
+    def test_g6007_fenced_second_table_allowed(self):
+        self.write_profile()
+        path = self.sources / "fenced.md"
+        lines = [
+            "---",
+            "format_version: 1",
+            "source_id: alice",
+            "display_name: D",
+            "curator: C",
+            "provenance: P",
+            "sharing_note: S",
+            "---",
+            "",
+            "| Artist 艺人 | Album 专辑 | Year 年份 | Genre 流派 | "
+            "Rating 评分 | Note 备注 |",
+            "|---|---|---|---|---|---|",
+            "| A Ref | Alpha | 2001 | rock |  |  |",
+            "",
+            "```",
+            "| Artist 艺人 | Album 专辑 | Year 年份 | Genre 流派 | "
+            "Rating 评分 | Note 备注 |",
+            "|---|---|---|---|---|---|",
+            "| Example Ref | Example | 2000 | pop |  |  |",
+            "```",
+        ]
+        path.write_text("\n".join(lines), encoding="utf-8")
+        code, _out, _err = self.run_pick([path])
+        self.assertEqual(code, dp.EXIT_OK)
+        self.assertEqual(
+            self.read_history()["days"]["2026-09-18"]["selected"]["album"],
+            "Alpha")
 
 
 if __name__ == "__main__":

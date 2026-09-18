@@ -245,20 +245,24 @@ def _is_separator_row(cells):
 
 
 def parse_album_table(text, path_name, required_fields, kind):
-    """Parse the FIRST matching Markdown table into a list of dict rows.
+    """Parse the matching Markdown table into a list of dict rows.
 
     Rules:
     - Lines inside fenced code blocks (``` ... ```) are skipped, so example
       blocks can never become candidates (AC-29).
     - Fully blank rows are ignored; a partially filled row missing a required
       field fails closed with its line number.
-    - Only the first matching header's table is parsed (documented).
+    - Exactly ONE live Album table is allowed. A second live table with the
+      required header columns — anywhere in the file, at any later line —
+      fails closed with its exact line number (G6-007): no live table is
+      ever silently dropped.
     """
     lines = text.splitlines()
     header = None
     header_fields = None
     rows = []
     in_fence = False
+    phase = "seek"  # seek -> table -> done
     for lineno, line in enumerate(lines, start=1):
         if line.lstrip().startswith("```"):
             in_fence = not in_fence
@@ -266,14 +270,19 @@ def parse_album_table(text, path_name, required_fields, kind):
         if in_fence:
             continue
         if "|" not in line:
-            if header is not None and line.strip():
-                break  # non-blank non-table line ends the table
+            if phase == "table" and line.strip():
+                phase = "done"  # non-blank non-table line ends the table
             continue
         cells = _split_row(line)
-        if header is None:
-            if not any(cells):
-                continue
-            if _header_matches(cells, required_fields):
+        if phase != "table":
+            if any(cells) and _header_matches(cells, required_fields):
+                if phase == "done":
+                    raise OmdaError(
+                        "%s: a second live %s table starts at line %d; only "
+                        "one %s table is allowed per file (fail-closed — no "
+                        "table is silently ignored; merge the tables or keep "
+                        "extra tables inside a fenced code block)"
+                        % (path_name, kind, lineno, kind))
                 header = cells
                 header_fields = []
                 for cell in header:
@@ -283,13 +292,20 @@ def parse_album_table(text, path_name, required_fields, kind):
                             matched = field
                             break
                     header_fields.append(matched)
+                phase = "table"
             continue
+        # phase == "table"
         if _is_separator_row(cells):
             continue
         if not any(cells):
             continue  # fully blank rows are ignored
         if cells == header:
-            break  # a repeated header row starts a different table
+            raise OmdaError(
+                "%s: a second live %s table starts at line %d; only one %s "
+                "table is allowed per file (fail-closed — no table is "
+                "silently ignored; merge the tables or keep extra tables "
+                "inside a fenced code block)"
+                % (path_name, kind, lineno, kind))
         if len(cells) != len(header):
             raise OmdaError(
                 "%s: table row at line %d has %d cells but the header has %d"
@@ -331,8 +347,25 @@ class SourceData(object):
         return self.meta["display_name"]
 
 
+def _content_record_sort_key(record):
+    """Documented stable tuple for the canonical audit representation
+    (G6-004): normalized identity first, then the NFC of every remaining
+    field. Reordering rows in a source file therefore cannot change the
+    content digest."""
+    def nfc(field):
+        return unicodedata.normalize("NFC", record.get(field, ""))
+    return (normalize_text(record.get("artist", "")),
+            normalize_text(record.get("album", "")),
+            nfc("artist"), nfc("album"), nfc("year"), nfc("genre"),
+            nfc("rating"), nfc("note"))
+
+
 def compute_source_content_digest(meta, records):
-    """Per-source *content* digest — audit only, never enters the seed (C1)."""
+    """Per-source *content* digest — audit only, never enters the seed (C1).
+
+    Records are hashed in the canonical order given by
+    ``_content_record_sort_key`` so file row order never changes the digest.
+    """
     digest = hashlib.sha256()
     digest.update(DOMAIN_SOURCE_CONTENT + b"\n")
     for key in SOURCE_META_ALLOWED:
@@ -340,7 +373,7 @@ def compute_source_content_digest(meta, records):
                                     meta.get(key, "")).encode("utf-8")
         digest.update(len(raw).to_bytes(8, "big"))
         digest.update(raw)
-    for record in records:
+    for record in sorted(records, key=_content_record_sort_key):
         for field in ("artist", "album", "year", "genre", "rating", "note"):
             raw = unicodedata.normalize("NFC",
                                         record.get(field, "")).encode("utf-8")
@@ -370,6 +403,14 @@ def load_source(path):
             "rating": row.get("rating", ""),
             "note": row.get("note", ""),
         })
+    # Canonical order rank (G6-004): the position of each record inside the
+    # stable content ordering, independent of file row order. This rank is
+    # what history annotations store as their display order.
+    canonical_indices = sorted(range(len(records)),
+                               key=lambda i: _content_record_sort_key(
+                                   records[i]))
+    for rank, index in enumerate(canonical_indices):
+        records[index]["canonical_order"] = rank
     return SourceData(meta, records,
                       compute_source_content_digest(meta, records), path)
 
@@ -436,7 +477,7 @@ def merge_sources(sources):
     """
     occurrences = {}
     for source in sorted(sources, key=lambda item: item.source_id):
-        for order, record in enumerate(source.records):
+        for record in source.records:
             key = identity_key(record["artist"], record["album"])
             group = genre_group_key(record["genre"])
             occurrences.setdefault(key, []).append({
@@ -450,7 +491,7 @@ def merge_sources(sources):
                     "rating": record["rating"],
                     "note": record["note"],
                     "year": record["year"],
-                    "order": order,
+                    "order": record["canonical_order"],
                 },
             })
     candidates = {}
@@ -489,22 +530,60 @@ def merge_sources(sources):
 # History (versioned JSON; atomic replacement = official commit point)
 # ---------------------------------------------------------------------------
 
-_HISTORY_RECORD_TYPES = {
-    "day_key": str,
-    "timezone_evidence": dict,
-    "selected": dict,
-    "source_ids": list,
-    "source_display_names": dict,
-    "per_source_content_digests": dict,
-    "selection_pool_digest": str,
-    "seed_material_digest": str,
-    "algorithm_version": int,
-    "schema_version": int,
-    "selected_at": str,
-}
+# forced_note / cooldown_note live inside `selected` and are validated by
+# _validate_selected; they are NOT top-level record fields.
+_HISTORY_RECORD_KEYS = (
+    "day_key", "timezone_evidence", "selected", "source_ids",
+    "source_display_names", "per_source_content_digests",
+    "selection_pool_digest", "seed_material_digest", "algorithm_version",
+    "schema_version", "selected_at", "render_lang",
+)
+
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_UTC_OFFSET_RE = re.compile(r"^[+-]\d{2}:\d{2}$")
+
+
+def _require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def _validate_selected(selected, where):
+    _require(isinstance(selected, dict), "%s selected is not an object" % where)
+    nonempty_fields = ("identity_key", "artist", "album", "genre_group",
+                       "source_id", "source_display_name")
+    for name in nonempty_fields:
+        _require(isinstance(selected.get(name), str) and selected[name] != "",
+                 "%s selected.%s missing or not a non-empty string" % (where, name))
+    # year is a display field and may legitimately be blank (unknown year)
+    _require(isinstance(selected.get("year"), str),
+             "%s selected.year missing or not a string" % where)
+    annotations = selected.get("annotations")
+    _require(isinstance(annotations, list),
+             "%s selected.annotations is not a list" % where)
+    for index, ann in enumerate(annotations):
+        _require(isinstance(ann, dict),
+                 "%s selected.annotations[%d] is not an object" % (where, index))
+        for name in ("source_id", "source_display_name", "rating", "note",
+                     "year"):
+            _require(isinstance(ann.get(name), str),
+                     "%s selected.annotations[%d].%s missing or not a string"
+                     % (where, index, name))
+        _require(isinstance(ann.get("order"), int)
+                 and not isinstance(ann.get("order"), bool),
+                 "%s selected.annotations[%d].order is not an int"
+                 % (where, index))
+    for name in ("forced_note", "cooldown_note"):
+        value = selected.get(name)
+        _require(value is None or isinstance(value, str),
+                 "%s selected.%s is neither null nor a string" % (where, name))
 
 
 def _validate_history(data):
+    """Deep validation of the history document (G6-003): every nested field,
+    type, day key and cross-field invariant is checked here so that any
+    schema-shaped corruption fails closed as EXIT_HISTORY_CORRUPT instead of
+    crashing later with an uncaught exception."""
     if not isinstance(data, dict):
         raise ValueError("history root is not an object")
     if data.get("schema_version") != HISTORY_SCHEMA_VERSION:
@@ -518,14 +597,76 @@ def _validate_history(data):
         raise ValueError("history 'days' is not an object")
     day_key_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
     for day_key, record in days.items():
-        if not day_key_re.match(day_key):
-            raise ValueError("invalid day key %r" % day_key)
-        if not isinstance(record, dict):
-            raise ValueError("day %s record is not an object" % day_key)
-        for name, expected in _HISTORY_RECORD_TYPES.items():
-            if name not in record or not isinstance(record[name], expected):
-                raise ValueError("day %s field %r missing or wrong type"
-                                 % (day_key, name))
+        _require(bool(day_key_re.match(day_key)),
+                 "invalid day key %r" % day_key)
+        _require(isinstance(record, dict),
+                 "day %s record is not an object" % day_key)
+        unknown = set(record) - set(_HISTORY_RECORD_KEYS)
+        _require(not unknown,
+                 "day %s has unknown fields: %s" % (day_key, sorted(unknown)))
+        for name in _HISTORY_RECORD_KEYS:
+            _require(name in record,
+                     "day %s field %r missing" % (day_key, name))
+        _require(record["day_key"] == day_key,
+                 "day %s record.day_key mismatch" % day_key)
+        _require(record["schema_version"] == HISTORY_SCHEMA_VERSION,
+                 "day %s record.schema_version mismatch" % day_key)
+        _require(record["algorithm_version"] == ALGORITHM_VERSION,
+                 "day %s record.algorithm_version mismatch" % day_key)
+        _require(record["render_lang"] in ("zh", "en"),
+                 "day %s render_lang is not zh/en" % day_key)
+        for name in ("selection_pool_digest", "seed_material_digest",
+                     "selected_at"):
+            _require(isinstance(record[name], str) and record[name] != "",
+                     "day %s field %r missing or empty" % (day_key, name))
+        _require(bool(_HEX64_RE.match(record["selection_pool_digest"])),
+                 "day %s selection_pool_digest is not a 64-hex digest" % day_key)
+        _require(bool(_HEX64_RE.match(record["seed_material_digest"])),
+                 "day %s seed_material_digest is not a 64-hex digest" % day_key)
+        tz = record["timezone_evidence"]
+        _require(isinstance(tz, dict),
+                 "day %s timezone_evidence is not an object" % day_key)
+        for name in ("utc_offset", "local_iso", "utc_iso"):
+            _require(isinstance(tz.get(name), str) and tz[name] != "",
+                     "day %s timezone_evidence.%s missing" % (day_key, name))
+        _require(bool(_UTC_OFFSET_RE.match(tz["utc_offset"])),
+                 "day %s timezone_evidence.utc_offset malformed" % day_key)
+        source_ids = record["source_ids"]
+        _require(isinstance(source_ids, list) and source_ids
+                 and all(isinstance(sid, str) and sid
+                         for sid in source_ids),
+                 "day %s source_ids is not a non-empty string list" % day_key)
+        _require(len(set(source_ids)) == len(source_ids),
+                 "day %s source_ids contains duplicates" % day_key)
+        _require(source_ids == sorted(source_ids),
+                 "day %s source_ids is not in canonical sorted order" % day_key)
+        display_names = record["source_display_names"]
+        digests = record["per_source_content_digests"]
+        _require(isinstance(display_names, dict) and isinstance(digests, dict),
+                 "day %s display-name/digest evidence is not an object" % day_key)
+        _require(set(display_names) == set(source_ids),
+                 "day %s source_display_names keys != source_ids" % day_key)
+        _require(set(digests) == set(source_ids),
+                 "day %s per_source_content_digests keys != source_ids"
+                 % day_key)
+        for sid in source_ids:
+            _require(isinstance(display_names[sid], str)
+                     and display_names[sid] != "",
+                     "day %s display name for %s empty" % (day_key, sid))
+            _require(bool(_HEX64_RE.match(digests[sid])),
+                     "day %s content digest for %s is not 64-hex"
+                     % (day_key, sid))
+        _validate_selected(record["selected"], "day %s" % day_key)
+        selected = record["selected"]
+        _require(selected["source_id"] in source_ids,
+                 "day %s selected.source_id not in source_ids" % day_key)
+        for ann in selected["annotations"]:
+            _require(ann["source_id"] in source_ids,
+                     "day %s annotation source_id not in source_ids" % day_key)
+        _require(selected["identity_key"]
+                 == identity_key(selected["artist"], selected["album"]),
+                 "day %s selected.identity_key inconsistent with artist/album"
+                 % day_key)
 
 
 def load_history(path):
@@ -610,13 +751,16 @@ def selection_pool_digest(admissible):
     return digest.hexdigest()
 
 
-def seed_material_digest(day_key, pool_digest, consumed_picks):
+def seed_material_digest(day_key, pool_digest):
+    """Seed material derives from EXACTLY (day_key, algorithm_version,
+    admissible selection_pool_digest) — nothing else (G6-001 / ADR-0003
+    D11 + C1). History length, history contents, CLI order, ratings, notes
+    and content digests must never enter the seed."""
     digest = hashlib.sha256()
     digest.update(DOMAIN_SEED + b"\n")
     digest.update(_length_prefix(str(ALGORITHM_VERSION)))
     digest.update(_length_prefix(day_key))
     digest.update(_length_prefix(pool_digest))
-    digest.update(_length_prefix(str(consumed_picks)))
     return digest.hexdigest()
 
 
@@ -644,35 +788,61 @@ def uniform_index(seed_hex, stage, count):
                             "did not terminate")
 
 
-def select(admissible_keys_by_group, last_group, day_key, consumed_picks):
+def select(admissible_keys_by_group, last_group, day_key):
     """Two-stage equal-opportunity selection over the admissible pool.
 
-    Returns (chosen_group, chosen_key, pool_digest, seed_hex, forced_note).
-    Anti-repeat rule: the immediately preceding successful pick's genre group
-    is removed when more than one admissible group exists; if only one
-    admissible group remains, it is used with an explicit forced note.
+    Protocol (G6-001/G6-002, ADR-0003 D8/D11 + C1):
+    1. The anti-repeat rule is applied FIRST, before any projection exists:
+       if the immediately preceding successful pick's genre group is among
+       the admissible groups and another admissible group exists, that group
+       is excluded from today's selection.
+    2. The selection canonical projection is built ONLY from the final
+       actually-usable candidates (identity + resolved genre) after the
+       anti-repeat filtering; the selection-pool digest is computed on that
+       final pool, so an album under cooldown can never influence the seed.
+    3. The seed derives from exactly (day_key, algorithm_version,
+       selection_pool_digest).
+
+    Returns (chosen_group, chosen_key, pool_digest, seed_hex, forced_note,
+    cooldown_note):
+    - forced_note is set ONLY in the true waiver branch: the sole admissible
+      group equals the previous successful group, so repetition is allowed
+      and must be marked "唯一可用流派" (unique available genre).
+    - cooldown_note is set when the anti-repeat rule was applied and exactly
+      one non-repeating group remains (the rule was applied, NOT waived).
     """
     groups = sorted(admissible_keys_by_group)
     if not groups:
         raise OmdaError("internal invariant failure: no admissible groups")
+    usable = list(groups)
+    forced_note = None
+    cooldown_note = None
+    if last_group is not None and last_group in usable:
+        if len(usable) == 1:
+            # Sole admissible group is the previous group: repetition is
+            # allowed and explicitly marked (true waiver).
+            forced_note = (
+                "唯一可用流派：只有该流派仍有可选专辑，防重复规则在此豁免 "
+                "(unique available genre group: anti-repeat rule waived)")
+        else:
+            usable = [group for group in usable if group != last_group]
+            if len(usable) == 1:
+                cooldown_note = (
+                    "防重复规则已执行：冷却后仅剩一个不重复的可用流派 "
+                    "(anti-repeat rule applied: one non-repeating genre "
+                    "group remains after cooldown)")
     pool = []
-    for group in groups:
+    for group in usable:
         for key in sorted(admissible_keys_by_group[group]):
             pool.append((key, group))
     pool_digest = selection_pool_digest(pool)
-    seed_hex = seed_material_digest(day_key, pool_digest, consumed_picks)
-    usable = list(groups)
-    forced_note = None
-    if len(usable) > 1 and last_group is not None and last_group in usable:
-        usable = [group for group in usable if group != last_group]
-        if len(usable) == 1:
-            forced_note = ("only one admissible genre group remains "
-                           "(anti-repeat rule waived)")
+    seed_hex = seed_material_digest(day_key, pool_digest)
     group_index = uniform_index(seed_hex, b"genre", len(usable))
     chosen_group = usable[group_index]
     keys = sorted(admissible_keys_by_group[chosen_group])
     album_index = uniform_index(seed_hex, b"album", len(keys))
-    return chosen_group, keys[album_index], pool_digest, seed_hex, forced_note
+    return (chosen_group, keys[album_index], pool_digest, seed_hex,
+            forced_note, cooldown_note)
 
 
 # ---------------------------------------------------------------------------
@@ -715,9 +885,12 @@ def render_day(record, lang):
             lines.append("- %s — %s：Rating %s / Note %s"
                          % (ann["source_id"], ann["source_display_name"],
                             rating, note))
-    if selected.get("forced_note"):
+    if selected.get("forced_note") or selected.get("cooldown_note"):
         lines.append("")
+    if selected.get("forced_note"):
         lines.append("Note: %s" % selected["forced_note"])
+    if selected.get("cooldown_note"):
+        lines.append("Note: %s" % selected["cooldown_note"])
     lines.append("")
     lines.append("Day key: %s (%s)"
                  % (record["day_key"],
@@ -791,13 +964,22 @@ def run(args):
     history = load_history(args.history)
     days = history["days"]
 
+    # Clock-rollback guard (G6-003): the day key may advance to today but
+    # must never backfill a date earlier than the latest committed day.
+    if days and day_key < max(days):
+        raise OmdaError(
+            "refusing to run: current day key %s is earlier than the latest "
+            "committed day %s (clock rollback / backfilling past days is "
+            "forbidden)" % (day_key, max(days)))
+
     if day_key in days:
-        # Same-day replay: return the committed result. The source set and
-        # the result are locked for today; provided --source arguments are
-        # intentionally NOT read (they may even point to files that no
-        # longer exist — that must not matter).
+        # Same-day replay: return the committed result. The source set, the
+        # result AND the committed render language are locked for today;
+        # provided --source/--lang arguments are intentionally ignored (the
+        # sources may even point to files that no longer exist — that must
+        # not matter, and the output must stay byte-identical).
         record = days[day_key]
-        text = render_day(record, args.lang)
+        text = render_day(record, record["render_lang"])
         out_path = Path(args.output_dir) / ("%s.md" % day_key)
         atomic_write_text(out_path, text)
         names = ", ".join(
@@ -805,9 +987,9 @@ def run(args):
             for sid in record["source_ids"])
         print("already committed today: %s (source set locked: %s)"
               % (day_key, names))
-        print("The --source arguments of this run were ignored; "
+        print("The --source/--lang arguments of this run were ignored; "
               "nothing was re-drawn." if args.lang == "en" else
-              "本次运行提供的 --source 参数被忽略，没有重新抽取。")
+              "本次运行提供的 --source/--lang 参数被忽略，没有重新抽取。")
         print("output: %s" % out_path)
         return EXIT_OK
 
@@ -844,10 +1026,9 @@ def run(args):
     if days:
         latest_day = max(days)
         last_group = days[latest_day]["selected"]["genre_group"]
-    groups_before = sorted(by_group)
-    chosen_group, chosen_key, pool_digest, seed_hex, forced_note = \
-        select(by_group, last_group, day_key, len(days))
-    if len(groups_before) > 1 and last_group is not None \
+    chosen_group, chosen_key, pool_digest, seed_hex, forced_note, \
+        cooldown_note = select(by_group, last_group, day_key)
+    if last_group is not None and len(groups_before := sorted(by_group)) > 1 \
             and last_group in groups_before and chosen_group == last_group:
         raise OmdaError("internal invariant failure: anti-repeat rule "
                         "violated")
@@ -866,6 +1047,7 @@ def run(args):
         "source_display_name": first["source_display_name"],
         "annotations": annotations,
         "forced_note": forced_note,
+        "cooldown_note": cooldown_note,
     }
     record = {
         "day_key": day_key,
@@ -876,7 +1058,7 @@ def run(args):
                 timespec="seconds"),
         },
         "selected": selected,
-        "source_ids": source_ids,
+        "source_ids": sorted(source_ids),
         "source_display_names": {source.source_id: source.display_name
                                  for source in sources},
         "per_source_content_digests": {source.source_id:
@@ -887,6 +1069,7 @@ def run(args):
         "algorithm_version": ALGORITHM_VERSION,
         "schema_version": HISTORY_SCHEMA_VERSION,
         "selected_at": now.isoformat(timespec="seconds"),
+        "render_lang": args.lang,
     }
 
     # Official commit point: atomic history replacement. If this fails,

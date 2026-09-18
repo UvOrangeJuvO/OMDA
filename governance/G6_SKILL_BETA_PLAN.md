@@ -392,6 +392,13 @@ OMDA never collects it automatically.)
 
 ### C.7 项目前言（中文定稿基础；v2 恢复完整结构）
 
+> **G6 修复轮注记（G6-006）**：本节与 §C.8 仅为结构草稿。前言最终文案已由
+> Owner 原稿取代（`<OWNER_PREFACE_SOURCE>`），
+> 并已按原稿实现于 `skills/omda-daily-discovery/README.md`（含全称
+> "Open Music Discovery Agent（开放音乐探索 Agent）"——本草稿中的
+> "每日音乐探索代理"为被取代的旧措辞，不得使用）。逐句对照见
+> `reviews/stage-06/PREFACE_CHECKLIST.md`。
+
 ```markdown
 # OMDA — Open Music Discovery Agent（每日音乐探索代理）
 

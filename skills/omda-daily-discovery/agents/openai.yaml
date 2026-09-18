@@ -1,15 +1,7 @@
-# Codex display metadata for the OMDA Daily Discovery Skill (Skill Beta).
-# Vendor-neutral manual CLI usage remains available via README.md / SKILL.md.
-name: omda-daily-discovery
-display_name: OMDA Daily Discovery (Skill Beta)
-description: >-
-  OMDA Skill Beta (Personal Markdown Mode): deterministically pick one album
-  per day from the user's own OMDA Source Markdown lists. Local-only, zero
-  network; ratings and notes are display-only. This is the OMDA companion
-  mode, NOT the full 3x3 engine.
-default_prompt: >-
-  Use the OMDA Daily Discovery skill: read SKILL.md, then run
-  scripts/daily_pick.py with the user's profile and the source lists they
-  choose today, and explain the committed result using only its deterministic
-  facts. Never replace or reorder the script's selection.
-version: 0.1.0-beta.1
+# Codex Skill metadata (supported `interface` structure; G6-005).
+# All values are quoted strings. The OMDA script itself parses only its own
+# restricted flat frontmatter and never reads this file.
+interface:
+  display_name: "OMDA Daily Discovery"
+  short_description: "Pick one local album each day from chosen source lists"
+  default_prompt: "Use $omda-daily-discovery to set up my local sources and give me today's deterministic album."

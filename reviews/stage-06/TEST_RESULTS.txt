@@ -1,9 +1,9 @@
-OMDA G6 — TEST RESULTS (real captured output)
-Generated: 2026-09-18T23:30:49+0800
+OMDA G6 — TEST RESULTS (repair round; real captured output)
+Generated: 2026-09-19T01:52:22+0800
 Working directory: skills/omda-daily-discovery/tests
 
 ================================================================
-[1/3] Unit/acceptance suite — Python 3.13.12 (managed)
+[1/4] Unit/acceptance suite — Python 3.13.12 (managed)
 ================================================================
 test_ac10_skill_structure (test_daily_pick.SkillTestCase.test_ac10_skill_structure) ... ok
 test_ac11_zip_whitelist_and_validation (test_daily_pick.SkillTestCase.test_ac11_zip_whitelist_and_validation) ... ok
@@ -45,14 +45,32 @@ test_ac7_corrupt_history_fail_closed (test_daily_pick.SkillTestCase.test_ac7_cor
 test_ac7_partial_row_fails_closed (test_daily_pick.SkillTestCase.test_ac7_partial_row_fails_closed) ... ok
 test_ac8_import_allowlist (test_daily_pick.SkillTestCase.test_ac8_import_allowlist) ... ok
 test_ac9_secret_scan (test_daily_pick.SkillTestCase.test_ac9_secret_scan) ... ok
+test_g6001_excluded_genre_mutation_invariant (test_daily_pick.SkillTestCase.test_g6001_excluded_genre_mutation_invariant)
+Mutating an album that is only in the cooldown-excluded previous ... ok
+test_g6001_seed_independent_of_history_length (test_daily_pick.SkillTestCase.test_g6001_seed_independent_of_history_length)
+Same day + same final pool must give the same seed and choice no ... ok
+test_g6002_cooldown_applied_single_remainder_note (test_daily_pick.SkillTestCase.test_g6002_cooldown_applied_single_remainder_note) ... ok
+test_g6002_end_to_end_cooldown_note (test_daily_pick.SkillTestCase.test_g6002_end_to_end_cooldown_note) ... ok
+test_g6002_end_to_end_forced_unique_note (test_daily_pick.SkillTestCase.test_g6002_end_to_end_forced_unique_note) ... ok
+test_g6002_normal_multi_group_no_notes (test_daily_pick.SkillTestCase.test_g6002_normal_multi_group_no_notes) ... ok
+test_g6002_true_waiver_unique_genre_note (test_daily_pick.SkillTestCase.test_g6002_true_waiver_unique_genre_note) ... ok
+test_g6003_clock_rollback_rejected (test_daily_pick.SkillTestCase.test_g6003_clock_rollback_rejected) ... ok
+test_g6003_language_locked_for_same_day (test_daily_pick.SkillTestCase.test_g6003_language_locked_for_same_day) ... ok
+test_g6003_shaped_corrupt_history_exit3 (test_daily_pick.SkillTestCase.test_g6003_shaped_corrupt_history_exit3) ... ok
+test_g6004_content_digest_row_order_invariant (test_daily_pick.SkillTestCase.test_g6004_content_digest_row_order_invariant) ... ok
+test_g6005_install_simulation_separate_dirs (test_daily_pick.SkillTestCase.test_g6005_install_simulation_separate_dirs)
+Skill installed under a skills directory; user data lives in a ... ok
+test_g6005_openai_yaml_interface_structure (test_daily_pick.SkillTestCase.test_g6005_openai_yaml_interface_structure) ... ok
+test_g6007_fenced_second_table_allowed (test_daily_pick.SkillTestCase.test_g6007_fenced_second_table_allowed) ... ok
+test_g6007_second_live_table_fails_with_line_number (test_daily_pick.SkillTestCase.test_g6007_second_live_table_fails_with_line_number) ... ok
 
 ----------------------------------------------------------------------
-Ran 39 tests in 0.319s
+Ran 54 tests in 0.338s
 
 OK
 
 ================================================================
-[2/3] Unit/acceptance suite — Python 3.9.6 (system)
+[2/4] Unit/acceptance suite — Python 3.9.6 (system)
 ================================================================
 Python 3.9.6
 test_ac10_skill_structure (test_daily_pick.SkillTestCase) ... ok
@@ -95,39 +113,62 @@ test_ac7_corrupt_history_fail_closed (test_daily_pick.SkillTestCase) ... ok
 test_ac7_partial_row_fails_closed (test_daily_pick.SkillTestCase) ... ok
 test_ac8_import_allowlist (test_daily_pick.SkillTestCase) ... ok
 test_ac9_secret_scan (test_daily_pick.SkillTestCase) ... ok
+test_g6001_excluded_genre_mutation_invariant (test_daily_pick.SkillTestCase)
+Mutating an album that is only in the cooldown-excluded previous ... ok
+test_g6001_seed_independent_of_history_length (test_daily_pick.SkillTestCase)
+Same day + same final pool must give the same seed and choice no ... ok
+test_g6002_cooldown_applied_single_remainder_note (test_daily_pick.SkillTestCase) ... ok
+test_g6002_end_to_end_cooldown_note (test_daily_pick.SkillTestCase) ... ok
+test_g6002_end_to_end_forced_unique_note (test_daily_pick.SkillTestCase) ... ok
+test_g6002_normal_multi_group_no_notes (test_daily_pick.SkillTestCase) ... ok
+test_g6002_true_waiver_unique_genre_note (test_daily_pick.SkillTestCase) ... ok
+test_g6003_clock_rollback_rejected (test_daily_pick.SkillTestCase) ... ok
+test_g6003_language_locked_for_same_day (test_daily_pick.SkillTestCase) ... ok
+test_g6003_shaped_corrupt_history_exit3 (test_daily_pick.SkillTestCase) ... ok
+test_g6004_content_digest_row_order_invariant (test_daily_pick.SkillTestCase) ... ok
+test_g6005_install_simulation_separate_dirs (test_daily_pick.SkillTestCase)
+Skill installed under a skills directory; user data lives in a ... ok
+test_g6005_openai_yaml_interface_structure (test_daily_pick.SkillTestCase) ... ok
+test_g6007_fenced_second_table_allowed (test_daily_pick.SkillTestCase) ... ok
+test_g6007_second_live_table_fails_with_line_number (test_daily_pick.SkillTestCase) ... ok
 
 ----------------------------------------------------------------------
-Ran 39 tests in 0.332s
+Ran 54 tests in 0.518s
 
 OK
 
 ================================================================
-[3/3] Additional captured evidence (separate runs, same day)
+[3/4] Additional captured evidence (repair round)
 ================================================================
-[3.1] Real subprocess CLI smoke (isolated /tmp workspace, deleted after)
-- Command: python3 scripts/daily_pick.py --profile profile/MY_PROFILE.md
-  --source sources/alice.md --history var/omda-skill/history.json
-  --output-dir var/omda-skill/output  (3-entry source table, template-based)
-- Run 1 stdout: committed 2026-09-18: Karaoke Tundra — Immersion (trip hop)
-  exit=0
-- Run 2 stdout (same day, --lang en): already committed today: 2026-09-18
-  (source set locked: alice — Alice's picks) / The --source arguments of
-  this run were ignored; nothing was re-drawn.  exit=0
-- Output file re-rendered byte-identically (replay path), history JSON
-  validated by eye: schema_version 2, algorithm_version 1, timezone evidence
-  +08:00, selection_pool_digest + per-source content digests present.
-- Workspace deleted after the smoke (no user data retained).
+[3.1] PyYAML (dev-only isolated venv, NOT an OMDA runtime dependency)
+      parsing/structure validation of agents/openai.yaml:
+- parses successfully; root keys == {"interface"}
+- interface keys == {default_prompt, display_name, short_description},
+  all quoted non-empty strings
+- default_prompt starts with "Use $omda-daily-discovery"
+- RESULT: PASS (Codex quick_validate.py not present locally; disclosed)
 
-[3.2] T6.9 isolated ZIP build/extract/validate (temp dir, deleted after)
-- whitelist exact match: True (14 files, tests/ and __pycache__ excluded)
+[3.2] T6.9 isolated ZIP build/extract/validate (temp dir, deleted after):
+- whitelist exact match: True (14 files; tests/ and __pycache__ excluded)
 - extracted LICENSE contains "Apache License"; VERSION == 0.1.0-beta.1
 - extracted-package functional run exit: 0
 - extracted imports: argparse, datetime, hashlib, json, os, pathlib, re,
   sys, tempfile, unicodedata (allowlist respected; no network/process
   modules)
-- T6.9 ISOLATED ZIP VALIDATION: PASS (archive deleted with tempdir)
+- T6.9 ISOLATED ZIP VALIDATION (repair round): PASS; temp dir removed.
 
-Summary: 39 tests, 39 passed, 0 failed, 0 skipped — on BOTH Python 3.13.12
-and Python 3.9.6. AC-12 (live Codex install) and AC-30 (bilingual preface
-vs Owner draft) are not automatable and are disclosed in the Executor
-report (AC-30 = OWNER_INPUT_REQUIRED).
+[3.3] Negative-probe spot checks exercised by the new tests (all green on
+      both interpreters): G6-001 seed signature/protocol fixtures;
+      G6-002 three genre-note branches incl. two end-to-end runs;
+      G6-003 shaped-corrupt history -> exit 3 with corrupt copy, same-day
+      --lang lock (byte-identical), clock-rollback rejection;
+      G6-004 row-order-invariant content digest + full-record permutation
+      equality; G6-005 install simulation with separate skill root and
+      user workspace; G6-007 second live table fail-closed with exact line
+      number, fenced table still allowed.
+
+Summary: 54 tests, 54 passed, 0 failed, 0 skipped — on BOTH Python 3.13.12
+and Python 3.9.6 (was 39 tests before the repair round; +16 new, 3 updated
+to follow the corrected accepted protocol; none deleted/weakened/skipped).
+Open: AC-12 (live Codex install, disclosed) and AC-30 (EXECUTOR_FILLED,
+pending Owner/Reviewer confirmation — see PREFACE_CHECKLIST.md).

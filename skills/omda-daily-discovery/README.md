@@ -1,45 +1,103 @@
-# OMDA Daily Discovery — Skill Beta（个人 Markdown 模式）使用说明
+# OMDA
 
-<!--
-前言状态说明（AC-30 / ADR-0003 §10 C3）：以下"关于 OMDA"前言为结构草稿，
-最终文案必须由 Owner 提供原稿逐句校订中英文含义后定稿。在 Owner 校订前，
-本前言以草稿状态随包发布。
--->
+**Open Music Discovery Agent**
 
-## 关于 OMDA
+**开放音乐探索 Agent**
 
-**OMDA — Open Music Discovery Agent（每日音乐探索代理）**
+乐者，天地之和也。
+Music is the harmony of heaven and earth.
+——《礼记·乐记》
+— The Book of Rites, "Record of Music"
 
-"乐者，天地之和也。"
+OMDA 的全称是 Open Music Discovery Agent（开放音乐探索 Agent）。
+它来自一个很简单的愿望：帮助人们走出熟悉的歌单，发现来自不同流派、不同地区、不同文化和不同创作传统的音乐。
+音乐一直在语言和国界之间流动。OMDA 不仅是一个音乐探索工具，也是一次小小的国际协作实验。我们希望它可以帮助听众遇见那些原本可能永远不会发现的声音，也希望来自世界不同地方的人们能够通过音乐互相了解。
+OMDA 坚持本地优先、过程可审计、选择规则确定，并欢迎社区共同贡献。它不会根据流行度决定哪些 Genre 更值得被听见，也不会让 AI 模型判断哪些文化或音乐风格更加重要。在明确的多样性与冷却规则之下，所有有效 Genre 都拥有平等的被选择机会。
 
-1. OMDA 帮你每天遇见一张值得认真听的专辑。它不猜你喜欢什么，而是从你自己
-   选择的来源清单里，用确定性的规则做出当天的选择，并附上一份你可以核查
-   的说明。
-2. 它的规则刻意朴素：每个流派有同样的机会；评分和热闹程度不决定什么
-   更重要；推荐过的专辑不再重复；失败的运行不会弄脏任何记录。
-3. 它默认一切都发生在你的电脑上：档案、来源清单和历史只保存在本地；
-   除非你明确分享，什么都不会上传。
+OMDA stands for Open Music Discovery Agent.
+It began with a simple wish: to help people step outside their familiar playlists and discover music from different genres, regions, cultures, and creative traditions.
+Music has always travelled across languages and borders. OMDA is not only a music-discovery tool, but also a small experiment in international collaboration. We hope it can help listeners encounter sounds they might otherwise never discover, while allowing people from different parts of the world to understand one another through music.
+OMDA is local-first, auditable, deterministic, and open to community contribution. It does not use popularity to decide which Genres deserve to be heard, nor does it ask an AI model to judge which cultures or musical styles matter more. Under explicit diversity and cooldown rules, every valid Genre receives an equal opportunity to be selected.
 
-### Why I wanted to build OMDA
+## 一、天地之和
 
-After reading Italo Calvino's *Why Read the Classics?*, I was left with a
-feeling I cannot fully explain but am sure of: a work truly becomes yours
-not because you went looking for it, but because it happened to meet you,
-at that particular moment, as the person you were. What I want OMDA to do
-is create a little more of that kind of encounter.
+### 1. The Harmony of Heaven and Earth
 
-I also want to keep the freedom to choose whose lists I use: they can come
-from friends I trust, from strangers, from communities I stumbled upon, or
-even from critics I do not fully agree with — taste is plural, shaped by
-culture, experience, and preference, and no one's list has the standing to
-draw the line for me. OMDA does not judge for me which music is "better";
-it simply brings one album to me, carefully, each day, and leaves the rest
-to my own ears.
+音乐让我们在语言不同的情况下，依然能够感受到彼此。
+我们可能不知道一首歌的每一句歌词在说什么，却仍然能够感受到其中的情绪、节奏、力量和温度。我们也可以通过另一个地方的音乐，接触到一种原本并不熟悉的生活、历史和文化。
+OMDA 希望帮助人们走出熟悉的歌单，去听见来自不同地方的声音。它不要求我们首先理解彼此的语言，而是希望从一次简单的聆听开始。
 
-Skill Beta is the smallest possible start: your own profile, a few source
-lists you chose, one album a day — and the rest left to the encounter.
+Music allows us to feel something of one another even when we do not share the same language.
+We may not understand every lyric, but we can still experience the emotion, rhythm, energy, and warmth carried by a piece of music. Through music from another place, we may also encounter lives, histories, and cultures that were previously unfamiliar to us.
+OMDA hopes to help people step outside familiar playlists and hear voices from different parts of the world. It does not require us to understand one another's language first. It simply hopes that we can begin by listening.
+
+## 二、八音克谐，无相夺伦
+
+### 2. The Many Sounds Harmonize Without Drowning One Another Out
+
+八音克谐，无相夺伦。
+The many sounds harmonize, without one drowning out another.
+——《尚书·舜典》
+— The Book of Documents, "Canon of Shun"
+
+不同的声音可以共同存在，而不必让一种声音盖过另一种声音。
+OMDA 希望保留音乐之间的差异。流行的音乐可以被听见，小众的音乐也应该拥有被遇见的机会。来自不同国家、地区、语言、流派和传统的音乐，不需要被放进同一个标准中判断。
+因此，OMDA 不会使用流行度决定哪个 Genre 更值得被选择。不同的音乐方向在明确、公开并且可以审查的规则下，拥有平等出现的机会。
+评分可以帮助排列 Album，但不应该决定哪一种音乐文化更加重要。
+
+Different sounds can exist together without requiring one of them to overpower the others.
+OMDA hopes to preserve the differences between musical traditions. Popular music can be heard, but lesser-known music should also have the opportunity to be encountered. Music from different countries, regions, languages, genres, and traditions does not need to be judged by a single standard.
+For this reason, OMDA does not use popularity to determine which Genre deserves to be selected. Under explicit, public, and auditable rules, different musical directions receive an equal opportunity to appear.
+Ratings may help arrange Albums, but they should not decide which musical culture matters more.
+
+## 三、伯牙善鼓琴，钟子期善听
+
+### 3. Boya Knew How to Play; Ziqi Knew How to Listen
+
+伯牙善鼓琴，钟子期善听。
+Boya was skilled at playing the qin; Zhong Ziqi was skilled at listening.
+——《列子·汤问》
+— Liezi, "The Questions of Tang"
+
+音乐不仅需要创作者，也需要愿意认真倾听的人。
+OMDA 希望逐渐成为一个可以由听众、乐评人、音乐爱好者和不同文化背景的人共同参与的项目。
+每个人都可以建立自己的音乐档案，记录自己喜欢的 Album、自己的评价和感受，以及希望继续探索的方向。这些资料可以只保存在自己的电脑上，也可以由使用者选择，把其中的一部分贡献给社区。
+一个人的音乐清单，也许会成为另一个人发现新世界的入口。
+我们希望帮助更多声音找到愿意听见它们的人，也希望每一种声音，都有机会遇见自己的知音。
+
+Music needs not only creators, but also people who are willing to listen with care.
+OMDA hopes to grow into a project shaped by listeners, critics, music lovers, and people from different cultural backgrounds.
+Everyone should be able to create a personal music profile—a record of the Albums they appreciate, their thoughts and responses, and the directions they hope to explore next. These materials can remain entirely on the listener's own computer, or selected parts may be contributed to the community.
+One person's music collection may become another person's entrance into a new world.
+We hope to help more sounds find people who are willing to hear them—and to give every sound a chance to find its zhiyin: someone who truly listens.
+
+## 为什么我想做 OMDA
+
+### Why I Wanted to Build OMDA
+
+我喜欢听音乐。音乐在我的生命中占了很重要的一部分。
+即使面对不同的语言，我也愿意去倾听来自世界各个地方的声音。我认为音乐是一种真正通用的语言，它能够跨越语言和地域，把世界各地的人连接起来。
+与此同时，我们现在也正在见证整个中国音乐场景的繁荣。越来越多不同类型、不同地区、不同语言的音乐正在出现，也有越来越多的人愿意认真地去听、去写、去分享音乐。
+OMDA 是我想做的一次尝试。
+我希望它是一个非常轻量、本地化，同时又能够由社群共同参与的工具。它可以帮助你从自己欣赏的人、信任的乐评人，或者只是一个随机遇到的人，或者想要探索的任何音乐清单中，每天随机遇到一些可能会感兴趣的专辑。
+你不需要每天先决定自己应该听什么。OMDA 可以替你完成这一次选择，让你偶然遇见一些过去可能不会主动点开的音乐。
+它本质上只是希望让听音乐这件事更轻松一点，也让生活多一点意外和快乐。
+最近读了卡尔维诺的《为什么读经典》，我心里更有一种说不清但很确定的感觉：一件作品真正属于你，往往不是因为你去找了它，而是它在某个具体的时刻，偶然遇上了此刻的你。OMDA 想多做的，就是这样的偶遇。
+我也想保留使用清单的自由：它可以从我信任的朋友那里来，也可以来自陌生的人、偶然碰到的社群，甚至来自我并不完全同意的乐评人。审美本来就是由文化、经历和偏好共同塑造的，没有谁的清单有资格替我划线。
+
+I love listening to music. Music has always been an important part of my life.
+Even when I do not understand the language, I am still willing to listen to voices from different parts of the world. I believe music is a truly universal language—one that can cross linguistic and geographic boundaries and connect people around the world.
+At the same time, we are witnessing the growing vitality of the Chinese music scene. More music is emerging from different genres, regions, and languages, and more people are willing to listen carefully, write about music, and share what they discover.
+OMDA is an experiment I wanted to make.
+I hope it can be lightweight, local-first, and shaped by a community. It should help people discover Albums from people they appreciate, critics they trust, and collections they want to explore.
+You should not have to decide what to listen to every day. OMDA can make that small decision for you and let you encounter Albums you might never have opened on your own.
+At its heart, OMDA simply hopes to make listening a little easier—and to bring a little more surprise and happiness into everyday life.
+Recently, after rereading Italo Calvino's *Why Read the Classics?*, I was left with a feeling I cannot quite explain but am sure of: a work truly becomes yours not because you went looking for it, but because it happened to meet you, at that particular moment, as the person you are. That kind of chance encounter is what OMDA wants to create a little more of.
+I also want to keep the freedom to choose whose lists I use: they can come from friends I trust, from strangers, from communities I stumbled upon, or even from critics I do not fully agree with. Taste is shaped by culture, experience, and preference together, and no one's list has the standing to draw the line for me.
 
 ---
+
+# OMDA Skill Beta 使用说明 / User Guide
 
 ## 这是什么 / What this is
 
@@ -63,12 +121,18 @@ Fully local, zero network, no accounts.
 | Genre 规则 | 30-pick cooldown | 等机会 + 连续 pick 防重复 |
 | 评分 Ratings | 独立维度、可配置权重 | **仅展示，永不影响选择** |
 
----
+## 两个目录，别混 / Two directories, kept apart
 
-## 目录结构 / Directory layout
+| 目录 | 内容 | 说明 |
+|---|---|---|
+| **已安装 Skill 根目录**（下文记作 `<skill-root>`） | `SKILL.md`、`scripts/daily_pick.py`、`templates/` 等 | Codex 安装目录或解压后的分发包目录；只读使用 |
+| **用户 workspace**（下文记作 `<workspace>`） | `profile/`、`sources/`、`var/` | 你的私人数据；Profile/Sources/History 必须留在这里 |
+
+脚本与模板始终相对于 `<skill-root>` 解析；输出与历史写入
+`<workspace>/var/`。
 
 ```text
-<你的工作目录>/
+<workspace>/
 ├── profile/
 │   └── MY_PROFILE.md        # 你的私人档案 + 已听/跳过状态表（私人，勿分享）
 ├── sources/                 # 每位贡献者一份来源清单（可分享、只读）
@@ -80,47 +144,45 @@ Fully local, zero network, no accounts.
 
 - `sources/` 里的每个文件来自一位朋友/乐评人/社群/你自己整理；把它们原样
   放进来即可，**不需要也不会被修改**。
-- 复制 `templates/OMDA_SOURCE.template.*.md` 即可创建新的来源文件
-  （每份的 `source_id` 必须不同）。
-
----
+- 复制 `<skill-root>/templates/OMDA_SOURCE.template.*.md` 即可创建新的
+  来源文件（每份的 `source_id` 必须不同）。
 
 ## 快速开始（三条路）/ Quick start
 
 ### A. Codex（native Skill）
 
 1. 把本 `omda-daily-discovery/` 文件夹放入你的 Codex skills 目录
-   （以 Codex 当前的 Skill 文档为准）。
-2. 新开对话，让 Agent：*"Use the OMDA Daily Discovery skill to set me up
-   and give me today's album."*
-3. Agent 会引导你从模板创建 `profile/MY_PROFILE.md` 与来源文件，然后运行
-   脚本并解释结果。
+   （以 Codex 当前的 Skill 文档为准；元数据见 `agents/openai.yaml`）。
+2. 新开对话，使用默认提示或输入：
+   *"Use $omda-daily-discovery to set up my local sources and give me
+   today's deterministic album."*
+3. Agent 会以 `<skill-root>` 指脚本与模板、以你的工作目录指
+   `profile/`、`sources/`、`var/`，引导你从模板创建文件并运行脚本。
 
 ### B. WorkBuddy / 其他支持 Skill 的 Agent
 
-把本文件夹交给 Agent 并让它阅读 `SKILL.md`，按其中步骤操作。
+把本文件夹交给 Agent 并让它阅读 `SKILL.md`，按其中"两个目录"的约定操作。
 
 ### C. 没有 Skill 机制？手动也能用（vendor-neutral）
 
 ```bash
-# 1. 准备文件：从 templates/ 复制并填写
-#    profile/MY_PROFILE.md 与 sources/<name>.md（每份改一个 source_id）
+# 1. 准备文件：从 <skill-root>/templates/ 复制并填写
+#    <workspace>/profile/MY_PROFILE.md 与 <workspace>/sources/<name>.md
+#    （每份来源文件的 source_id 必须不同）
 
 # 2. 运行（--source 可重复，想用几个来源就写几个）：
-python3 scripts/daily_pick.py \
-  --profile profile/MY_PROFILE.md \
-  --source sources/alice.md \
-  --source sources/critic-zhang.md \
-  --history var/omda-skill/history.json \
-  --output-dir var/omda-skill/output
+python3 <skill-root>/scripts/daily_pick.py \
+  --profile <workspace>/profile/MY_PROFILE.md \
+  --source <workspace>/sources/alice.md \
+  --source <workspace>/sources/critic-zhang.md \
+  --history <workspace>/var/omda-skill/history.json \
+  --output-dir <workspace>/var/omda-skill/output
 
-# 3. 打开 var/omda-skill/output/<今天日期>.md 查看当天推荐。
-#    英文输出加 --lang en。
+# 3. 打开 <workspace>/var/omda-skill/output/<今天日期>.md 查看当天推荐。
+#    英文输出加 --lang en（首次提交后语言随结果锁定）。
 ```
 
 要求：Python ≥ 3.9（标准库，无需安装任何包）。
-
----
 
 ## 每天怎么用 / Daily flow
 
@@ -128,9 +190,9 @@ python3 scripts/daily_pick.py \
 2. 运行（或让 Agent 运行）上面的命令。
 3. 阅读当天输出；Agent 可以结合你的档案解释这张专辑。
 
-**同日锁定**：当天第一次成功运行后，结果与使用的来源集合即被锁定；同一天
-再运行（即使换了 `--source`）只会返回同一个结果并说明原始来源集合。修改
-来源或档案从明天生效。
+**同日锁定**：当天第一次成功运行后，结果、使用的来源集合与输出语言均被
+锁定；同一天再运行（即使换了 `--source` 或 `--lang`）只会返回同一个结果
+（字节不变）并说明原始来源集合。修改来源或档案从明天生效。
 
 **已听 / 跳过**：想排除某张专辑，在你自己的 `profile/MY_PROFILE.md` 的
 "已听 / 跳过记录"表里加一行（`heard` 或 `skip`）。来源文件永远不会被
@@ -138,8 +200,6 @@ python3 scripts/daily_pick.py \
 
 **清单耗尽**：当所有条目都被听过/跳过/推荐过，脚本会明确提示"清单已耗尽"
 并停止——它绝不会自动降低标准或重复推荐。添加新条目后明天再试。
-
----
 
 ## 隐私与分享 / Privacy & sharing
 
@@ -153,19 +213,22 @@ python3 scripts/daily_pick.py \
 
 ## 备份 / Backup
 
-只有 `var/omda-skill/history.json` 需要备份（它承载"永久排除已推荐专辑"
-的承诺）。档案和来源文件你自己就有；输出可随时从历史重新渲染。
+只有 `<workspace>/var/omda-skill/history.json` 需要备份（它承载"永久排除
+已推荐专辑"的承诺）。档案和来源文件你自己就有；输出可随时从历史重新
+渲染。
 
 ## 故障排查 / Troubleshooting
 
 | 现象 | 处理 |
 |---|---|
 | `selection-relevant Genre conflict ...` | 同一张专辑在不同来源里的流派不一致。选择一个为准，修改对应来源文件后重试（脚本没有做任何选择）。 |
+| `a second live Album table starts at line N` | 来源文件里有第二个 Album 表。把两个表合并成一个，或把多余的表放进 ``` 围栏代码块内（示例块不会被解析）。 |
 | `source frontmatter ... rejected` | 来源文件的元数据头不符合受限格式（必须每行一个 `key: value`，不能缩进/嵌套/重复/未知字段）。对照模板修正。 |
 | `table row at line N is missing required field(s)` | 表格某行缺 Artist 或 Album。填上或删掉整行（全空行没问题）。 |
 | `history file ... is corrupt ... refusing to run` | 历史 JSON 损坏。脚本已保留损坏副本；从备份恢复或手工修复，**不要删除后重建**。 |
+| `refusing to run: current day key ... earlier than the latest committed day` | 系统时钟回退了。校正系统日期后重试；脚本不会补写过去的日期。 |
 | `The collection is exhausted / 清单已耗尽` | 所有条目都已被排除。向来源清单添加新专辑。 |
-| 想要英文输出 | 加 `--lang en`。 |
+| 想要英文输出 | 首次提交前加 `--lang en`；当天已提交则语言随结果锁定，次日生效。 |
 
 ## 反馈
 

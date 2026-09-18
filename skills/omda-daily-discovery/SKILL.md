@@ -19,48 +19,56 @@ description: "OMDA Skill Beta (Personal Markdown Mode): deterministically pick O
    把个人状态写回来源文件；未经用户明确操作上传或公开任何用户数据。
 3. 脚本没有"指定结果"参数。确定性脚本选择，AI 只解释。
 
-## 目录约定（用户工作目录）
+## 两个目录，别混（G6-005）
 
-```text
-<workspace>/
-├── profile/
-│   └── MY_PROFILE.md          # 用户私人档案 + 结构化已听/跳过状态表
-├── sources/                   # 每位贡献者一份 OMDA Source Markdown（可分享、只读）
-│   ├── alice.md
-│   ├── critic-zhang.md
-│   └── ...
-└── var/                       # 私人历史与输出（勿分享、勿提交 Git）
-```
+| 目录 | 内容 | 说明 |
+|---|---|---|
+| **已安装 Skill 根目录**（下文记作 `<skill-root>`） | `SKILL.md`、`scripts/daily_pick.py`、`templates/`、`README.md` 等 | Codex 安装目录（或解压后的分发包目录）；只读使用 |
+| **用户 workspace** | `profile/MY_PROFILE.md`、`sources/*.md`、`var/` | 用户的私人数据；Profile/Sources/History **必须**留在这里 |
+
+- 脚本与模板**始终相对于 `<skill-root>` 解析**（例如
+  `<skill-root>/scripts/daily_pick.py`、`<skill-root>/templates/`）；
+  **不要**假设用户当前工作目录里存在 `scripts/daily_pick.py`。
+- 所有输出（每日推荐 Markdown）与历史 JSON 写入用户 workspace 的 `var/`。
 
 ## 每日运行（Agent 操作）
 
+先确定两个路径：`<skill-root>`（本文件所在目录）与用户的
+`<workspace>`（存放 `profile/`、`sources/`、`var/` 的目录），然后：
+
 ```bash
-python3 scripts/daily_pick.py \
-  --profile profile/MY_PROFILE.md \
-  --source sources/alice.md \
-  --source sources/critic-zhang.md \
-  --history var/omda-skill/history.json \
-  --output-dir var/omda-skill/output
+python3 <skill-root>/scripts/daily_pick.py \
+  --profile <workspace>/profile/MY_PROFILE.md \
+  --source <workspace>/sources/alice.md \
+  --source <workspace>/sources/critic-zhang.md \
+  --history <workspace>/var/omda-skill/history.json \
+  --output-dir <workspace>/var/omda-skill/output
 ```
 
 - `--source` 可重复：用户当天想用几个来源就传几个（至少一个）。
-- 运行成功后阅读 `--output-dir/<当天日期>.md`，按其中内容向用户解释。
-- **同日锁定**：当天第一次成功运行后，结果与来源集合即锁定。同日再次运行
-  （即使换了 `--source`）只会返回已提交结果并说明原始来源集合，不会重抽。
-- 退出码：`0` 成功；`2` 输入/校验失败（含来源间 Genre 冲突）；`3` 历史文件
-  损坏（fail-closed，脚本会保留损坏副本，请勿自动重建）；`4` 清单耗尽
-  （请提示用户向来源添加新条目，不得自行补充专辑）。
+- `--template-dir <skill-root>/templates` 可选：让脚本校验模板齐备，
+  便于为用户复制新的来源模板。
+- 运行成功后阅读 `<workspace>/var/omda-skill/output/<当天日期>.md`，
+  按其中内容向用户解释。
+- **同日锁定**：当天第一次成功运行后，结果、来源集合与输出语言即锁定。
+  同日再次运行（即使换了 `--source` 或 `--lang`）只会返回已提交结果
+  （字节不变）并说明原始来源集合，不会重抽。
+- 退出码：`0` 成功；`2` 输入/校验失败（含来源间 Genre 冲突、时钟回退）；
+  `3` 历史文件损坏（fail-closed，脚本会保留损坏副本，请勿自动重建）；
+  `4` 清单耗尽（请提示用户向来源添加新条目，不得自行补充专辑）。
 
 ## 安装
 
-- **Codex**：将本目录作为 Skill 安装（见 `agents/openai.yaml` 元数据），
-  然后按上面的"每日运行"操作。
+- **Codex**：将本目录作为 Skill 安装（元数据见 `agents/openai.yaml`，
+  使用 `interface:` 结构与 `$omda-daily-discovery` 默认提示）。
 - **其他 Agent / 无 Skill 机制**：解压后把本 SKILL.md 内容作为普通指令
-  粘贴给 Agent，或由用户按 `README.md` 中的手动命令自行运行。
+  粘贴给 Agent，或由用户按 `README.md` 中的手动命令自行运行
+  （此时 `<skill-root>` 即解压目录）。
 - 详细的中英文使用说明、模板复制方法与故障排查见 `README.md`。
 
 ## 隐私
 
-档案、来源、历史、输出全部只保存在用户本机；脚本零网络调用。本地使用
-**不等于**同意公开贡献；任何上传/公开/提交都需要用户明确的独立动作。
-来源文件中的 `sharing_note` 只是私下分享语境，不是公开再分发许可。
+档案、来源、历史、输出全部只保存在用户本机（用户 workspace）；脚本零
+网络调用。本地使用**不等于**同意公开贡献；任何上传/公开/提交都需要用户
+明确的独立动作。来源文件中的 `sharing_note` 只是私下分享语境，不是公开
+再分发许可。
