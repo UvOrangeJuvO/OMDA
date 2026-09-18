@@ -149,3 +149,81 @@
 **READY_FOR_REVIEW** — G6-001 ~ G6-007 逐条关闭；54 项测试在 Python
 3.13.12 与 3.9.6 双双通过。Executor 停止，等待 GPT-5.6 Sol 复审；未合并、
 未打标签、未 push、未发布、未保留分发包。
+
+---
+
+# Re-review 1 修复轮 — G6-R1-001 ~ G6-R1-003 + AC-30 措辞
+
+> 被审 candidate：`64b805e6518462ed6346aa7a3fd8a87cac277cdd`
+> Reviewer checkpoint（本轮直接父提交）：`ceeec1074966cfbe6865f05658607bae641fe5c0`
+> Verdict：`reviews/stage-06/REVIEW_VERDICT.md` §Re-review 1（CHANGES_REQUESTED）
+> 范围纪律：仅修复本轮指定问题；G6-001/002/005 已解决的实现未改动；
+> 3×3 Core 未触碰；未顺便重构。
+
+## G6-R1-001 — 规范化等价记录的顺序依赖 → CLOSED
+
+- `merge_sources()` 改为按**文档化 canonical content 顺序**（每条记录的
+  `canonical_order`，即 `_content_record_sort_key` 排序名次）迭代各来源
+  记录——展示 Artist/Album 不再由文件行序或 `occs[0]` 的原始顺序决定。
+- 新增 `test_r1001_canonical_equivalent_duplicates_permutation_invariant`：
+  `A Ref | Alpha` 与 `a ref | Alpha.`（规范化同一身份）在两种排列下
+  → 展示字段（断言为 canonical 的 "A Ref"/"Alpha"）、完整历史 JSON、
+  输出字节完全一致。
+
+## G6-R1-002 — 跨语言第二张表检测 → CLOSED
+
+- `parse_album_table` 表内阶段：在把任何行当数据之前，先用
+  `_header_matches(cells, required_fields)` 做**语义表头检查**（任一支持
+  语言/别名形式）；第一张 live table 之后再次出现有效表头 → fail-closed
+  并报精确行号，绝不作为 Album。
+- 新增三个方向测试：`test_r1002_english_then_chinese_header_fail_closed`、
+  `test_r1002_chinese_then_english_header_fail_closed`、
+  `test_r1002_blank_line_only_separation_fail_closed`，均断言错误含
+  准确行号（含两表之间仅空行的情形）。
+
+## G6-R1-003 — 历史日期与时间的语义校验 → CLOSED
+
+- 新增 `_parse_iso_date`（严格真实日历日期 + canonical YYYY-MM-DD 形式）、
+  `_parse_aware_datetime`（必须带时区的可解析 datetime）、
+  `_validate_history_semantics`（对每天记录校验：day key 真实日期；
+  `local_iso`/`utc_iso`/`selected_at` 为 aware datetime；`utc_iso` 偏移
+  为 0；`local_iso` 日期与 day key 一致；`utc_offset` 与 `local_iso` 实际
+  偏移一致）。任何失败 → ValueError → 损坏副本保留 + **exit 3**
+  （load_history 在 rollback 检查之前运行，语义损坏不再误报 exit 2）。
+- 新增六个测试（`test_r1003_*`）：不可能月份/日期（复现 Reviewer 探针
+  `2026-99-99` + `not-a-time`）、非法 timestamp、缺时区 timestamp、
+  local 日期与 day key 不一致、`utc_offset` 与 `local_iso` 不一致、
+  `utc_iso` 非 UTC；每个用例断言 exit 3、corrupt copy 字节精确等于
+  磁盘上的损坏内容、运行不改写历史文件。
+
+## AC-30 文案对应修正 → DONE（Owner 确认仍待定）
+
+- 中文 `最近读了` → `读过……之后`；英文 `Recently, after rereading` →
+  `After reading`（README 已改；T6.9 验证解压包内为新文案）。
+- `PREFACE_CHECKLIST.md` 已加 Re-review 1 修正记录；第 20–21 行仍处
+  **等待 Owner 最终确认**状态，Executor 未宣称 AC-30 PASS。
+
+## Verification（本轮）
+
+| Command | Result |
+|---|---|
+| `python3.13 -m unittest test_daily_pick`（3.13.12） | **64 tests — OK**（0 fail / 0 skip） |
+| `python3.9 -m unittest test_daily_pick`（3.9.6） | **64 tests — OK**（0 fail / 0 skip） |
+| T6.9 隔离 ZIP 复验（含新文案确认） | PASS；tempdir 已删除 |
+| `git diff --check`（Base..HEAD） | 通过 |
+| `git status`（提交后） | clean |
+
+测试数：54 → **64**（+10：R1-001 ×1、R1-002 ×3、R1-003 ×6；无删除/
+弱化/skip；G6-001/002/005 既有测试原样保留并通过）。
+
+## Residual Risks / Open Items
+
+- **AC-30**：EXECUTOR_FILLED — 等待 Owner 最终确认（第 20–21 行）。
+- **AC-12**：Codex 实装实测仍需 Owner/朋友试用。
+- 无其他已知偏离。
+
+## Executor Conclusion
+
+**READY_FOR_REVIEW** — Re-review 1 指定的 G6-R1-001~003 与 AC-30 措辞
+修正全部完成；64 项测试双版本全绿。Executor 停止，等待 GPT-5.6 Sol 复审；
+未合并、未打标签、未 push、未发布、未保留分发包。

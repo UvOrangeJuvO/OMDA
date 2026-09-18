@@ -82,7 +82,7 @@ OMDA 是我想做的一次尝试。
 我希望它是一个非常轻量、本地化，同时又能够由社群共同参与的工具。它可以帮助你从自己欣赏的人、信任的乐评人，或者只是一个随机遇到的人，或者想要探索的任何音乐清单中，每天随机遇到一些可能会感兴趣的专辑。
 你不需要每天先决定自己应该听什么。OMDA 可以替你完成这一次选择，让你偶然遇见一些过去可能不会主动点开的音乐。
 它本质上只是希望让听音乐这件事更轻松一点，也让生活多一点意外和快乐。
-最近读了卡尔维诺的《为什么读经典》，我心里更有一种说不清但很确定的感觉：一件作品真正属于你，往往不是因为你去找了它，而是它在某个具体的时刻，偶然遇上了此刻的你。OMDA 想多做的，就是这样的偶遇。
+读过卡尔维诺的《为什么读经典》之后，我心里更有一种说不清但很确定的感觉：一件作品真正属于你，往往不是因为你去找了它，而是它在某个具体的时刻，偶然遇上了此刻的你。OMDA 想多做的，就是这样的偶遇。
 我也想保留使用清单的自由：它可以从我信任的朋友那里来，也可以来自陌生的人、偶然碰到的社群，甚至来自我并不完全同意的乐评人。审美本来就是由文化、经历和偏好共同塑造的，没有谁的清单有资格替我划线。
 
 I love listening to music. Music has always been an important part of my life.
@@ -92,7 +92,7 @@ OMDA is an experiment I wanted to make.
 I hope it can be lightweight, local-first, and shaped by a community. It should help people discover Albums from people they appreciate, critics they trust, and collections they want to explore.
 You should not have to decide what to listen to every day. OMDA can make that small decision for you and let you encounter Albums you might never have opened on your own.
 At its heart, OMDA simply hopes to make listening a little easier—and to bring a little more surprise and happiness into everyday life.
-Recently, after rereading Italo Calvino's *Why Read the Classics?*, I was left with a feeling I cannot quite explain but am sure of: a work truly becomes yours not because you went looking for it, but because it happened to meet you, at that particular moment, as the person you are. That kind of chance encounter is what OMDA wants to create a little more of.
+After reading Italo Calvino's *Why Read the Classics?*, I was left with a feeling I cannot quite explain but am sure of: a work truly becomes yours not because you went looking for it, but because it happened to meet you, at that particular moment, as the person you are. That kind of chance encounter is what OMDA wants to create a little more of.
 I also want to keep the freedom to choose whose lists I use: they can come from friends I trust, from strangers, from communities I stumbled upon, or even from critics I do not fully agree with. Taste is shaped by culture, experience, and preference together, and no one's list has the standing to draw the line for me.
 
 ---

@@ -1128,5 +1128,186 @@ class SkillTestCase(unittest.TestCase):
             "Alpha")
 
 
+    # ============ Re-review 1: G6-R1-001 ==================================
+
+    def test_r1001_canonical_equivalent_duplicates_permutation_invariant(self):
+        """`A Ref | Alpha` and `a ref | Alpha.` normalize to one identity;
+        swapping their file/row order must produce identical history JSON
+        and byte-identical output (G6-R1-001)."""
+        order_a = [("A Ref", "Alpha", "2001", "rock", "9", "note one"),
+                   ("a ref", "Alpha.", "2001", "rock", "7", "note two")]
+        order_b = list(reversed(order_a))
+        outputs = []
+        records = []
+        for index, albums in enumerate((order_a, order_b)):
+            self.write_profile()
+            src = self.write_source("eq-%d.md" % index, "alice", albums)
+            if self.history.exists():
+                self.history.unlink()
+            code, _out, _err = self.run_pick([src])
+            self.assertEqual(code, dp.EXIT_OK)
+            records.append(json.loads(self.history.read_text(
+                encoding="utf-8"))["days"]["2026-09-18"])
+            outputs.append(self.output_text())
+        selected = records[0]["selected"]
+        # canonical display text (not file-order dependent)
+        self.assertEqual(selected["artist"], "A Ref")
+        self.assertEqual(selected["album"], "Alpha")
+        # full history record and output bytes identical across permutation
+        self.assertEqual(records[0], records[1])
+        self.assertEqual(outputs[0], outputs[1])
+
+    # ============ Re-review 1: G6-R1-002 ==================================
+
+    def _two_language_tables_source(self, first_header, second_header,
+                                    blank_between=True):
+        lines = [
+            "---",
+            "format_version: 1",
+            "source_id: alice",
+            "display_name: D",
+            "curator: C",
+            "provenance: P",
+            "sharing_note: S",
+            "---",
+            "",
+            first_header,
+            "|---|---|---|---|---|---|",
+            "| A Ref | Alpha | 2001 | rock |  |  |",
+        ]
+        if blank_between:
+            lines.append("")
+        lines.extend([
+            second_header,
+            "|---|---|---|---|---|---|",
+            "| B Ref | Beta | 2002 | jazz |  |  |",
+        ])
+        path = self.sources / "lang-tables.md"
+        path.write_text("\n".join(lines), encoding="utf-8")
+        first_index = lines.index(first_header)
+        second_line = lines.index(second_header, first_index + 1) + 1
+        return path, second_line
+
+    def test_r1002_english_then_chinese_header_fail_closed(self):
+        self.write_profile()
+        path, second_line = self._two_language_tables_source(
+            "| Artist | Album | Year | Genre | Rating | Note |",
+            "| Artist 艺人 | Album 专辑 | Year 年份 | Genre 流派 | "
+            "Rating 评分 | Note 备注 |")
+        code, _out, err = self.run_pick([path])
+        self.assertEqual(code, dp.EXIT_INPUT_ERROR)
+        self.assertIn("second live source album table starts at line %d"
+                      % second_line, err)
+
+    def test_r1002_chinese_then_english_header_fail_closed(self):
+        self.write_profile()
+        path, second_line = self._two_language_tables_source(
+            "| Artist 艺人 | Album 专辑 | Year 年份 | Genre 流派 | "
+            "Rating 评分 | Note 备注 |",
+            "| Artist | Album | Year | Genre | Rating | Note |")
+        code, _out, err = self.run_pick([path])
+        self.assertEqual(code, dp.EXIT_INPUT_ERROR)
+        self.assertIn("second live source album table starts at line %d"
+                      % second_line, err)
+
+    def test_r1002_blank_line_only_separation_fail_closed(self):
+        self.write_profile()
+        # same language, only a blank line between the two live tables
+        path, second_line = self._two_language_tables_source(
+            "| Artist | Album | Year | Genre | Rating | Note |",
+            "| Artist | Album | Year | Genre | Rating | Note |",
+            blank_between=True)
+        code, _out, err = self.run_pick([path])
+        self.assertEqual(code, dp.EXIT_INPUT_ERROR)
+        self.assertIn("second live source album table starts at line %d"
+                      % second_line, err)
+
+    # ============ Re-review 1: G6-R1-003 ==================================
+
+    def _commit_one_day(self):
+        """Produce a real committed record and return (src, record_dict)."""
+        self.write_profile()
+        src = self.write_source("a.md", "alice",
+                                [("A Ref", "Alpha", "2001", "rock", "", "")])
+        code, _out, _err = self.run_pick([src])
+        self.assertEqual(code, dp.EXIT_OK)
+        record = json.loads(self.history.read_text(
+            encoding="utf-8"))["days"]["2026-09-18"]
+        return src, record
+
+    def _run_with_mutated_history(self, mutate):
+        src, record = self._commit_one_day()
+        mutate(record)
+        # rewrite the history document with the mutation under the same
+        # schema; nothing else changes
+        # key the mutated record under its own day_key so structural
+        # day-key match checks pass and semantic date validation is what
+        # fires (for the impossible-date probe)
+        document = {"schema_version": 2, "algorithm_version": 1,
+                    "days": {record["day_key"]: record}}
+        self.history.write_text(json.dumps(document, ensure_ascii=False,
+                                           indent=2, sort_keys=True),
+                                encoding="utf-8")
+        self._history_mutated_bytes = self.history.read_bytes()
+        return self.run_pick([src])
+
+    def test_r1003_impossible_day_key_exit3(self):
+        def mutate(record):
+            record["day_key"] = "2026-99-99"
+            record["timezone_evidence"]["local_iso"] = "not-a-time"
+            record["timezone_evidence"]["utc_iso"] = "not-a-time"
+            record["selected_at"] = "not-a-time"
+        code, _out, err = self._run_with_mutated_history(mutate)
+        # history-corruption path (exit 3), never clock-rollback (exit 2)
+        self.assertEqual(code, dp.EXIT_HISTORY_CORRUPT)
+        self.assertIn("not a valid ISO calendar date", err)
+        self.assertEqual(len(list(self.history.parent.glob(
+            "history.corrupt-*.json"))), 1)
+        # the failing run must not rewrite the (corrupt) history file
+        self.assertEqual(self.history.read_bytes(),
+                         self._history_mutated_bytes)
+        # and the corrupt copy preserves exactly those mutated bytes
+        self.assertEqual(list(self.history.parent.glob(
+            "history.corrupt-*.json"))[0].read_bytes(),
+            self._history_mutated_bytes)
+
+    def test_r1003_invalid_timestamp_exit3(self):
+        def mutate(record):
+            record["selected_at"] = "not-a-time"
+        code, _out, err = self._run_with_mutated_history(mutate)
+        self.assertEqual(code, dp.EXIT_HISTORY_CORRUPT)
+        self.assertIn("selected_at", err)
+
+    def test_r1003_naive_timestamp_exit3(self):
+        def mutate(record):
+            record["timezone_evidence"]["local_iso"] = "2026-09-18T09:00:00"
+        code, _out, err = self._run_with_mutated_history(mutate)
+        self.assertEqual(code, dp.EXIT_HISTORY_CORRUPT)
+        self.assertIn("not timezone-aware", err)
+
+    def test_r1003_local_date_mismatch_exit3(self):
+        def mutate(record):
+            record["timezone_evidence"]["local_iso"] = (
+                "2026-09-19T09:00:00+08:00")
+        code, _out, err = self._run_with_mutated_history(mutate)
+        self.assertEqual(code, dp.EXIT_HISTORY_CORRUPT)
+        self.assertIn("does not match day key", err)
+
+    def test_r1003_offset_mismatch_exit3(self):
+        def mutate(record):
+            record["timezone_evidence"]["utc_offset"] = "+09:00"
+        code, _out, err = self._run_with_mutated_history(mutate)
+        self.assertEqual(code, dp.EXIT_HISTORY_CORRUPT)
+        self.assertIn("does not match local_iso", err)
+
+    def test_r1003_utc_iso_not_utc_exit3(self):
+        def mutate(record):
+            record["timezone_evidence"]["utc_iso"] = (
+                "2026-09-18T15:28:39+08:00")
+        code, _out, err = self._run_with_mutated_history(mutate)
+        self.assertEqual(code, dp.EXIT_HISTORY_CORRUPT)
+        self.assertIn("is not in UTC", err)
+
+
 if __name__ == "__main__":
     unittest.main()

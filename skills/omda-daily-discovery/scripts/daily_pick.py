@@ -299,7 +299,11 @@ def parse_album_table(text, path_name, required_fields, kind):
             continue
         if not any(cells):
             continue  # fully blank rows are ignored
-        if cells == header:
+        # G6-R1-002: before treating a row as data, check whether it is a
+        # header row in ANY supported language/alias form. A later semantic
+        # header is always a second live table, never an Album (a real data
+        # row cannot match the reserved header vocabulary).
+        if _header_matches(cells, required_fields):
             raise OmdaError(
                 "%s: a second live %s table starts at line %d; only one %s "
                 "table is allowed per file (fail-closed — no table is "
@@ -477,7 +481,12 @@ def merge_sources(sources):
     """
     occurrences = {}
     for source in sorted(sources, key=lambda item: item.source_id):
-        for record in source.records:
+        # G6-R1-001: iterate each source's records in the documented
+        # canonical content order (NOT file order), so the displayed
+        # Artist/Album of canonical-equivalent duplicates and the whole
+        # committed evidence are permutation invariant.
+        for record in sorted(source.records,
+                             key=lambda item: item["canonical_order"]):
             key = identity_key(record["artist"], record["album"])
             group = genre_group_key(record["genre"])
             occurrences.setdefault(key, []).append({
@@ -548,6 +557,62 @@ def _require(condition, message):
         raise ValueError(message)
 
 
+def _parse_iso_date(value, where):
+    """Strictly parse a real ISO calendar date (G6-R1-003): rejects
+    impossible months/days that a regex would accept."""
+    _require(isinstance(value, str), "%s date is not a string" % where)
+    try:
+        parsed = datetime.date.fromisoformat(value)
+    except ValueError:
+        raise ValueError("%s is not a valid ISO calendar date: %r"
+                         % (where, value))
+    _require(value == parsed.isoformat(),
+             "%s is not in canonical YYYY-MM-DD form: %r" % (where, value))
+    return parsed
+
+
+def _parse_aware_datetime(value, where):
+    """Parse an ISO datetime that MUST carry timezone information
+    (G6-R1-003); naive timestamps are corruption."""
+    _require(isinstance(value, str), "%s timestamp is not a string" % where)
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        raise ValueError("%s is not a parseable ISO datetime: %r"
+                         % (where, value))
+    _require(parsed.tzinfo is not None and parsed.utcoffset() is not None,
+             "%s is not timezone-aware: %r" % (where, value))
+    return parsed
+
+
+def _validate_history_semantics(record, day_key):
+    """Semantic date/time validation for one day record (G6-R1-003):
+    real calendar dates, aware timestamps, UTC evidence, and cross-field
+    date/offset consistency."""
+    day_date = _parse_iso_date(day_key, "day key")
+    _parse_iso_date(record["day_key"], "record day_key")
+    local_iso = record["timezone_evidence"]["local_iso"]
+    utc_iso = record["timezone_evidence"]["utc_iso"]
+    utc_offset = record["timezone_evidence"]["utc_offset"]
+    selected_at = record["selected_at"]
+    local_dt = _parse_aware_datetime(local_iso, "timezone_evidence.local_iso")
+    utc_dt = _parse_aware_datetime(utc_iso, "timezone_evidence.utc_iso")
+    _parse_aware_datetime(selected_at, "selected_at")
+    _require(utc_dt.utcoffset() == datetime.timedelta(0),
+             "timezone_evidence.utc_iso is not in UTC: %r" % utc_iso)
+    _require(local_dt.date() == day_date,
+             "timezone_evidence.local_iso date %s does not match day key %s"
+             % (local_dt.date().isoformat(), day_key))
+    actual_offset = local_dt.utcoffset()
+    total_minutes = int(actual_offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    minutes = abs(total_minutes)
+    expected_offset = "%s%02d:%02d" % (sign, minutes // 60, minutes % 60)
+    _require(utc_offset == expected_offset,
+             "timezone_evidence.utc_offset %r does not match local_iso "
+             "offset %r" % (utc_offset, expected_offset))
+
+
 def _validate_selected(selected, where):
     _require(isinstance(selected, dict), "%s selected is not an object" % where)
     nonempty_fields = ("identity_key", "artist", "album", "genre_group",
@@ -599,6 +664,8 @@ def _validate_history(data):
     for day_key, record in days.items():
         _require(bool(day_key_re.match(day_key)),
                  "invalid day key %r" % day_key)
+        # Full semantic date validation runs below per record
+        # (_validate_history_semantics), after the structural checks.
         _require(isinstance(record, dict),
                  "day %s record is not an object" % day_key)
         unknown = set(record) - set(_HISTORY_RECORD_KEYS)
@@ -656,6 +723,7 @@ def _validate_history(data):
             _require(bool(_HEX64_RE.match(digests[sid])),
                      "day %s content digest for %s is not 64-hex"
                      % (day_key, sid))
+        _validate_history_semantics(record, day_key)
         _validate_selected(record["selected"], "day %s" % day_key)
         selected = record["selected"]
         _require(selected["source_id"] in source_ids,

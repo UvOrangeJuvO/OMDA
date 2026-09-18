@@ -1,5 +1,5 @@
-OMDA G6 — TEST RESULTS (repair round; real captured output)
-Generated: 2026-09-19T01:52:22+0800
+OMDA G6 — TEST RESULTS (Re-review 1 repair round; real captured output)
+Generated: 2026-09-19T02:09:22+0800
 Working directory: skills/omda-daily-discovery/tests
 
 ================================================================
@@ -63,9 +63,20 @@ Skill installed under a skills directory; user data lives in a ... ok
 test_g6005_openai_yaml_interface_structure (test_daily_pick.SkillTestCase.test_g6005_openai_yaml_interface_structure) ... ok
 test_g6007_fenced_second_table_allowed (test_daily_pick.SkillTestCase.test_g6007_fenced_second_table_allowed) ... ok
 test_g6007_second_live_table_fails_with_line_number (test_daily_pick.SkillTestCase.test_g6007_second_live_table_fails_with_line_number) ... ok
+test_r1001_canonical_equivalent_duplicates_permutation_invariant (test_daily_pick.SkillTestCase.test_r1001_canonical_equivalent_duplicates_permutation_invariant)
+`A Ref | Alpha` and `a ref | Alpha.` normalize to one identity; ... ok
+test_r1002_blank_line_only_separation_fail_closed (test_daily_pick.SkillTestCase.test_r1002_blank_line_only_separation_fail_closed) ... ok
+test_r1002_chinese_then_english_header_fail_closed (test_daily_pick.SkillTestCase.test_r1002_chinese_then_english_header_fail_closed) ... ok
+test_r1002_english_then_chinese_header_fail_closed (test_daily_pick.SkillTestCase.test_r1002_english_then_chinese_header_fail_closed) ... ok
+test_r1003_impossible_day_key_exit3 (test_daily_pick.SkillTestCase.test_r1003_impossible_day_key_exit3) ... ok
+test_r1003_invalid_timestamp_exit3 (test_daily_pick.SkillTestCase.test_r1003_invalid_timestamp_exit3) ... ok
+test_r1003_local_date_mismatch_exit3 (test_daily_pick.SkillTestCase.test_r1003_local_date_mismatch_exit3) ... ok
+test_r1003_naive_timestamp_exit3 (test_daily_pick.SkillTestCase.test_r1003_naive_timestamp_exit3) ... ok
+test_r1003_offset_mismatch_exit3 (test_daily_pick.SkillTestCase.test_r1003_offset_mismatch_exit3) ... ok
+test_r1003_utc_iso_not_utc_exit3 (test_daily_pick.SkillTestCase.test_r1003_utc_iso_not_utc_exit3) ... ok
 
 ----------------------------------------------------------------------
-Ran 54 tests in 0.338s
+Ran 64 tests in 0.254s
 
 OK
 
@@ -131,44 +142,46 @@ Skill installed under a skills directory; user data lives in a ... ok
 test_g6005_openai_yaml_interface_structure (test_daily_pick.SkillTestCase) ... ok
 test_g6007_fenced_second_table_allowed (test_daily_pick.SkillTestCase) ... ok
 test_g6007_second_live_table_fails_with_line_number (test_daily_pick.SkillTestCase) ... ok
+test_r1001_canonical_equivalent_duplicates_permutation_invariant (test_daily_pick.SkillTestCase)
+`A Ref | Alpha` and `a ref | Alpha.` normalize to one identity; ... ok
+test_r1002_blank_line_only_separation_fail_closed (test_daily_pick.SkillTestCase) ... ok
+test_r1002_chinese_then_english_header_fail_closed (test_daily_pick.SkillTestCase) ... ok
+test_r1002_english_then_chinese_header_fail_closed (test_daily_pick.SkillTestCase) ... ok
+test_r1003_impossible_day_key_exit3 (test_daily_pick.SkillTestCase) ... ok
+test_r1003_invalid_timestamp_exit3 (test_daily_pick.SkillTestCase) ... ok
+test_r1003_local_date_mismatch_exit3 (test_daily_pick.SkillTestCase) ... ok
+test_r1003_naive_timestamp_exit3 (test_daily_pick.SkillTestCase) ... ok
+test_r1003_offset_mismatch_exit3 (test_daily_pick.SkillTestCase) ... ok
+test_r1003_utc_iso_not_utc_exit3 (test_daily_pick.SkillTestCase) ... ok
 
 ----------------------------------------------------------------------
-Ran 54 tests in 0.518s
+Ran 64 tests in 0.540s
 
 OK
 
 ================================================================
-[3/4] Additional captured evidence (repair round)
+[3/4] Additional captured evidence (Re-review 1 round)
 ================================================================
-[3.1] PyYAML (dev-only isolated venv, NOT an OMDA runtime dependency)
-      parsing/structure validation of agents/openai.yaml:
-- parses successfully; root keys == {"interface"}
-- interface keys == {default_prompt, display_name, short_description},
-  all quoted non-empty strings
-- default_prompt starts with "Use $omda-daily-discovery"
-- RESULT: PASS (Codex quick_validate.py not present locally; disclosed)
-
-[3.2] T6.9 isolated ZIP build/extract/validate (temp dir, deleted after):
+[3.1] T6.9 isolated ZIP build/extract/validate (temp dir, deleted after):
 - whitelist exact match: True (14 files; tests/ and __pycache__ excluded)
-- extracted LICENSE contains "Apache License"; VERSION == 0.1.0-beta.1
+- extracted README preface verified to use the corrected AC-30 wording
+  ("After reading Italo Calvino..."; no "Recently"/"rereading")
 - extracted-package functional run exit: 0
-- extracted imports: argparse, datetime, hashlib, json, os, pathlib, re,
-  sys, tempfile, unicodedata (allowlist respected; no network/process
-  modules)
-- T6.9 ISOLATED ZIP VALIDATION (repair round): PASS; temp dir removed.
+- T6.9 ISOLATED ZIP VALIDATION (Re-review 1 round): PASS; temp dir removed.
 
-[3.3] Negative-probe spot checks exercised by the new tests (all green on
-      both interpreters): G6-001 seed signature/protocol fixtures;
-      G6-002 three genre-note branches incl. two end-to-end runs;
-      G6-003 shaped-corrupt history -> exit 3 with corrupt copy, same-day
-      --lang lock (byte-identical), clock-rollback rejection;
-      G6-004 row-order-invariant content digest + full-record permutation
-      equality; G6-005 install simulation with separate skill root and
-      user workspace; G6-007 second live table fail-closed with exact line
-      number, fenced table still allowed.
+[3.2] Re-review 1 negative fixtures exercised by the new tests (all green
+      on both interpreters):
+- G6-R1-001: `A Ref|Alpha` / `a ref|Alpha.` permutation -> identical
+  display text, full history JSON, and output bytes
+- G6-R1-002: English->Chinese, Chinese->English, and blank-line-only
+  second live tables -> fail-closed with exact line numbers
+- G6-R1-003: impossible day key (reviewer probe `2026-99-99` +
+  `not-a-time`), invalid timestamp, naive timestamp, local-date/day-key
+  mismatch, utc_offset/local_iso mismatch, utc_iso-not-UTC -> all exit 3
+  with corrupt copy preserved byte-exactly and no history rewrite
 
-Summary: 54 tests, 54 passed, 0 failed, 0 skipped — on BOTH Python 3.13.12
-and Python 3.9.6 (was 39 tests before the repair round; +16 new, 3 updated
-to follow the corrected accepted protocol; none deleted/weakened/skipped).
+Summary: 64 tests, 64 passed, 0 failed, 0 skipped — on BOTH Python 3.13.12
+and Python 3.9.6 (was 54 before this round; +10 new; none deleted/weakened/
+skipped; G6-001/002/005 resolved tests unchanged and passing).
 Open: AC-12 (live Codex install, disclosed) and AC-30 (EXECUTOR_FILLED,
-pending Owner/Reviewer confirmation — see PREFACE_CHECKLIST.md).
+pending Owner final confirmation — see PREFACE_CHECKLIST.md).

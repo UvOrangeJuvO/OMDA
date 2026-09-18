@@ -30,7 +30,7 @@
 | 17 | 该节中文 5 句（含"知音"） | 该节英文 5 句（含 `zhiyin`） | 中英并列 | ✅ 原文照录 | ☐ |
 | 18 | 标题 `为什么我想做 OMDA` | `Why I Wanted to Build OMDA` | `## 为什么我想做 OMDA` + `### Why ...` | ✅ 原文照录 | ☐ |
 | 19 | Why 中文 7 句（含"知音"段后的全部原句） | Why 英文 7 句 | 中英并列 | ✅ 原文照录 | ☐ |
-| 20 | **后续补充·中文**：卡尔维诺《为什么读经典》→ 偶然相遇（整合进 Why 结尾，第一人称、克制） | **后续补充·英文**：`Recently, after rereading Italo Calvino's *Why Read the Classics?* ...`（逐句对应中文补充句） | Why 中文倒数第 2 句 / 英文倒数第 2 句 | ✅ Executor 按语义对应撰写（非 Owner 原句，需重点复核） | ☐ |
+| 20 | **后续补充·中文**：卡尔维诺《为什么读经典》→ 偶然相遇（整合进 Why 结尾，第一人称、克制） | **后续补充·英文**：`After reading Italo Calvino's *Why Read the Classics?* ...`（逐句对应中文补充句） | Why 中文倒数第 2 句 / 英文倒数第 2 句 | ✅ Executor 按语义对应撰写（非 Owner 原句，需重点复核） | ☐ |
 | 21 | **后续补充·中文**：来源自由（信任的朋友/陌生的人/偶然碰到的社群/不完全同意的乐评人）+ 审美由文化、经历、偏好共同塑造，没有谁的清单有资格划线 | **后续补充·英文**：`I also want to keep the freedom to choose whose lists I use ...` | Why 中文末句 / 英文末句 | ✅ Executor 按语义对应撰写（需重点复核） | ☐ |
 
 ## 约束确认（Executor 自查）
@@ -46,6 +46,9 @@
 ## 关闭条件
 
 1. Owner 逐句复核上表第 20–21 行的整合句（其余为原文照录）。
+   - Re-review 1 修正记录：已按 Reviewer 要求将 `最近读了`/`after rereading`
+     改为 `读过…之后`/`After reading…`（忠于 Owner 原话，不添加 "recently"
+     或 "rereading" 含义）；修正后仍处等待 Owner 最终确认状态。
 2. Reviewer 抽查中英对应。
 3. 两者完成后 AC-30 记为 PASS；在此之前保持 PENDING 状态，不得由
    Executor 单方宣称通过。
