@@ -221,3 +221,126 @@ and make the risk register reflect the real post-repair scan and inventory.
 
 `6a6d309f2818ce8b4113f068017e608716eca72b` is not accepted as
 `v0.1.0-rc1`. No release tag or post-G5 action is authorized.
+
+---
+
+# Final Re-review 2 — candidate `3aa76ea5bb35e219550cf65328549de47c98269b`
+
+## 9. Review identity and scope
+
+- Reviewer: GPT-5.6 Sol / Codex (independent Reviewer role)
+- Review date: 2026-09-18
+- G5 base (accepted G4 merge):
+  `d9944aa27bede364daf3ef93256016d5954792f6`
+- Rejected candidate under repair:
+  `6a6d309f2818ce8b4113f068017e608716eca72b`
+- Reviewer checkpoint:
+  `5138f458cc527c17388c35a9eed22867d68a2d9b`
+- Repair implementation:
+  `781d52b54693cf81258949c3e14b08195a978bdc`
+- Final evidence candidate:
+  `3aa76ea5bb35e219550cf65328549de47c98269b`
+- Candidate branch observed: `exec/g5-release-audit`
+
+The candidate chain is linear: the repair implementation directly follows the
+Reviewer checkpoint and the final candidate directly follows the repair. The
+last commit changes only `reviews/stage-05/OBSERVATION_LOG.md`; therefore the
+code tested at `781d52b` and the code in the final candidate are identical.
+The merge-base with the supplied G5 base is the exact accepted G4 merge.
+
+This re-review first verifies closure of G5-R1-001 through G5-R1-003, then
+performs the release-level regression checks required by Handbook Prompt 10.
+It does not authorize a push, publication, deployment, scheduler, external
+delivery, or final `v0.1.0` release.
+
+## 10. Blocking-finding closure
+
+| Finding | Final status | Independent evidence |
+|---|---|---|
+| G5-R1-001 — mandatory secret gate | **CLOSED** | The exact tracked candidate scan exits 0 with 0 failing hits and 9 informational placeholder references. Cookie-jar coverage now includes JSON/text/bare-browser/store/jar forms. The full suite includes helper, forced-index and real tracked-tree/CLI gate tests; no test-tree exemption was introduced. |
+| G5-R1-002 — dependency/license inventory | **CLOSED** | `LICENSES.md` and `DEPENDENCY_INVENTORY.txt` record every distribution resolved in the documented clean Python 3.12 audit environment with exact version, role, license/SPDX evidence and source. `pyproject_hooks` is included. `typing_extensions` is correctly removed from the OMDA inventory and explained as unrelated shared-environment residue. Platform-conditional requirements are listed separately. |
+| G5-R1-003 — stale/contradictory evidence | **CLOSED** | The Executor report is a single current-candidate report; counts, identities and risk closures agree. The observation log contains the actual eight JSON records with timestamps, candidate SHA, command/config/data version, live-call count, preview digests and official-history before/after evidence. R-002 and R-006 are reconciled against the repaired gates. |
+
+No new P0 or P1 finding was discovered. No accepted architecture or product
+semantic was changed by the repair.
+
+## 11. Independent verification
+
+All checks below were run against an isolated local clone checked out at exact
+candidate `3aa76ea5bb35e219550cf65328549de47c98269b`, using Python 3.12.14 where
+applicable:
+
+- Commit ancestry, parent chain, accepted G0–G4/ADR history and exact merge-base:
+  **PASS**.
+- Mandatory tracked repository secret scan: **exit 0; 0 failing hits; 9
+  informational placeholder references**.
+- Complete test suite: **777 passed, 0 failed, 0 skipped**.
+- Ruff over `src`, `tests`, `tools` and `browser_companion`: **All checks
+  passed**.
+- `git diff --check` over accepted G4 base through candidate: **PASS**.
+- Wheel and sdist build plus clean Python 3.12 wheel installation outside the
+  checkout: **PASS**; import, config/data resolution and public dry-run all
+  completed.
+- Backup/corruption/atomic-restore rehearsal: **PASS**; damaged copy preserved
+  and schema/history/identity/receipt/journal state verified after restore.
+- Controlled observation script: **8/8 PASS**; seven public dry-runs made zero
+  live calls and left official history absent, while the eighth run rejected a
+  previously committed canonical Album identity and selected nine unique new
+  Albums.
+- The complete suite continues to cover the Prompt 10 failure matrix, history
+  atomicity, cooldown/repeat boundaries and Browser Companion human-action /
+  no-bypass contracts.
+- Source worktree was clean before the verdict update. No live PushPlus, LLM,
+  RYM or MusicBrainz request was made during review.
+
+The first local validation attempt lacked permission to write the synthetic
+cookie fixture and Git index in the source checkout. That sandbox-only failure
+was not treated as product evidence. Repeating the exact suite in a writable
+isolated clone produced the authoritative 777/777 result above.
+
+## 12. Release acceptance matrix
+
+| G5 criterion | Status | Evidence |
+|---|---|---|
+| T5.1 clean installation and executable dry-run | **PASS** | wheel/sdist build and fresh wheel install outside checkout |
+| T5.2 E2E and seven-class failure matrix | **PASS** | complete 777-test suite and previously accepted G5 matrix evidence |
+| T5.3 secrets, code/dependency/data licensing | **PASS** | zero-hit mandatory scan; Apache-2.0 artifacts; generated dependency inventory and provenance table |
+| T5.4 backup/restore and contributor/operator documentation | **PASS** | strict rehearsal plus README/CONTRIBUTING contracts |
+| T5.5 at least seven history-neutral observations | **PASS** | seven public dry-runs plus targeted Album-exclusion observation |
+| Open P0/P1 findings | **NONE** | G5-R1-001 through G5-R1-003 closed |
+
+## 13. Known non-blocking limitations
+
+1. The curated v0.1 package is intentionally small (5 Genres × 4 Albums) and
+   eventually fails explicitly when exhausted.
+2. v0.1 uses deterministic narrative rather than an LLM, per accepted ADR-0002
+   D8.
+3. ODP-1 live MusicBrainz search remains unimplemented and disabled.
+4. PushPlus non-200 outcomes remain conservatively ambiguous per ADR-0001.
+5. Wheel runtime data uses the documented `<sys.prefix>/omda/data` data-files
+   layout.
+6. Build/dev tools use minimum-version ranges, so later clean environments may
+   resolve newer patch versions; the committed inventory remains the dated
+   evidence for the audited environment.
+
+## 14. Rollback and next-step boundary
+
+- The accepted content SHA is
+  `3aa76ea5bb35e219550cf65328549de47c98269b`; the later Reviewer verdict commit
+  is governance evidence, not a new release-content candidate.
+- If final packaging requires any content or release-metadata file change, that
+  new commit must return for final audit before a tag is created.
+- Prompt 11 may now prepare local release packaging and the proposed
+  `v0.1.0-rc1` tag. This verdict itself does not create the tag and does not
+  authorize pushing or publishing it.
+- For regression, preserve current evidence and use a history-preserving revert;
+  never rewrite accepted history or delete user SQLite data.
+
+## 15. Unique final verdict
+
+**RELEASE_CANDIDATE_ACCEPTED**
+
+OMDA candidate `3aa76ea5bb35e219550cf65328549de47c98269b` is accepted as the content for
+`v0.1.0-rc1`, subject to the Prompt 11 boundary above. No tag, push,
+publication, deployment, scheduler or live external delivery was performed by
+this review.
