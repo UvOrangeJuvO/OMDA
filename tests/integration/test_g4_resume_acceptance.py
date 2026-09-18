@@ -45,7 +45,7 @@ from omda.storage import SqliteHistory
 
 GENRES = DEFAULT_DATA_DIR / "genres" / "curated-omda"
 ALBUMS = DEFAULT_DATA_DIR / "albums" / "curated-omda"
-RYM_SAMPLE = DEFAULT_DATA_DIR / "genres" / "rym-sample"
+DEMO_GENRES = DEFAULT_DATA_DIR / "genres" / "demo-omda"
 REGISTRY = DEFAULT_DATA_DIR / "sources" / "registry.jsonl"
 
 
@@ -197,7 +197,7 @@ def test_ac1_outbound_facts_and_committed_mbids_belong_to_validated_batch(
 def test_ac2_unregistered_demo_genre_rejected_for_external_delivery(
     tmp_path, monkeypatch
 ) -> None:
-    # The illustrative rym-sample Genre package is demo AND not registered:
+    # The illustrative demo-omda Genre package is demo AND not registered:
     # assembly fails closed before selection — zero external calls, zero
     # official-history mutation.
     import os
@@ -223,7 +223,7 @@ def test_ac2_unregistered_demo_genre_rejected_for_external_delivery(
         engine = build_production_engine(
             config=load_config(_pushplus_config(tmp_path)),
             history=InMemoryHistory(),
-            genre_source=GenreDatasetAdapter(RYM_SAMPLE),
+            genre_source=GenreDatasetAdapter(DEMO_GENRES),
             album_source=AnyAlbumSource(),
             transport=transport,
             source_registry=_registry(),

@@ -1,0 +1,4 @@
+# G5-001: the sdist must carry the runtime data tree and the license text so a
+# wheel built from the sdist is self-contained outside the source checkout.
+include LICENSE
+recursive-include data *.json *.jsonl *.yaml *.md

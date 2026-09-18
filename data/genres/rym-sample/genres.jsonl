@@ -1,4 +1,0 @@
-{"genre_id": "ambient", "name": "Ambient", "url": "https://rateyourmusic.com/genre/Ambient/", "family": "Electronic", "parents": ["electronic"], "eligible": true, "source": "rym-sample"}
-{"genre_id": "bebop", "name": "Bebop", "url": "https://rateyourmusic.com/genre/Bebop/", "family": "Jazz", "parents": ["jazz"], "eligible": true, "source": "rym-sample"}
-{"genre_id": "krautrock", "name": "Krautrock", "url": "https://rateyourmusic.com/genre/Krautrock/", "family": "Rock", "parents": ["rock"], "eligible": true, "source": "rym-sample"}
-{"genre_id": "tuareg", "name": "Tuareg Music", "url": "https://rateyourmusic.com/genre/Tuareg+Music/", "family": "Regional", "parents": ["regional"], "eligible": true, "source": "rym-sample"}

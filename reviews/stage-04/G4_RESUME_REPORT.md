@@ -75,6 +75,8 @@ original base and close the following already-authorized work:
 
 ## State result
 
-**G3-007: CLOSED / ACCEPTED**  
-**G4: RESUMED / CHANGES_REQUESTED**  
+**G3-007: CLOSED / ACCEPTED**
+
+**G4: RESUMED / CHANGES_REQUESTED**
+
 **G5: NOT AUTHORIZED**

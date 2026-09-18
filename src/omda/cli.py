@@ -19,10 +19,27 @@ if TYPE_CHECKING:
 
 DEFAULT_OUTPUT_DIR = Path("var/output")
 DEFAULT_TOKEN_ENV = "PUSHPLUS_TOKEN"
-# Package-root anchored default runtime store (independent of the caller's CWD).
-DEFAULT_HISTORY_PATH = Path(
-    __import__("omda.production", fromlist=["DEFAULT_DATA_DIR"]).DEFAULT_DATA_DIR
-).parent / "var" / "omda.sqlite3"
+
+
+def _default_history_path() -> Path:
+    """Default runtime-store location (G5-001 install contract).
+
+    Anchored at the data directory's project root when running from the source
+    checkout (``<repo>/var/omda.sqlite3``); when running from an installed
+    wheel the packaged data tree lives under ``<sys.prefix>/omda/data``, which
+    is not a writable project location — the runtime store then falls back to
+    the caller's working directory (``<cwd>/var/omda.sqlite3``). Explicit
+    ``--history`` always wins.
+    """
+    from omda.production import DEFAULT_DATA_DIR
+
+    data_dir = DEFAULT_DATA_DIR
+    if (data_dir.parent / "pyproject.toml").exists():
+        return data_dir.parent / "var" / "omda.sqlite3"  # source checkout
+    return Path.cwd() / "var" / "omda.sqlite3"  # installed wheel/sdist
+
+
+DEFAULT_HISTORY_PATH = _default_history_path()
 
 
 class DeliveryMode(enum.Enum):
@@ -266,7 +283,7 @@ def _sample_genre_source(args) -> object:
     # Packaged data resolved independently of the caller's working directory.
     from omda.production import DEFAULT_DATA_DIR
 
-    return GenreDatasetAdapter(str(DEFAULT_DATA_DIR / "genres" / "rym-sample"))
+    return GenreDatasetAdapter(str(DEFAULT_DATA_DIR / "genres" / "demo-omda"))
 
 
 def _sample_album_source(genres):

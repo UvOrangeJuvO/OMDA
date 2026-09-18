@@ -428,7 +428,7 @@ class RunEngine:
                 if validated.is_demo:
                     # ADR-0002 D6/§8-2: a demo Genre or demo Album batch can
                     # never reach external delivery — the production gate
-                    # rejects it here (the illustrative rym-sample package is
+                    # rejects it here (the illustrative demo-omda package is
                     # demo and must be refused on --deliver).
                     self._append(
                         run_id,

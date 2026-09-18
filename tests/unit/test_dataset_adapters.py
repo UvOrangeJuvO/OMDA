@@ -18,7 +18,7 @@ from omda.ports.domain import AlbumCandidate
 from omda.ports.errors import InvalidInputError
 
 REPO = Path(__file__).resolve().parents[2]
-GENRE_PKG = REPO / "data" / "genres" / "rym-sample"
+GENRE_PKG = REPO / "data" / "genres" / "demo-omda"
 CRITIC_PKG = REPO / "data" / "critics" / "example-source"
 
 
@@ -38,7 +38,7 @@ def test_valid_genre_package_maps_to_domain_values() -> None:
 
 def test_valid_genre_package_exposes_provenance() -> None:
     prov = GenreDatasetAdapter(GENRE_PKG).provenance()
-    assert prov.source_id == "rym-sample"
+    assert prov.source_id == "demo-omda"
     assert prov.license
     assert prov.origin_url.startswith("https://")
     assert prov.retrieved_at
