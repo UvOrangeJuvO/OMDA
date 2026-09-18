@@ -1,7 +1,10 @@
-# G6 实施计划 — Skill Distribution Beta（Proposed v2）
+# G6 实施计划 — Skill Distribution Beta（Approved v2）
 
-> 状态：PROPOSED —— 待 GPT-5.6 Sol 复审；与 `docs/adr/0003-agent-skill-beta-and-personal-markdown-mode.md`
-> （ADR-0003 v2，Proposed）绑定，ADR 未接受前不得开始本计划任何实现任务。
+> 状态：APPROVED FOR IMPLEMENTATION —— 与
+> `docs/adr/0003-agent-skill-beta-and-personal-markdown-mode.md`（ADR-0003 v2，
+> Accepted）绑定，并必须遵守其 §10 Reviewer acceptance constraints。此状态
+> 不等于 G6 Gate 接受，也不授权 merge、tag、push、保留对外分发包或发布；
+> T6.9 的隔离临时归档构建/解压仅作为测试执行并立即清理。
 > 作者：WorkBuddy Executor（实际模型：GLM-5.3-Flash）
 > 日期：2026-09-18（v2：同日，响应 Reviewer REVISE ADR3-001~006 与 Owner
 > 多来源一等公民补充决定）
@@ -73,7 +76,9 @@ Web Beta、音乐平台账号、Spotify/Apple Music API、在线服务器、Agen
      `--history`、`--output-dir`、`--template-dir`、`--lang`；
      **无 `--date` 或任何日期覆盖参数**——时钟经可导入 clock seam 注入，
      仅测试可达（AC-27）；
-  2. **来源解析**：YAML 元数据头（`source_id`/`display_name`/`curator`/
+  2. **来源解析**：受限 OMDA flat frontmatter（每行一个标量 `key: value`；
+     拒绝嵌套/序列/tag/anchor/alias/重复或未知字段；不是通用 YAML；字段为
+     `source_id`/`display_name`/`curator`/
      `provenance`/`sharing_note`/可选 `rating_scale`/`format_version`，D22）；
      Album 表英/中/双语表头别名；全空行忽略、部分填充缺必填 fail-closed
      定位行号（AC-6/AC-7）；
@@ -84,9 +89,12 @@ Web Beta、音乐平台账号、Spotify/Apple Music API、在线服务器、Agen
      canonical 顺序并列展示（AC-21）；**selection-relevant 冲突（Genre）
      fail-closed**：报告身份键/来源/各自值，要求确认（AC-22）；合并池按
      规范化身份键稳定排序；
-  5. **确定性协议（D19-3）**：canonical parsed-record 表示（NFC、UTF-8、
-     固定字段、稳定键序/记录序、无绝对路径）→ per-source 与 merged-pool
-     SHA-256 digest；**版本化 uniform-index**（domain-separated SHA-256 +
+  5. **确定性协议（D19-3/§10 C1）**：source-content canonical
+     representation（完整审计内容）→ per-source content digest；selection
+     canonical projection（仅规范化 identity + 已解决 Genre，经资格/cooldown
+     过滤）→ admissible selection-pool digest，且只有后者进入 seed；两种表示
+     均为 NFC/UTF-8/稳定键序与记录序、无绝对路径；**版本化 uniform-index**
+     （domain-separated SHA-256 +
      无偏 rejection/unranking，含 `algorithm_version`）；排列不变性
      （AC-19/AC-26）；
   6. **Genre 等机会 → Genre 内等机会**（D8），仅作用于当前 admissible 分组；
@@ -94,8 +102,8 @@ Web Beta、音乐平台账号、Spotify/Apple Music API、在线服务器、Agen
   7. **提交点与同日语义（D11/D12）**：原子历史替换（temp + `os.replace`）
      = 官方 commit point；输出从已提交历史渲染/重渲染；同日重复调用与
      更换 `--source` → 返回已提交结果 + 原来源集合说明，零重抽（AC-3/AC-5）；
-  8. **历史记录**：source_id 集合、per-source canonical digest、
-     merged-pool digest、`algorithm_version`/schema version、day key +
+  8. **历史记录**：source_id 集合、per-source content digest（仅审计）、
+     admissible selection-pool digest（seed 证据）、`algorithm_version`/schema version、day key +
      timezone/offset 证据、提交时间戳（渲染复用，无易变时间戳）（AC-25）；
   9. **损坏 fail-closed**：保留副本、拒绝运行、零自动重建（AC-7）；
   10. **耗尽**：显式信息 + 非零退出 + 不回退（AC-15）；
@@ -253,14 +261,13 @@ Web Beta、音乐平台账号、Spotify/Apple Music API、在线服务器、Agen
 
 ```markdown
 ---
-omda_source:
-  format_version: 1
-  source_id: alice            # 唯一短标识（小写字母/数字/连字符），复制后必须修改
-  display_name: Alice 的私藏清单
-  curator: Alice
-  provenance: 朋友手写推荐（2026-06）
-  sharing_note: 仅限私人分享，请勿公开转载
-  rating_scale: 10-point      # 可选；本清单无评分时可整行删去
+format_version: 1
+source_id: alice
+display_name: Alice 的私藏清单
+curator: Alice
+provenance: 朋友手写推荐（2026-06）
+sharing_note: 仅限私人分享，请勿公开转载
+rating_scale: 10-point
 ---
 
 # Alice 的私藏清单
@@ -289,14 +296,13 @@ omda_source:
 
 ```markdown
 ---
-omda_source:
-  format_version: 1
-  source_id: alice            # unique short slug; CHANGE IT in every copy
-  display_name: Alice's picks
-  curator: Alice
-  provenance: handwritten friend recommendations (2026-06)
-  sharing_note: private sharing only; do not republish
-  rating_scale: 10-point      # optional; remove this line if unrated
+format_version: 1
+source_id: alice
+display_name: Alice's picks
+curator: Alice
+provenance: handwritten friend recommendations (2026-06)
+sharing_note: private sharing only; do not republish
+rating_scale: 10-point
 ---
 
 # Alice's picks
@@ -334,7 +340,7 @@ omda_source:
    人的内容合并进一份清单。
 2. 只使用我提供的资料里真实出现的信息；不知道的字段一律留空，不得编造、
    不得推测（除非我明确要求并提供了来源）。
-3. 先按模板填写 YAML 元数据头：source_id（我指定的唯一短标识）、
+3. 先按模板填写受限 OMDA flat frontmatter：source_id（我指定的唯一短标识）、
    display_name、curator、provenance、sharing_note 由我口述提供；
    rating_scale 只有该来源确有评分时才填。
 4. Album 表：完整复制模板表头行，一行一张专辑。Artist 和 Album 必填；
@@ -485,18 +491,18 @@ lists you chose, one album a day — and the rest left to the encounter.
 | V-11/AC-11 | ZIP 内容 | 白名单 + 解压产物自动验证；排除项逐一断言不存在 | §zip |
 | V-12/AC-12 | Codex 安装说明 | 按 SKILL.md/openai.yaml 在 Codex 可发现并执行（实测或显式披露） | §codex |
 | V-13/AC-13 | 非 native 兼容 | D17 手动路径（多来源）逐条可执行 | §compat |
-| V-14/AC-14 | 评分/自由文本不影响选择 | 修改 rating/note/profile 自由文本 → 选择不变；状态表变更只改资格 | §no-rating-effect |
+| V-14/AC-14 | 展示/审计字段不影响选择 | 修改 rating/note/year/display 元数据/profile 自由文本 → content digest 可变，但 selection-pool digest 与选择不变；状态表变更只改资格 | §no-rating-effect |
 | V-15/AC-15 | 耗尽行为 | 全排除 → 显式信息 + 非零退出 + 零回退 | §exhausted |
 | V-16/AC-16 | 崩溃矩阵（扩展） | 历史提交前/后、输出替换前/后四类崩溃点：不产生两张当日推荐；历史失败不报成功 | §crash |
 | V-17/AC-17 | 单来源 | 单一 `--source` 全流程可用 | §single-source |
 | V-18/AC-18 | 多来源 | 多 `--source` 合并池可用；输出按来源标注归属 | §multi-source |
 | V-19/AC-19 | 来源顺序确定性 | `--source` 顺序与文件行序排列 → digest 与选择不变 | §permutation |
-| V-20/AC-20 | 重复 Album 不增概率 | 同 Album 多来源出现 → 候选去重为一；概率与单来源相同 | §dedup-prob |
+| V-20/AC-20 | 重复 Album 不增概率 | 同 Album 多来源出现 → 候选去重为一；添加只含重复条目的来源不改变 selection-pool digest 与选择 | §dedup-prob |
 | V-21/AC-21 | 来源意见分别保留 | 同 Album 多来源 rating/note/attribution 并列展示、无平均/覆盖 | §opinions |
 | V-22/AC-22 | Genre 冲突 fail-closed | 同身份键不同 Genre → 失败、报告冲突详情、零选择零历史变更 | §genre-conflict |
 | V-23/AC-23 | 来源只读与多用户共享 | 同组来源 + 两个不同 profile/历史 → 来源文件字节不变；共享无需修改 | §sources-readonly |
 | V-24/AC-24 | 无评分来源完全有效 | 全来源无评分 → 与有评分流程等价 | §no-rating-valid |
-| V-25/AC-25 | 历史来源证据 | 记录含 source_id 集合/per-source digest/pool digest/版本/timezone | §history-evidence |
+| V-25/AC-25 | 历史来源证据 | 记录含 source_id 集合/per-source content digest/selection-pool digest/版本/timezone；content digest 不进 seed | §history-evidence |
 | V-26/AC-26 | 跨版本/平台复现 | digest 与选择向量 fixtures 跨受支持 Python 版本/平台一致；排列遵循文档规则 | §cross-version |
 | V-27/AC-27 | 无任意日期覆盖 | 公共 CLI 无日期参数；clock seam 仅测试可达 | §no-date-override |
 | V-28/AC-28 | 许可完整 | ZIP 含完整 Apache-2.0 LICENSE + LICENSES.md；Skill 版本独立 | §license |
@@ -521,8 +527,8 @@ lists you chose, one album a day — and the rest left to the encounter.
 
 - G6 全部产物位于 `skills/omda-daily-discovery/`、本计划、
   `reviews/stage-06/`，`git revert` 可整体回退，不触碰正式核心。
-- ADR-0003 未接受前不得开始 T6.1–T6.10 的实现；复审返回 REVISE 时仅修订
-  文档再送审；分发动作需 Owner 在 G6 接受后明确授权。
+- ADR-0003 已接受，允许开始 T6.1–T6.10；实现必须遵守 ADR §10，完成后只写
+  READY_FOR_REVIEW 并停止；分发动作需 Owner 在 G6 接受后明确授权。
 
 ## G. 风险登记（G6，v2 更新）
 

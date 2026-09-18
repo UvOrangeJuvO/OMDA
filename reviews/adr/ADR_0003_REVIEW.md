@@ -249,3 +249,55 @@ one-Album daily experience. Revise the personal/source data boundary, determinis
 date/commit semantics, installable Skill package, first-use templates and bilingual front
 matter. Return one new documentation-only candidate whose direct parent is this Reviewer commit;
 do not begin G6 implementation before ADR-0003 is accepted.
+
+---
+
+# Re-review 1 — ADR-0003 v2
+
+- Original base: `c15fbbe63fb7409483bf092fe7df926868ef5dda`
+- Revised candidate: `8d7427c7ee6f54f7331f193533a5304afb5b8216`
+- Direct parent: `8aecaf7c77dc233406d4284a241249fccd19a4d8` (the REVISE commit above)
+- Scope: documentation/governance only; worktree clean at review start;
+  `git diff --check` passed.
+
+## Closure of prior findings
+
+| Finding | Re-review result |
+|---|---|
+| ADR3-001 | Closed. Shareable Source files, private Profile state and runtime history are physically and semantically separated; Sources are read-only. |
+| ADR3-002 | Closed with binding constraint C1. Multi-source deduplication, Genre-conflict fail-closed behavior, versioned uniform-index sampling and stable representations are defined. Audit content and selection projections must remain separate. |
+| ADR3-003 | Closed. The public date override is removed; atomic history replacement is the commit point; same-day source/result locking and crash semantics are testable. |
+| ADR3-004 | Closed. The installable Skill layout, independent version, complete license, archive root and extracted-package validation are defined. |
+| ADR3-005 | Closed. Active tables ship empty; examples remain outside them; blank versus partially populated rows have distinct validation behavior. |
+| ADR3-006 | Architecturally closed with binding constraint C3. The complete bilingual structure and sentence-level Owner review are explicit acceptance requirements; the current prose remains a draft. |
+
+## Multi-source Owner decision
+
+Accepted. One curator or community may maintain one Source Markdown; a user may select one or
+more Sources without creating a global collection. The runtime merges them in memory, deduplicates
+Albums without probability gain, preserves per-source opinions, and never writes personal state
+back to a Source. Future Web/desktop interfaces must reuse this protocol.
+
+## Binding acceptance constraints
+
+1. Per-source content digests are audit evidence only. The selection seed may depend only on the
+   admissible selection-pool digest (normalized identity plus resolved Genre after eligibility and
+   cooldown). Display/audit-only changes must not change that digest or the pick.
+2. Source metadata uses the restricted OMDA flat-frontmatter grammar, not general YAML. The
+   standard-library parser rejects nesting, sequences, tags, anchors, aliases, duplicate keys and
+   unknown keys.
+3. Plan C.7/C.8 is a structural draft, not approved final copy. AC-30 must compare the complete
+   three-part introduction and first-person voice against the Owner's text, with sentence-level
+   Chinese/English intent correspondence.
+4. This decision authorizes G6 implementation only. T6.9 may build, extract, validate and then
+   discard an archive in an isolated temporary directory as a test; no distributable artifact may
+   be retained. It does not accept the G6 Gate or authorize merge, tag, push, packaging for
+   distribution, publication or release.
+
+## Decision
+
+**ACCEPT**
+
+ADR-0003 v2 is accepted subject to the constraints above. `PROJECT_STATE` may move to
+`G6 / READY / ADR_ACCEPTED`. The WorkBuddy Executor may implement the approved G6 plan and must
+stop at `READY_FOR_REVIEW`; only the independent Reviewer may accept G6.

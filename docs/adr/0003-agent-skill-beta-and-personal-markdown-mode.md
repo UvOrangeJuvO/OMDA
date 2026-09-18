@@ -1,8 +1,8 @@
 # ADR-0003 — Agent Skill Beta 与个人 Markdown 模式（修订版 v2：多来源一等公民模型）
 
-- Status: **Proposed**（v1 经 GPT-5.6 Sol 评审（commit `8aecaf7`）结论 **REVISE**，
-  finding ADR3-001 ~ ADR3-006；本修订逐条解决，并纳入 Owner 多来源补充架构
-  决定。仍待 Sol 复审；Executor 不得自行改写为 Accepted）
+- Status: **Accepted**（GPT-5.6 Sol 独立复审接受修订版 v2；实现必须遵守
+  §10 Reviewer acceptance constraints。ADR 接受只授权进入 G6 实现，不等于
+  G6 Gate 接受、合并、打包、push 或发布）
 - Date: 2026-09-18（v1：2026-09-18；v2 同日）
 - Gate: G6（Skill Distribution Beta）前置架构检查点
 - v1 触发来源：Owner 产品决策（2026-09-18）——OMDA 暂不开发 Web Beta；第一轮
@@ -19,7 +19,7 @@
 |---|---|
 | Owner 多来源决定 | Collection 重命名为 **OMDA Source Markdown**（每位贡献者一份，`sources/`）；个人状态归 `profile/MY_PROFILE.md`；`--source` 可重复参数；来源元数据头（D22）；内存融合、来源只读（D21）；同 Album 跨来源去重不增概率、意见分别保留、Genre 冲突 fail-closed（D23）；同日锁定来源集合与结果（D24）；未来多来源评分组合能力预留且永不影响 Genre 基础机会（D25）；历史记录来源集合/digest/版本（D12 v2）；未来 Web/桌面复用同一多文件协议（D21）；分发包提供一个可复制的 Source 模板（D18 v2）；新增 9 项测试（§8 AC-17~AC-25） |
 | ADR3-001 可分享数据与个人状态混放 | **两层文件模型**：来源文件不再承载 Heard/Skip 等接收者个人状态，只含可分享的候选事实与来源注记；个人 heard/skip 移入 `profile/MY_PROFILE.md` 的**结构化 Album-status 表**（键 = 同一规范化契约的 Artist+Album），脚本只为资格读取该表；自由文本偏好仅解释；档案中"不想被推荐"等自由字段旁明确标注"只有结构化状态表会真正排除条目"；合并/冲突规则与测试改为"同一来源可被多个不同 Profile 用户共享且零写入"（AC-17/AC-23） |
-| ADR3-002 跨机确定性协议不完整 | 定义**canonical parsed-record 表示**（NFC、UTF-8、固定字段集、稳定键序、按规范化身份键稳定记录序、不含绝对路径/CLI 顺序），digest 只从该表示计算（D12 v2）；**selection-relevant 冲突 fail-closed**（尤其 Genre，D23）；每条历史记录携带 `algorithm_version` + schema version + 各 digest；抽样协议改为**版本化 uniform-index**：domain-separated SHA-256 字节流 + 无偏 rejection/unranking，不把 `random.Random` 调用序列当作可移植协议（D19 v2）；新增排列不变性测试（AC-19、AC-26） |
+| ADR3-002 跨机确定性协议不完整 | 定义相互隔离的 **source-content canonical representation** 与 **selection canonical projection**（D19-3/§10 C1）；**selection-relevant 冲突 fail-closed**（尤其 Genre，D23）；历史携带版本与两类 digest；抽样采用版本化 uniform-index：domain-separated SHA-256 字节流 + 无偏 rejection/unranking，不依赖 `random.Random`；新增排列不变性测试（AC-19、AC-26） |
 | ADR3-003 公开日期覆盖与双文件提交语义 | **提交路径移除 `--date`**：时钟经可导入的 clock seam 注入（仅测试）；day key 记录 timezone/offset 证据；**原子历史替换 = 官方 commit point**，输出从已提交历史渲染/重渲染；输出失败可恢复且无需新选择，历史失败绝不报成功；当日 payload 不含易变时间戳（复用提交时记录值）；崩溃测试覆盖历史提交前后与输出替换前后（D11 v2/D12 v2、AC-5/AC-15/AC-16/AC-27） |
 | ADR3-004 Skill 目录/ZIP/许可不完整 | 仓库源路径 **`skills/omda-daily-discovery/`**、ZIP 根 `omda-daily-discovery/`；SKILL frontmatter name = `omda-daily-discovery` + 有区分度描述；新增 `agents/openai.yaml`（Codex 元数据，手动 CLI 兜底保持 vendor-neutral）；ZIP 含**完整 Apache-2.0 LICENSE** + LICENSES.md；Skill 版本独立于 OMDA 核心发布目标；打包前验证源结构、打包后**验证解压产物**（manifest 由验证产生，非手写）；测试/评审证据在分发包白名单之外（D16–D18 v2、AC-11/AC-28） |
 | ADR3-005 模板含占位数据/首次即失败 | 示例行移到表格**外的 fenced 示例块**；真实表格为空；**全空行忽略、部分填充缺 Artist/Album fail-closed**；新增测试：纯净模板零候选、占位文本永不成为推荐；来源表格外加 curator/source/sharing-permission 字段（provenance 与私下分享语境，非自动公开许可）（计划 §C.3/C.4、AC-7/AC-29） |
@@ -172,7 +172,7 @@
 
 **来源文件（OMDA Source Markdown）** 由两部分组成：
 
-1. **元数据头**（YAML frontmatter，机器可读，见 D22）；
+1. **元数据头**（受限 OMDA flat frontmatter，机器可读，见 D22）；
 2. **Album 表**（Markdown 表格），表头支持英/中/双语别名
    （`Artist 艺人`、`Album 专辑`、`Year 年份`、`Genre 流派`、`Rating 评分`、
    `Note 备注`）。别名映射表由 G6 实现写入脚本并测试锁定。
@@ -270,9 +270,12 @@
   能前进到"今天"。
 - **当日 payload 不含易变时间戳**：渲染使用提交时记录的固定时间戳，
   保证 AC-5 的字节级一致可测。
-- **确定性跨机可复现**：选择材料派生自
-  `SHA-256(domain-separated: day_key, algorithm_version, 各来源 canonical
-  digest, 永久排除集规模)`；相同输入 + 相同历史进度必然相同选择。
+- **确定性跨机可复现**：选择材料只派生自
+  `SHA-256(domain-separated: day_key, algorithm_version,
+  admissible_selection_pool_digest)`。选择投影仅包含经 profile 状态、永久
+  历史与 cooldown 过滤后的规范化 Album identity 与已解决 Genre 分组键。
+  Rating、Note、Year、display name、provenance、sharing note、profile 自由
+  文本与完整来源内容 digest 均不得进入 seed；它们变化时不得改变选择。
 
 ### D12 — 历史文件：位置、格式、原子写入、损坏处理（v2：来源证据）
 
@@ -283,8 +286,10 @@
   - day key + timezone/offset 证据；
   - 选中条目完整事实（artist、album、year、genre 分组键、**来源出处**）；
   - **被选择的 `source_id` 集合**；
-  - **每个所选来源的 canonical digest**；
-  - **合并候选池 digest**（对 canonical parsed-record 表示计算，D23-5）；
+  - **每个所选来源的 content digest**（覆盖来源元数据、候选事实与展示注记，
+    只作审计证据，不进入选择 seed）；
+  - **admissible selection-pool digest**（只对规范化 identity + 已解决 Genre
+    的选择投影计算，作为选择 seed 证据，D19-3/D23-5）；
   - **`algorithm_version` 与 schema version**；
   - 提交时间戳（UTC ISO 8601，带 offset；渲染复用此值）。
 - **原子写入**：临时文件 + `os.replace()`；**这是官方 commit point**（D11）。
@@ -408,17 +413,20 @@ omda-daily-discovery/                # ZIP 根 = 仓库 skills/omda-daily-discov
    `urllib`、`http`、`subprocess`、`webbrowser` 等网络/进程/浏览器逃逸
    模块**；静态审计 + 断网运行双重锁定。
 3. **确定性协议（ADR3-002）**：
-   - **canonical parsed-record 表示**：每条候选记录固定字段集
-     （identity、year、genre 分组键、source_id、display 注记），Unicode
-     NFC、UTF-8 编码、稳定字段键序、记录按规范化身份键稳定排序；**绝对
-     路径与 CLI 参数顺序绝不进入表示**。
-   - **canonical digest**：对该表示的规范化字节序列计算 SHA-256；
-     per-source digest 与 merged-pool digest 均由此得出。
+   - **source-content canonical representation**：覆盖来源元数据、候选事实、
+     rating/note/attribution 等完整可审计内容；Unicode NFC、UTF-8、稳定字段
+     键序与记录序。由此计算 per-source content digest，**仅作审计证据**。
+   - **selection canonical projection**：完成多来源去重与 Genre 冲突解决后，
+     每条记录只保留规范化 identity 与 Genre 分组键；再应用 profile 状态、
+     永久历史与 cooldown 得到 admissible selection pool。只对该投影计算
+     selection-pool digest，且**只有它可进入选择 seed**。Year、rating、note、
+     来源展示元数据、profile 自由文本及 content digest 一律隔离在选择之外。
+   - 两种表示均不得包含绝对路径或 CLI 参数顺序；稳定排序消除文件内行序与
+     `--source` 顺序的影响。
    - **uniform-index 抽样**：版本化协议——从 domain-separated SHA-256
      字节流派生无偏均匀索引（unbiased rejection sampling / unranking），
-     材料含 `algorithm_version`；**不依赖 `random.Random` 的跨版本调用
-     序列作为可移植协议**（实现可内部用 `random.Random` 消费派生材料，
-     但可移植承诺只针对派生材料与索引算法的版本化定义）。
+     材料含 `algorithm_version`；**不得以 `random.Random` 的实现或调用序列
+     作为可移植协议**。
    - **排列不变性**：来源文件内行序、`--source` 参数顺序**不影响选择**
      （canonical 记录序消除顺序依赖）；展示性注记的展示顺序按明确文档化
      的 canonical 顺序（source_id 字典序 + 文件内出现序）排列。
@@ -459,8 +467,10 @@ omda-daily-discovery/                # ZIP 根 = 仓库 skills/omda-daily-discov
 
 ### D22 — 来源文件元数据（v2 新增）
 
-每个 OMDA Source Markdown 必须携带机器可读元数据头（YAML frontmatter，
-G6 定稿字段名与校验规则）：
+每个 OMDA Source Markdown 必须携带机器可读的 **OMDA flat frontmatter**：
+位于首尾 `---` 之间，每行只能是一个标量 `key: value`。它不是通用 YAML；
+禁止嵌套、序列、tag、anchor、alias、重复字段与未知字段，并由标准库受限解析器
+读取，不引入第三方 YAML 依赖。
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
@@ -474,8 +484,9 @@ G6 定稿字段名与校验规则）：
 
 - 缺失必填元数据 / `format_version` 未知 / 同次运行 `source_id` 冲突 →
   fail-closed，定位到文件。
-- 元数据头与 Album 表都进入 canonical parsed-record 表示（D19-3）；
-  `source_id` 是展示归属与 per-source digest 的键。
+- 元数据头与 Album 表进入 source-content canonical representation（D19-3）；
+  `source_id` 是展示归属与 per-source content digest 的键。只有 identity 与
+  已解决 Genre 的 selection projection 可进入选择 digest。
 
 ### D23 — 多来源融合、去重与冲突（v2 新增，Owner 决定 7）
 
@@ -494,9 +505,13 @@ G6 定稿字段名与校验规则）：
 4. **同键不同原文的规范化歧义**：规范化身份键相同但原文不同的记录（如
    大小写/标点差异）不静默合并展示文本；以首个 canonical 顺序来源的原文为
    展示文本，其余作为注记保留。
-5. **canonical 记录序**：合并候选池按规范化身份键排序；merged-pool digest
-   对该有序表示计算——参数顺序、文件内行序不影响 digest 与选择（AC-19/
-   AC-26）。
+5. **双表示与稳定记录序**：
+   - source-content 表示保存完整元数据、候选事实、rating/note/attribution，
+     生成只作审计的 per-source content digest；
+   - selection projection 只保存规范化 identity 与已解决 Genre；应用个人
+     状态、历史和 cooldown 后形成 admissible pool，只有其 digest 进入 seed；
+   - 两者均按稳定键排序。参数顺序、文件内行序，以及只改展示字段的变更，
+     不得影响 selection-pool digest 与选择（AC-14/AC-19/AC-26）。
 6. **当前 Beta：多来源评分与备注只用于展示**，不参与 Genre 机会或 Album
    抽样（与 D9 一致，显式重申）。
 
@@ -509,7 +524,7 @@ G6 定稿字段名与校验规则）：
 ### D25 — 未来多来源评分组合能力预留（v2 新增，Owner 决定 9）
 
 1. **格式预留**：来源文件已按来源携带 `rating` + `rating_scale` +
-   attribution；历史记录已按来源保存 per-source digest 与注记——未来任何
+   attribution；历史记录已按来源保存 per-source content digest 与注记——未来任何
    组合算法可以追溯证据。
 2. **边界固化（即使未来引入权重）**：多来源评分组合**只能影响 Genre 内
    Album 的排列/排序**，**永远不得影响 Genre 的基础选择机会**（不得改变
@@ -539,8 +554,8 @@ Reviewer 已原则接受该方向（ADR_0003_REVIEW.md §Accepted direction-9）
 - **正式核心**：零改动。`src/`、`tests/`、`data/`、`var/` 均不触碰。
 - **新增物（G6 实现阶段，待本 ADR 接受后）**：`skills/omda-daily-discovery/`
   目录（D18）、G6 计划模板定稿、G6 测试矩阵。Skill 源文件不放 `src/omda/`。
-- **治理**：PROJECT_STATE 维持 G6 / BLOCKED_ARCHITECTURE / ADR_PENDING；
-  G6 计划随本 ADR 一并复审。
+- **治理**：PROJECT_STATE 转为 G6 / READY / ADR_ACCEPTED；G6 计划获准执行，
+  但 Gate 尚未接受。
 - **风险与缓解**：
 
 | 风险 | 缓解 |
@@ -585,18 +600,18 @@ Reviewer 已原则接受该方向（ADR_0003_REVIEW.md §Accepted direction-9）
 | AC-11 | ZIP 内容 | 白名单 + **解压产物自动验证**；排除项（tests/证据/用户数据/var//.git/src/omda）逐一断言不存在 |
 | AC-12 | Codex 安装说明 | 按 SKILL.md/openai.yaml 在 Codex 中可发现并执行（Owner/朋友实测，不可实测时显式披露） |
 | AC-13 | 非 native 兼容 | D17 手动路径（多来源）逐条可执行 |
-| AC-14 | 选择不受评分/自由文本影响 | 修改 rating/note/profile 自由文本 → 同输入同历史选择不变；**结构化状态表变更只改资格**（ADR3-001/接受方向补充 2） |
+| AC-14 | 展示/审计字段不影响选择 | 修改 rating/note/year/display 元数据/profile 自由文本 → content digest 可变，但 selection-pool digest 与选择不变；**结构化状态表变更只改资格** |
 | AC-15 | 耗尽行为 | 全排除 → 显式信息 + 非零退出 + 零回退 |
 | AC-16 | 原子写入与崩溃（扩展） | 历史提交前/后、输出替换前/后四类崩溃点：状态保持已选择结果、**永不产生两张当日推荐**；历史失败不报成功 |
 | AC-17 | 单来源 | 单一 `--source` 全流程可用 |
 | AC-18 | 多来源 | 多 `--source` 合并池推荐可用；输出按来源标注归属 |
 | AC-19 | 来源顺序确定性 | 任意 `--source` 顺序与文件内行序排列 → digest 与选择不变（permutation fixtures） |
-| AC-20 | 重复 Album 不增概率 | 同一 Album 出现在多个来源 → 候选数去重为一；多来源重复条目的被选概率与单来源相同（统计/结构断言） |
+| AC-20 | 重复 Album 不增概率 | 同一 Album 出现在多个来源 → 候选数去重为一；添加只含重复条目的来源不得改变 selection-pool digest 与选择 |
 | AC-21 | 来源意见分别保留 | 同一 Album 多来源 rating/note/attribution 并列展示、无平均/覆盖 |
 | AC-22 | Genre 冲突 fail-closed | 同一身份键不同来源 Genre 不一致 → 运行失败、报告冲突详情、要求确认；零选择、零历史变更 |
 | AC-23 | 来源只读与多用户共享 | 同一组来源 + 两个不同 profile/历史 → 两次运行后**来源文件字节不变**；同一来源可被多用户共享无需修改 |
 | AC-24 | 无评分来源完全有效 | 全部来源无 rating_scale/rating → 推荐流程与有评分来源等价 |
-| AC-25 | 历史来源证据 | 每条成功记录含 source_id 集合、per-source canonical digest、merged-pool digest、algorithm/schema version、timezone 证据 |
+| AC-25 | 历史来源证据 | 每条成功记录含 source_id 集合、per-source content digest、admissible selection-pool digest、algorithm/schema version、timezone 证据；content digest 不进入 seed |
 | AC-26 | 跨版本/跨平台复现 | canonical digest 与 uniform-index 选择向量 fixtures 在受支持 Python 版本/平台产出相同结果 |
 | AC-27 | 无任意日期覆盖 | 公共 CLI 无任何可用日期参数；clock seam 仅测试可达 |
 | AC-28 | 许可完整 | ZIP 含完整 Apache-2.0 LICENSE 文本 + LICENSES.md；Skill 版本独立于核心版本 |
@@ -617,7 +632,25 @@ Reviewer 已原则接受该方向（ADR_0003_REVIEW.md §Accepted direction-9）
 6. **计划 §C.7/C.8**：恢复后的完整前言结构与 Owner 原稿逐句对照——
    Executor 无 Owner 原稿全文，定稿需 Owner 逐句校订（AC-30）。
 
-## 10. 引用
+## 10. Reviewer acceptance constraints
+
+本 ADR 的 Accepted 状态受以下约束；G6 实现与验收必须逐项满足：
+
+1. **C1 — digest 职责分离**：per-source content digest 只作审计；选择 seed
+   只能使用 admissible selection-pool digest。任何仅展示/审计字段的变化都
+   不得改变 selection digest 或推荐结果。
+2. **C2 — 受限 frontmatter**：D22 的 flat frontmatter 是 OMDA 自有受限格式，
+   不是通用 YAML。标准库解析器必须拒绝嵌套、序列、tag、anchor、alias、
+   重复字段与未知字段。
+3. **C3 — Owner 文案仍须定稿**：计划 C.7/C.8 只是结构草稿，不代表 Reviewer
+   接受其具体措辞。AC-30 必须用 Owner 原稿核对完整三段结构、第一人称语气与
+   中英逐句意图；未完成该核对时 G6 不得判定通过。
+4. **C4 — 授权边界**：接受 ADR 仅解除架构阻塞并允许执行 G6 计划；计划
+   T6.9 所需的隔离临时归档构建/解压验证属于测试且允许执行，但不得留下对外
+   分发包。除此之外，不代表 G6 Gate 接受，也不授权 merge、tag、push、
+   对外打包、公开分发或发布。
+
+## 11. 引用
 
 - Owner 决策记录（2026-09-18 v1 + 同日多来源补充决定）。
 - `reviews/adr/ADR_0003_REVIEW.md`（Reviewer commit `8aecaf7`，REVISE，
@@ -625,5 +658,5 @@ Reviewer 已原则接受该方向（ADR_0003_REVIEW.md §Accepted direction-9）
 - `docs/OMDA_AGENT_HANDOFF_SPEC.md` §1、§2、§3.5、§4、§9。
 - `docs/OMDA_PROJECT_MASTER_PLAN_zh-CN.md` §3、§9。
 - `docs/adr/0002-production-album-source-and-runtime-boundary.md` D6/D8。
-- `governance/G6_SKILL_BETA_PLAN.md`（Proposed v2，随本 ADR 复审）。
+- `governance/G6_SKILL_BETA_PLAN.md`（Approved v2，受本节约束）。
 - `governance/PROJECT_STATE.json`、`reviews/adr/ADR_0003_EXECUTOR_HANDOFF.md`。
