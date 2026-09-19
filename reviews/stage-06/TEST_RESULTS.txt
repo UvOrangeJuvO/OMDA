@@ -1,5 +1,5 @@
-OMDA G6 — TEST RESULTS (Re-review 1 repair round; real captured output)
-Generated: 2026-09-19T02:09:22+0800
+OMDA G6 — TEST RESULTS (Re-review 2 repair round; real captured output)
+Generated: 2026-09-19T09:15:20+0800
 Working directory: skills/omda-daily-discovery/tests
 
 ================================================================
@@ -74,9 +74,11 @@ test_r1003_local_date_mismatch_exit3 (test_daily_pick.SkillTestCase.test_r1003_l
 test_r1003_naive_timestamp_exit3 (test_daily_pick.SkillTestCase.test_r1003_naive_timestamp_exit3) ... ok
 test_r1003_offset_mismatch_exit3 (test_daily_pick.SkillTestCase.test_r1003_offset_mismatch_exit3) ... ok
 test_r1003_utc_iso_not_utc_exit3 (test_daily_pick.SkillTestCase.test_r1003_utc_iso_not_utc_exit3) ... ok
+test_r2001_nfc_equivalent_rows_permutation_invariant (test_daily_pick.SkillTestCase.test_r2001_nfc_equivalent_rows_permutation_invariant)
+Precomposed `Café` and decomposed `Café` are canonically ... ok
 
 ----------------------------------------------------------------------
-Ran 64 tests in 0.254s
+Ran 65 tests in 0.951s
 
 OK
 
@@ -153,35 +155,32 @@ test_r1003_local_date_mismatch_exit3 (test_daily_pick.SkillTestCase) ... ok
 test_r1003_naive_timestamp_exit3 (test_daily_pick.SkillTestCase) ... ok
 test_r1003_offset_mismatch_exit3 (test_daily_pick.SkillTestCase) ... ok
 test_r1003_utc_iso_not_utc_exit3 (test_daily_pick.SkillTestCase) ... ok
+test_r2001_nfc_equivalent_rows_permutation_invariant (test_daily_pick.SkillTestCase)
+Precomposed `Café` and decomposed `Café` are canonically ... ok
 
 ----------------------------------------------------------------------
-Ran 64 tests in 0.540s
+Ran 65 tests in 0.953s
 
 OK
 
 ================================================================
-[3/4] Additional captured evidence (Re-review 1 round)
+[3/4] Additional captured evidence (Re-review 2 round)
 ================================================================
 [3.1] T6.9 isolated ZIP build/extract/validate (temp dir, deleted after):
 - whitelist exact match: True (14 files; tests/ and __pycache__ excluded)
-- extracted README preface verified to use the corrected AC-30 wording
-  ("After reading Italo Calvino..."; no "Recently"/"rereading")
 - extracted-package functional run exit: 0
-- T6.9 ISOLATED ZIP VALIDATION (Re-review 1 round): PASS; temp dir removed.
+- T6.9 ISOLATED ZIP VALIDATION (Re-review 2 round): PASS; temp dir removed.
 
-[3.2] Re-review 1 negative fixtures exercised by the new tests (all green
-      on both interpreters):
-- G6-R1-001: `A Ref|Alpha` / `a ref|Alpha.` permutation -> identical
-  display text, full history JSON, and output bytes
-- G6-R1-002: English->Chinese, Chinese->English, and blank-line-only
-  second live tables -> fail-closed with exact line numbers
-- G6-R1-003: impossible day key (reviewer probe `2026-99-99` +
-  `not-a-time`), invalid timestamp, naive timestamp, local-date/day-key
-  mismatch, utc_offset/local_iso mismatch, utc_iso-not-UTC -> all exit 3
-  with corrupt copy preserved byte-exactly and no history rewrite
+[3.2] G6-R2-001 regression fixture (test_r2001_nfc_equivalent_rows_
+      permutation_invariant, green on both interpreters):
+- precomposed `Café` vs decomposed `Cafe\u0301`, identical other fields
+- both row orders run end to end
+- asserted identical: per-source content digest, merged candidate payload,
+  display Artist/Album (committed value is the NFC form), annotations,
+  full history JSON, and output bytes
 
-Summary: 64 tests, 64 passed, 0 failed, 0 skipped — on BOTH Python 3.13.12
-and Python 3.9.6 (was 54 before this round; +10 new; none deleted/weakened/
-skipped; G6-001/002/005 resolved tests unchanged and passing).
+Summary: 65 tests, 65 passed, 0 failed, 0 skipped — on BOTH Python 3.13.12
+and Python 3.9.6 (was 64 before this round; +1 regression test; none
+deleted/weakened/skipped).
 Open: AC-12 (live Codex install, disclosed) and AC-30 (EXECUTOR_FILLED,
 pending Owner final confirmation — see PREFACE_CHECKLIST.md).

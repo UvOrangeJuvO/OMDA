@@ -1309,5 +1309,52 @@ class SkillTestCase(unittest.TestCase):
         self.assertIn("is not in UTC", err)
 
 
+    # ============ Re-review 2: G6-R2-001 ==================================
+
+    def test_r2001_nfc_equivalent_rows_permutation_invariant(self):
+        """Precomposed `Café` and decomposed `Cafe\u0301` are canonically
+        identical (G6-R2-001): both row orders must yield the same
+        per-source content digest, merged payload, display Artist/Album,
+        annotations, full history JSON and output bytes."""
+        precomposed = "Caf\u00e9"
+        decomposed = "Cafe\u0301"
+        self.assertNotEqual(precomposed, decomposed)  # distinct raw bytes
+        self.assertEqual(dp._nfc(precomposed), dp._nfc(decomposed))
+        row_a = (precomposed, "Live at展现", "2021", "ambient", "9",
+                 "note one")
+        row_b = (decomposed, "Live at展现", "2021", "ambient", "9",
+                 "note one")
+        outputs = []
+        records = []
+        digests = []
+        merged_payloads = []
+        for index, albums in enumerate(((row_a, row_b), (row_b, row_a))):
+            self.write_profile()
+            src = self.write_source("nfc-%d.md" % index, "alice", albums)
+            if self.history.exists():
+                self.history.unlink()
+            source = dp.load_source(src)
+            digests.append(source.content_digest)
+            merged = dp.merge_sources([source])
+            merged_payloads.append(json.dumps(merged, ensure_ascii=False,
+                                              sort_keys=True))
+            code, _out, _err = self.run_pick([src])
+            self.assertEqual(code, dp.EXIT_OK)
+            records.append(json.loads(self.history.read_text(
+                encoding="utf-8"))["days"])
+            outputs.append(self.output_text())
+        self.assertEqual(digests[0], digests[1])        # content digest
+        self.assertEqual(merged_payloads[0], merged_payloads[1])
+        self.assertEqual(records[0], records[1])        # full history JSON
+        self.assertEqual(outputs[0], outputs[1])        # output bytes
+        # the committed display value is the NFC canonical form
+        selected = list(records[0].values())[0]["selected"]
+        self.assertEqual(selected["artist"], precomposed)
+        self.assertNotEqual(selected["artist"], decomposed)
+        annotation = selected["annotations"][0]
+        self.assertEqual(annotation["source_display_name"],
+                         "Display alice")
+
+
 if __name__ == "__main__":
     unittest.main()

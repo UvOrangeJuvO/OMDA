@@ -386,6 +386,12 @@ def compute_source_content_digest(meta, records):
     return digest.hexdigest()
 
 
+def _nfc(value):
+    """Unicode NFC normalization — the canonical form for every value that
+    enters the source-content representation (G6-R2-001 / ADR-0003 D19)."""
+    return unicodedata.normalize("NFC", value)
+
+
 def load_source(path):
     path = Path(path)
     if not path.is_file():
@@ -394,18 +400,26 @@ def load_source(path):
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise OmdaError("cannot read source file %s: %s" % (path, exc))
-    meta = parse_source_frontmatter(text, str(path))
+    raw_meta = parse_source_frontmatter(text, str(path))
     rows = parse_album_table(text, str(path), _REQUIRED_SOURCE_HEADERS,
                              "source album")
+    # G6-R2-001: the canonicalization boundary. Metadata and every parsed
+    # record/display field are normalized to NFC HERE, once, so that display
+    # text, annotations, the content digest, merged results and history all
+    # use the same canonical values. Canonically equivalent raw spellings
+    # (e.g. precomposed `Café` vs decomposed `Cafe\u0301`) therefore become
+    # the exact same record and can no longer tie on the canonical sort with
+    # different retained bytes.
+    meta = {key: _nfc(value) for key, value in raw_meta.items()}
     records = []
     for row in rows:
         records.append({
-            "artist": row["artist"],
-            "album": row["album"],
-            "year": row.get("year", ""),
-            "genre": row.get("genre", ""),
-            "rating": row.get("rating", ""),
-            "note": row.get("note", ""),
+            "artist": _nfc(row["artist"]),
+            "album": _nfc(row["album"]),
+            "year": _nfc(row.get("year", "")),
+            "genre": _nfc(row.get("genre", "")),
+            "rating": _nfc(row.get("rating", "")),
+            "note": _nfc(row.get("note", "")),
         })
     # Canonical order rank (G6-004): the position of each record inside the
     # stable content ordering, independent of file row order. This rank is

@@ -227,3 +227,63 @@
 **READY_FOR_REVIEW** — Re-review 1 指定的 G6-R1-001~003 与 AC-30 措辞
 修正全部完成；64 项测试双版本全绿。Executor 停止，等待 GPT-5.6 Sol 复审；
 未合并、未打标签、未 push、未发布、未保留分发包。
+
+---
+
+# Re-review 2 修复轮 — G6-R2-001
+
+> 被审 candidate：`9ddab49a314b22fac8f686159ac45aeed44afb80`
+> Reviewer checkpoint（本轮直接父提交）：`61e0f4c871ccb2cba88c88842d48edb5ace44bde`
+> Verdict：`reviews/stage-06/REVIEW_VERDICT.md` §Re-review 2（CHANGES_REQUESTED）
+> 范围纪律：仅修复 G6-R2-001；R1-002/R1-003/G6-001/002/005 已解决的实现
+> 与测试未改动；identity normalization、Genre 规则、seed 输入、选择算法与
+> 3×3 Core 未触碰；未重构。
+
+## G6-R2-001 — NFC 等价原始拼写破坏排列不变性 → CLOSED
+
+- **边界规范化**：`load_source()` 新增 `_nfc()`，在来源内容进入 canonical
+  representation 的边界统一规范化——来源元数据全部字段 + 每条解析记录的
+  artist/album/year/genre/rating/note 全部转为 Unicode NFC。
+- **单一 canonical 值集**：展示文本、annotations、content digest、合并
+  结果与历史记录现在全部来自同一套 NFC canonical 值——不再"排序键用
+  NFC、展示/历史保留原始字节"。规范化等价的不同原始拼写（预组合
+  `Café` vs 分解 `Cafe\u0301`）在边界处合并为**逐字节相同**的记录，
+  canonical 排序不可能再因保留字节不同而打平继承文件顺序。
+- 未改变：`identity_key`（normalize_text 本就 NFC）、Genre 分组规则、
+  seed 输入（day_key + algorithm_version + selection-pool digest）、
+  两阶段选择算法、3×3 Core。
+
+## 回归测试
+
+`test_r2001_nfc_equivalent_rows_permutation_invariant`：
+
+- 记录 `Café`（预组合）与 `Cafe\u0301`（分解），其余字段完全相同；
+- 两种行序分别运行；
+- 断言完全一致：per-source content digest、merged candidate payload
+  （规范化 JSON 序列化）、展示 Artist/Album（并断言提交值为 NFC 形式）、
+  annotations、完整 history JSON、最终输出字节。
+
+## Verification（本轮）
+
+| Command | Result |
+|---|---|
+| `python3.13 -m unittest test_daily_pick`（3.13.12） | **65 tests — OK**（0 fail / 0 skip） |
+| `python3.9 -m unittest test_daily_pick`（3.9.6） | **65 tests — OK**（0 fail / 0 skip） |
+| T6.9 隔离 ZIP 复验 | whitelist 精确匹配 + 解压包功能运行 exit 0；tempdir 已删除 |
+| `git diff --check`（Base..HEAD） | 通过 |
+| `git status`（提交后） | clean |
+
+测试数：64 → **65**（+1 回归测试；无删除/弱化/skip；既有测试原样通过）。
+
+## Residual Risks / Open Items
+
+- **AC-30**：EXECUTOR_FILLED — 等待 Owner 最终确认（第 20–21 行），
+  Executor 未宣称通过。
+- **AC-12**：Codex 实装实测仍需 Owner/朋友试用。
+- 无其他已知偏离。
+
+## Executor Conclusion
+
+**READY_FOR_REVIEW** — G6-R2-001 已修复并有排列回归测试锁定；65 项测试
+双版本全绿。Executor 停止，等待 GPT-5.6 Sol 复审；未合并、未打标签、
+未 push、未发布、未保留分发包。
