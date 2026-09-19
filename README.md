@@ -1,5 +1,21 @@
 # OMDA — Open Music Discovery Agent
 
+## 下载当前最新版 / Download the latest Beta
+
+**当前公开测试版：v0.1.0-beta.3**
+
+- **[直接下载 OMDA Skill ZIP](https://github.com/UvOrangeJuvO/OMDA/releases/download/v0.1.0-beta.3/omda-daily-discovery-0.1.0-beta.3.zip)**
+- [查看 Release 页面](https://github.com/UvOrangeJuvO/OMDA/releases/tag/v0.1.0-beta.3)
+- [下载 SHA-256 校验文件](https://github.com/UvOrangeJuvO/OMDA/releases/download/v0.1.0-beta.3/SHA256SUMS)
+- [阅读中英文下载与使用指南](docs/GETTING_STARTED.md)
+
+请下载上面的 `omda-daily-discovery-0.1.0-beta.3.zip`，**不要下载** GitHub
+自动生成的 “Source code (zip)” 或 “Source code (tar.gz)”。
+
+Download `omda-daily-discovery-0.1.0-beta.3.zip` above. **Do not download**
+GitHub's automatically generated “Source code” archives; they are not the
+ready-to-use Skill package.
+
 OMDA 是一个本地优先、可审计的每日音乐探索 Agent：每次运行选择 3 个 Genre，为每个 Genre 推荐 3 张从未成功推荐过的 Album，生成确定性事实报告，并通过可替换的输出适配器交付。
 
 - **v0.1 是 deterministic/no-LLM runtime**（ADR-0002 D8）：不调用任何外部 LLM，交付物是经过验证的结构化事实报告。
@@ -132,11 +148,13 @@ python tools/release_audit/backup_restore.py
 
 - Executor：WorkBuddy Executor（每轮在状态/报告中记录实际模型）；Reviewer：Codex 中的 GPT-5.6 Sol。
 - 真源：本地 Git、规范文件、状态文件、测试和阶段报告。
-- 当前阶段：**G6 Skill Distribution Beta / ACCEPTED**；朋友测试包正在进行首次公开发布前准备，尚未 push 或发布 GitHub Release。
+- 当前阶段：**G6 Skill Distribution Beta / ACCEPTED**；公开测试版 `v0.1.0-beta.3` 已发布。
 - 完整规范：`docs/OMDA_AGENT_HANDOFF_SPEC.md`、`docs/OMDA_PROJECT_MASTER_PLAN_zh-CN.md`、`docs/OMDA_DUAL_MODEL_OPERATIONS_HANDBOOK_zh-CN.md`、`AGENTS.md`。
 
-首次发布与朋友测试：
+公开下载与使用：
 
+- [OMDA Skill Beta 中英文下载与使用指南](docs/GETTING_STARTED.md)
+- [v0.1.0-beta.3 Release 与下载附件](https://github.com/UvOrangeJuvO/OMDA/releases/tag/v0.1.0-beta.3)
 
 ## 许可
 
