@@ -388,3 +388,46 @@ observation does not block the local G6 artifact.
 Acceptance applies only to candidate `38c0a6916f083777cb273fb82cce8eb51366cd34`.
 G6 may now be merged through the controlled workflow when the Owner requests it. This verdict
 does not itself authorize tag, push, public package creation, distribution or publication.
+
+---
+
+## Owner follow-up review — candidate `5a502f6cef4fc97e2cae970a214b468c7ff7cbd9`
+
+### Scope and identity
+
+- Direct parent and merge-base: accepted Reviewer checkpoint
+  `1327e78ded2b78f29b0342def31604ec550f3f92`.
+- Scope: OMDA Skill Beta rating contract, templates/prompts/docs, bundled
+  Genre curation, regression tests and review evidence.
+- No accepted 3×3 Core implementation changed.
+
+### Verification
+
+- Python 3.9.6: **69/69 passed**, 0 failed, 0 skipped.
+- Python 3.12.14: **69/69 passed**, 0 failed, 0 skipped.
+- Skill creator quick validation: **PASS**.
+- Real CLI smoke with the bundled source: **PASS**; one local daily output
+  contained a non-empty broad Genre group.
+- ZIP whitelist/build/extract validation: **PASS** through the full suite.
+- Accepted-source comparison: 205/205 Artist, Album, Year, Rating and Note
+  cells unchanged; 202 Genre values added; three intentional blanks retained.
+- Rating contract: blank/1/10 accepted; 0/11/8.5 rejected; legacy
+  `10-point` metadata remains compatible.
+- Candidate-range `git diff --check`: clean; worktree clean at review start.
+
+### Process limitation
+
+The Owner explicitly asked GPT-5.6 Sol to make this small update directly.
+The same model therefore implemented and reviewed this maintenance patch;
+the normal Executor/independent-Reviewer separation did not apply. Automated
+behavioral evidence is complete, while the 202 Genre labels remain subjective
+Owner-editable curation rather than an objective taxonomy.
+
+### Verdict
+
+**ACCEPTED**
+
+Acceptance applies only to candidate
+`5a502f6cef4fc97e2cae970a214b468c7ff7cbd9`. Version
+`0.1.0-beta.2` may be packaged locally. This verdict does not authorize merge,
+tag, push or public publication; those remain separate Owner actions.

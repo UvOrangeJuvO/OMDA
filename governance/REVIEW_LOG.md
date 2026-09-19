@@ -19,3 +19,4 @@
 | G6 | `64b805e6518462ed6346aa7a3fd8a87cac277cdd` | CHANGES_REQUESTED | `reviews/stage-06/REVIEW_VERDICT.md` | 2026-09-19 |
 | G6 | `9ddab49a314b22fac8f686159ac45aeed44afb80` | CHANGES_REQUESTED | `reviews/stage-06/REVIEW_VERDICT.md` | 2026-09-19 |
 | G6 | `38c0a6916f083777cb273fb82cce8eb51366cd34` | ACCEPTED | `reviews/stage-06/REVIEW_VERDICT.md` | 2026-09-19 |
+| G6 follow-up | `5a502f6cef4fc97e2cae970a214b468c7ff7cbd9` | ACCEPTED | `reviews/stage-06/REVIEW_VERDICT.md` | 2026-09-19 |
