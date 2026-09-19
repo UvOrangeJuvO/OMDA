@@ -434,7 +434,7 @@ tag, push or public publication; those remain separate Owner actions.
 
 ---
 
-## Owner Genre completion and Beta 3 review — candidate `0d7344b334348e74f4d576351aeb0a63922d4a11`
+## Owner Genre completion and Beta 3 review — candidate `6deb8fc5c2c302cc71096ae4b6fe1d26b3ba4ec0`
 
 ### Scope and identity
 
@@ -475,7 +475,7 @@ remain subjective, explicitly Owner-editable curation.
 **ACCEPTED**
 
 Acceptance applies only to candidate
-`0d7344b334348e74f4d576351aeb0a63922d4a11`. Version `0.1.0-beta.3` may be
+`6deb8fc5c2c302cc71096ae4b6fe1d26b3ba4ec0`. Version `0.1.0-beta.3` may be
 packaged and merged locally through the controlled workflow. This verdict does
 not authorize a remote push, public Release or distribution; those require a
 separate Owner instruction after the GitHub repository exists.
