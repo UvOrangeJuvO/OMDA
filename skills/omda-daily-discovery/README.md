@@ -166,17 +166,17 @@ shared from the OMDA founder's *One Album a Day* spreadsheet—a small set of
 personal picks tucked into the project. It is not a ranking or an OMDA
 judgment about which music is better.
 
-- 原表只有 Artist 与 Album；经 Owner 授权，202/205 条已参考公开音乐元数据
-  并人工补充 Genre，3 条证据不足的条目仍留空；Year、Rating 不编造。
+- 原表只有 Artist 与 Album；经 Owner 授权，205/205 条均已参考公开音乐元数据
+  并人工补充 Genre，其中较难判断的条目由 Owner 逐条确认；Year、Rating 不编造。
 - Genre 采用“宽口径主 Genre, 细分风格”的写法：程序只用逗号前的主 Genre
   做等机会分组，细分风格仅展示。这些是便于探索的整理标签，不是唯一正确答案。
 - 你可以单独选择它，也可以和朋友、乐评人或社群的来源一起使用。
 - 它**不会被静默启用**：Agent 必须先得到你的选择，再把它作为 `--source`
   传入。你也可以把它复制到自己 workspace 的 `sources/` 中。
 
-With the Owner's authorization, 202 of the 205 entries now carry manually
-reviewed Genre labels informed by public music metadata; three uncertain
-entries remain blank. The text before the first comma is the broad Genre used
+With the Owner's authorization, all 205 entries now carry manually reviewed
+Genre labels informed by public music metadata; the harder cases were
+confirmed individually by the Owner. The text before the first comma is the broad Genre used
 for equal-opportunity grouping, while the finer styles after it are for
 display only. These labels support discovery and do not claim to be the only
 correct classification. Year and Rating remain blank rather than invented.

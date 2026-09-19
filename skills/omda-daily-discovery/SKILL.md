@@ -51,8 +51,8 @@ python3 <skill-root>/scripts/daily_pick.py \
   元数据写法继续兼容。
 - 包内提供可选来源
   `<skill-root>/assets/sources/OMDA_ONE_ALBUM_A_DAY.md`（OMDA 发起人分享的
-  205 张《一天一专辑》清单；其中 202 条有人工复核的宽口径 Genre，3 条
-  因证据不足留空）。可以在用户明确选择后直接作为一个
+  205 张《一天一专辑》清单；全部条目都有人工复核的宽口径 Genre，
+  较难判断的条目由 Owner 逐条确认）。可以在用户明确选择后直接作为一个
   `--source` 使用，或复制到用户 workspace；**不得静默自动启用**。
 - `--template-dir <skill-root>/templates` 可选：让脚本校验模板齐备，
   便于为用户复制新的来源模板。

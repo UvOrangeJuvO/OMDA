@@ -130,10 +130,13 @@ python tools/release_audit/backup_restore.py
 
 ## 开发治理
 
-- Executor：WorkBuddy 中的 DeepSeek V4 Flash；Reviewer：Codex 中的 GPT-5.6 Sol。
+- Executor：WorkBuddy Executor（每轮在状态/报告中记录实际模型）；Reviewer：Codex 中的 GPT-5.6 Sol。
 - 真源：本地 Git、规范文件、状态文件、测试和阶段报告。
-- 当前阶段：**G5 Release Audit / READY_FOR_REVIEW**（尚未打 RC/发布标签）。
+- 当前阶段：**G6 Skill Distribution Beta / ACCEPTED**；朋友测试包正在进行首次公开发布前准备，尚未 push 或发布 GitHub Release。
 - 完整规范：`docs/OMDA_AGENT_HANDOFF_SPEC.md`、`docs/OMDA_PROJECT_MASTER_PLAN_zh-CN.md`、`docs/OMDA_DUAL_MODEL_OPERATIONS_HANDBOOK_zh-CN.md`、`AGENTS.md`。
+
+首次发布与朋友测试：
+
 
 ## 许可
 
