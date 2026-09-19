@@ -269,3 +269,60 @@ The repair is close, and the multi-source/Skill architecture remains accepted. C
 G6-R1-001 through G6-R1-003 plus the two-word AC-30 correspondence correction, rerun the complete
 matrix, return `G6 / READY_FOR_REVIEW`, and stop. Do not reopen resolved findings or alter the
 accepted 3x3 Core.
+
+---
+
+## Re-review 2 — candidate `9ddab49a314b22fac8f686159ac45aeed44afb80`
+
+### Identity and independent verification
+
+- Direct parent: Reviewer checkpoint `ceeec1074966cfbe6865f05658607bae641fe5c0`
+- Original base and merge-base: `c15fbbe63fb7409483bf092fe7df926868ef5dda`
+- Candidate scope: 7 files and one focused commit; no accepted 3x3 Core file changed
+- Worktree at review start: clean; `git diff --check` passed
+- Independent suite: **64/64 passed** on Python 3.9.6 and **64/64 passed** on
+  Python 3.12.14
+- The prior English/Chinese second-table probes and malformed date/time probes now fail closed as
+  required. The case/punctuation permutation fixture is also repaired.
+- The bundled Skill `quick_validate.py` was attempted under both interpreters but its local
+  environment lacks PyYAML; metadata shape was therefore checked directly against the installed
+  Skill specification, as in the prior review.
+
+### Re-review 1 finding status
+
+| Finding | Re-review result |
+|---|---|
+| G6-R1-001 canonical-equivalent duplicate ordering | **PARTIAL** — case/punctuation variants are stable, but canonically equivalent Unicode spellings still tie in the canonical sort and retain input order (G6-R2-001). |
+| G6-R1-002 cross-language second live table | **RESOLVED** — semantic header detection runs before data-row parsing and both language directions fail closed with exact line evidence. |
+| G6-R1-003 semantic history validation | **RESOLVED** — real dates and aware timestamps are parsed; the required UTC/date/offset checks use the corrupt-history exit-3 path and preserve the original bytes. |
+| AC-30 correspondence correction | **IMPLEMENTED / OWNER CONFIRMATION PENDING** — `读过…之后` and `After reading…` remove the unsupported qualifications. Checklist rows 20–21 still correctly await Owner confirmation. |
+
+### [P1] G6-R2-001 — NFC-equivalent raw spellings still break permutation invariance
+
+- Location: `skills/omda-daily-discovery/scripts/daily_pick.py:355-418`, `:478-519`
+- Evidence: `_content_record_sort_key()` normalizes fields to NFC. Therefore two distinct raw
+  spellings such as precomposed `Caf\u00e9` and decomposed `Cafe\u0301` have the same canonical
+  sort key. Python's stable sort then preserves their file order; `canonical_order` and
+  `occs[0]["artist"]` inherit that order. Reversing those two otherwise identical rows keeps the
+  per-source content digest equal but changes the displayed Artist and merged/history payload.
+- Independent reproduction on candidate `9ddab49...`: `digest_equal=True`, while the first
+  merged Artist changed from `Caf\u00e9` to `Cafe\u0301` and `merged_equal=False`.
+- Impact: D19 explicitly defines the source-content canonical representation as Unicode NFC and
+  requires stable record order independent of file row order. Two canonically identical source
+  representations can still produce different output bytes and history evidence.
+- Required repair: normalize source metadata and all parsed record/display fields to NFC at the
+  canonicalization boundary (or define an equivalent total canonical representation that cannot
+  tie on different retained raw bytes). The value used for display, annotations, digest and
+  history must come from that same canonical representation. Add a regression fixture using
+  precomposed/decomposed Unicode rows in both orders and require equal content digest, merged
+  payload, full history JSON and output bytes. Do not change identity normalization, seed inputs
+  or the accepted selection algorithm.
+
+### Re-review 2 verdict
+
+**CHANGES_REQUESTED**
+
+Candidate `9ddab49a314b22fac8f686159ac45aeed44afb80` must not be merged or distributed.
+Repair only G6-R2-001, rerun the complete dual-version matrix, return `G6 / READY_FOR_REVIEW`,
+and stop. The code repair is narrow. AC-30 remains a separate Owner confirmation step and must
+not be self-approved by the Executor.
