@@ -626,6 +626,34 @@ class SkillTestCase(unittest.TestCase):
         self.assertEqual(self.read_history()["days"]["2026-09-19"][
             "selected"]["album"], "Beta")
 
+    def test_owner_ten_point_integer_scale_accepts_blank_and_boundaries(self):
+        path = self.write_source(
+            "ten.md", "ten-point",
+            [("A Ref", "One", "2001", "rock", "1", ""),
+             ("B Ref", "Ten", "2002", "jazz", "10", ""),
+             ("C Ref", "Blank", "2003", "pop", "", "")],
+            extra_meta="10-point-integer")
+        source = dp.load_source(path)
+        self.assertEqual([row["rating"] for row in source.records],
+                         ["1", "10", ""])
+
+    def test_owner_ten_point_integer_scale_rejects_decimal_and_out_of_range(self):
+        for index, bad_rating in enumerate(("0", "11", "8.5")):
+            path = self.write_source(
+                "bad-%d.md" % index, "bad-%d" % index,
+                [("A Ref", "Alpha", "2001", "rock", bad_rating, "")],
+                extra_meta="10-point-integer")
+            with self.assertRaisesRegex(dp.OmdaError,
+                                        "integer from 1 to 10"):
+                dp.load_source(path)
+
+    def test_owner_legacy_ten_point_spelling_remains_compatible(self):
+        path = self.write_source(
+            "legacy.md", "legacy",
+            [("A Ref", "Alpha", "2001", "rock", "9", "")],
+            extra_meta="10-point")
+        self.assertEqual(dp.load_source(path).records[0]["rating"], "9")
+
     # -- AC-25: history evidence ---------------------------------------------------
 
     def test_ac25_history_evidence(self):
@@ -729,9 +757,20 @@ class SkillTestCase(unittest.TestCase):
         self.assertEqual(len(source.records), 205)
         self.assertTrue(all(record["artist"] and record["album"]
                             for record in source.records))
-        self.assertTrue(all(not record["year"] and not record["genre"]
-                            and not record["rating"]
+        self.assertTrue(all(not record["year"] and not record["rating"]
                             for record in source.records))
+        self.assertEqual(sum(bool(record["genre"])
+                             for record in source.records), 202)
+        self.assertEqual(
+            [record["note"] for record in source.records
+             if not record["genre"]],
+            ["一天一专辑 167", "一天一专辑 169", "一天一专辑 198"])
+        self.assertEqual(
+            {dp.genre_group_key(record["genre"])
+             for record in source.records},
+            {"Electronic", "Hip Hop", "Rock", "Pop", "Metal", "Jazz",
+             "Punk", "Folk and Country", "R&B and Soul", "Soundtrack",
+             "uncategorized"})
         self.assertEqual(source.records[0]["artist"], "YAYAYI")
         self.assertEqual(source.records[-1]["artist"], "tommy february6")
         self.assertEqual(source.records[-1]["album"], "Tommy airline")
@@ -741,7 +780,7 @@ class SkillTestCase(unittest.TestCase):
         self.assertIn("Apache License", license_text)
         self.assertIn("Version 2.0, January 2004", license_text)
         self.assertEqual((_SKILL_DIR / "VERSION").read_text().strip(),
-                         "0.1.0-beta.1")
+                         "0.1.0-beta.2")
 
     def test_ac9_secret_scan(self):
         patterns = (b"/Users/", b"sk-", b"AKIA", b"OMDA_PP_TOKEN",
@@ -811,7 +850,7 @@ class SkillTestCase(unittest.TestCase):
             self.assertEqual(dp.load_profile_status(profile), {})
             self.assertEqual(
                 (extracted / "VERSION").read_text().strip(),
-                "0.1.0-beta.1")
+                "0.1.0-beta.2")
         # tempdir context manager removed build + extract (nothing retained)
 
     # -- AC-1: clean-environment manual path ----------------------------------------------

@@ -52,6 +52,8 @@ SOURCE_META_REQUIRED = ("source_id", "display_name", "curator", "provenance",
                         "sharing_note", "format_version")
 SOURCE_META_OPTIONAL = ("rating_scale",)
 SOURCE_META_ALLOWED = SOURCE_META_REQUIRED + SOURCE_META_OPTIONAL
+OMDA_RATING_SCALE = "10-point-integer"
+_OMDA_RATING_SCALE_ALIASES = (OMDA_RATING_SCALE, "10-point")
 SOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 # YAML-feature markers that must never start a value (anchors, aliases,
 # tags, flow collections, block scalars, directives, quotes).
@@ -421,6 +423,20 @@ def load_source(path):
             "rating": _nfc(row.get("rating", "")),
             "note": _nfc(row.get("note", "")),
         })
+    # Owner follow-up (2026-09-19): OMDA-native ratings use a ten-point
+    # integer scale.  The earlier beta spelling ``10-point`` remains an
+    # accepted alias so existing source files do not break.  Other named
+    # scales are preserved as source-specific display metadata and are not
+    # converted; ratings never participate in selection.
+    if meta.get("rating_scale", "") in _OMDA_RATING_SCALE_ALIASES:
+        for index, record in enumerate(records, start=1):
+            rating = record["rating"].strip()
+            if rating and not re.fullmatch(r"(?:[1-9]|10)", rating):
+                raise OmdaError(
+                    "%s: source row %d has rating %r, but rating_scale %r "
+                    "accepts only blank or an integer from 1 to 10"
+                    % (path, index, record["rating"],
+                       meta["rating_scale"]))
     # Canonical order rank (G6-004): the position of each record inside the
     # stable content ordering, independent of file row order. This rank is
     # what history annotations store as their display order.

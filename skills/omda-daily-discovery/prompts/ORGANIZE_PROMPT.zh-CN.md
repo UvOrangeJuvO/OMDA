@@ -9,13 +9,15 @@
 3. 先按模板填写受限 OMDA flat frontmatter（顶层 `key: value`，不要缩进、
    不要嵌套）：`source_id`（我指定的唯一短标识，小写字母/数字/连字符）、
    `display_name`、`curator`、`provenance`、`sharing_note` 由我口述提供；
-   `rating_scale` 只有该来源确有评分时才填。
+   `rating_scale` 只有该来源确有评分时才填。新建 OMDA 原生清单时使用
+   `10-point-integer`：评分留空或填写 1–10 的整数，不使用小数。
 4. Album 表：完整复制模板表头行，一行一张专辑。Artist 和 Album 必填；
    Year、Genre、Rating、Note 尽量填，不确定就留空。
 5. **不要**写任何"已听/跳过"个人状态——那属于我自己的 Profile 文件
    （`profile/MY_PROFILE.md`），不属于来源清单。
-6. Rating 保留来源资料的原始表述，不要换算或打分；Note 可摘录一句短评并
-   注明出处。
+6. Rating 保留来源资料的原始表述，不要擅自换算或打分；如果原资料不是
+   十分制，请如实填写它自己的 `rating_scale`。只有在 Owner 明确要求转换时
+   才转成十分制整数。Note 可摘录一句短评并注明出处。
 7. 整理完成后交给我确认；未经我确认不要提交给任何工具或上传。
 
 我的资料如下：

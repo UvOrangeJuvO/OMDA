@@ -146,6 +146,12 @@ Fully local, zero network, no accounts.
   放进来即可，**不需要也不会被修改**。
 - 复制 `<skill-root>/templates/OMDA_SOURCE.template.*.md` 即可创建新的
   来源文件（每份的 `source_id` 必须不同）。
+- OMDA 新建清单默认使用**十分制整数评分**：留空，或填写 1–10；评分仅展示，
+  不影响 Genre 或 Album 的选择。旧版 `10-point` 写法继续兼容。
+
+New OMDA lists use a **ten-point integer rating scale** by default: leave the
+field blank or enter 1–10. Ratings are display-only and never affect Genre or
+Album selection. The earlier `10-point` spelling remains compatible.
 
 ### 内置来源：一天一专辑 / Bundled source: One Album a Day
 
@@ -160,10 +166,20 @@ shared from the OMDA founder's *One Album a Day* spreadsheet—a small set of
 personal picks tucked into the project. It is not a ranking or an OMDA
 judgment about which music is better.
 
-- 原表只有 Artist 与 Album；Year、Genre、Rating 均有意留空，系统不会编造。
+- 原表只有 Artist 与 Album；经 Owner 授权，202/205 条已参考公开音乐元数据
+  并人工补充 Genre，3 条证据不足的条目仍留空；Year、Rating 不编造。
+- Genre 采用“宽口径主 Genre, 细分风格”的写法：程序只用逗号前的主 Genre
+  做等机会分组，细分风格仅展示。这些是便于探索的整理标签，不是唯一正确答案。
 - 你可以单独选择它，也可以和朋友、乐评人或社群的来源一起使用。
 - 它**不会被静默启用**：Agent 必须先得到你的选择，再把它作为 `--source`
   传入。你也可以把它复制到自己 workspace 的 `sources/` 中。
+
+With the Owner's authorization, 202 of the 205 entries now carry manually
+reviewed Genre labels informed by public music metadata; three uncertain
+entries remain blank. The text before the first comma is the broad Genre used
+for equal-opportunity grouping, while the finer styles after it are for
+display only. These labels support discovery and do not claim to be the only
+correct classification. Year and Rating remain blank rather than invented.
 
 ## 快速开始（三条路）/ Quick start
 

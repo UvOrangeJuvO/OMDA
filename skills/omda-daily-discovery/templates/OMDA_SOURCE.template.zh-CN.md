@@ -5,7 +5,7 @@ display_name: Alice 的私藏清单
 curator: Alice
 provenance: 朋友手写推荐（2026-06）
 sharing_note: 仅限私人分享，请勿公开转载
-rating_scale: 10-point
+rating_scale: 10-point-integer
 ---
 
 # Alice 的私藏清单
@@ -16,6 +16,7 @@ rating_scale: 10-point
 > 不要写在这里。
 > Artist 和 Album 必填；其余不确定就留空，不要编造。全空行会被忽略。
 > 评分和备注只会展示（并注明来自本清单），不会影响每天选哪张专辑。
+> OMDA 默认采用十分制整数评分：留空，或填写 1–10；不使用小数。
 > 请不要修改表头行。
 
 | Artist 艺人 | Album 专辑 | Year 年份 | Genre 流派 | Rating 评分 | Note 备注 |

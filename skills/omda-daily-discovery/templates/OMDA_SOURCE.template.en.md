@@ -5,7 +5,7 @@ display_name: Alice's picks
 curator: Alice
 provenance: handwritten friend recommendations (2026-06)
 sharing_note: private sharing only; do not republish
-rating_scale: 10-point
+rating_scale: 10-point-integer
 ---
 
 # Alice's picks
@@ -19,6 +19,8 @@ rating_scale: 10-point
 > blank — never make it up. Fully blank rows are ignored.
 > Rating and Note are display-only (attributed to this source) and never
 > influence the daily pick.
+> OMDA's default rating scale uses whole numbers from 1 to 10; leave the
+> field blank or enter an integer from 1–10, with no decimals.
 > Do not modify the header row.
 
 | Artist | Album | Year | Genre | Rating | Note |

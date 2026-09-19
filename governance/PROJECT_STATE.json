@@ -3,15 +3,15 @@
   "project": "OMDA",
   "release_target": "0.1.0",
   "active_gate": "G6",
-  "status": "ACCEPTED",
+  "status": "READY_FOR_REVIEW",
   "executor": "workbuddy-executor",
   "executor_model": "glm-5.3-flash (WorkBuddy)",
   "reviewer": "gpt-5.6-sol",
-  "base_commit": "c15fbbe63fb7409483bf092fe7df926868ef5dda",
-  "candidate_commit": "38c0a6916f083777cb273fb82cce8eb51366cd34",
+  "base_commit": "1327e78ded2b78f29b0342def31604ec550f3f92",
+  "candidate_commit": null,
   "approved_commit": "38c0a6916f083777cb273fb82cce8eb51366cd34",
-  "open_review": "reviews/stage-06/REVIEW_VERDICT.md",
+  "open_review": "reviews/stage-06/OWNER_FOLLOWUP_RATING_GENRE.md",
   "blocking_adr": null,
   "adr_status": "ADR_ACCEPTED",
-  "updated_at": "2026-09-19T11:05:42+0800"
+  "updated_at": "2026-09-19T15:40:00+0800"
 }

@@ -202,3 +202,19 @@ pending Owner final confirmation — see PREFACE_CHECKLIST.md).
 
 Summary after Owner content integration: 66/66 PASS on both interpreters.
 Open: AC-12 remains a disclosed friend/Codex live-use observation, not an automated blocker.
+
+================================================================
+[5/5] Owner rating + Genre follow-up (2026-09-19)
+================================================================
+- OMDA-native rating scale standardized as `10-point-integer`; blank or
+  integer 1..10 only. Legacy `10-point` remains compatible.
+- Bundled source: 205 records; 202 manually reviewed broad Genre values;
+  three evidence-insufficient entries remain blank (167, 169, 198).
+- Accepted-source comparison: 205/205 Artist, Album, Year, Rating and Note
+  fields unchanged.
+- Python 3.9.6: 69 tests, 69 passed, 0 failed, 0 skipped.
+- Python 3.12.14: 69 tests, 69 passed, 0 failed, 0 skipped.
+- Skill creator quick validation: PASS (ephemeral validator dependency only;
+  no runtime dependency added to OMDA).
+- ZIP whitelist/extract validation: PASS through the full test suite.
+- `git diff --check`: PASS.
