@@ -434,12 +434,12 @@ tag, push or public publication; those remain separate Owner actions.
 
 ---
 
-## Owner Genre completion and Beta 3 review — candidate `c9d0b8c0a680f64c784b3564246170d6967f19a6`
+## Owner Genre completion and Beta 3 review — candidate `0d7344b334348e74f4d576351aeb0a63922d4a11`
 
 ### Scope and identity
 
 - Direct parent and review base:
-  `0747a83abdb35880684b2fd52c220cf4d1d1bd23`.
+  `a142fc5aade42e2bf5da630c47fd69a2b6285e21`.
 - Scope: Owner-confirmed Genre completion for the 205-album bundled source,
   conservative correction of the remaining catalogue, Beta 3 documentation,
   package version and regression evidence.
@@ -475,7 +475,7 @@ remain subjective, explicitly Owner-editable curation.
 **ACCEPTED**
 
 Acceptance applies only to candidate
-`c9d0b8c0a680f64c784b3564246170d6967f19a6`. Version `0.1.0-beta.3` may be
+`0d7344b334348e74f4d576351aeb0a63922d4a11`. Version `0.1.0-beta.3` may be
 packaged and merged locally through the controlled workflow. This verdict does
 not authorize a remote push, public Release or distribution; those require a
 separate Owner instruction after the GitHub repository exists.

@@ -64,7 +64,7 @@ def test_user_agent_missing_or_placeholder_is_rejected() -> None:
 
 
 def test_user_agent_owner_supplied_value_is_accepted() -> None:
-    value = "OMDA-curation/0.1 (mailto:owner@example.invalid)"
+    value = "OMDA-curation/0.1 (https://github.com/UvOrangeJuvO/OMDA)"
     assert tool._validate_user_agent(value) == value
 
 
@@ -73,7 +73,8 @@ def test_fetch_uses_owner_user_agent_via_injected_transport() -> None:
     # returns a canned response.
     transport = _FakeTransport()
     data = tool._fetch(
-        "Some Album", "Some Artist", "OMDA-curation/0.1 (mailto:owner@example.invalid)",
+        "Some Album", "Some Artist",
+        "OMDA-curation/0.1 (https://github.com/UvOrangeJuvO/OMDA)",
         transport=transport,
     )
     assert data["release-groups"][0]["id"] == "00000000-0000-0000-0000-000000000001"
@@ -81,4 +82,4 @@ def test_fetch_uses_owner_user_agent_via_injected_transport() -> None:
     ua = dict(transport.headers[0]).get("User-agent") or dict(transport.headers[0]).get(
         "User-Agent"
     )
-    assert ua == "OMDA-curation/0.1 (mailto:owner@example.invalid)"
+    assert ua == "OMDA-curation/0.1 (https://github.com/UvOrangeJuvO/OMDA)"
