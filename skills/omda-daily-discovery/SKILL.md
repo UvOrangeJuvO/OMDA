@@ -23,7 +23,7 @@ description: "OMDA Skill Beta (Personal Markdown Mode): deterministically pick O
 
 | 目录 | 内容 | 说明 |
 |---|---|---|
-| **已安装 Skill 根目录**（下文记作 `<skill-root>`） | `SKILL.md`、`scripts/daily_pick.py`、`templates/`、`README.md` 等 | Codex 安装目录（或解压后的分发包目录）；只读使用 |
+| **已安装 Skill 根目录**（下文记作 `<skill-root>`） | `SKILL.md`、`scripts/daily_pick.py`、`templates/`、`assets/sources/`、`README.md` 等 | Codex 安装目录（或解压后的分发包目录）；只读使用 |
 | **用户 workspace** | `profile/MY_PROFILE.md`、`sources/*.md`、`var/` | 用户的私人数据；Profile/Sources/History **必须**留在这里 |
 
 - 脚本与模板**始终相对于 `<skill-root>` 解析**（例如
@@ -46,6 +46,10 @@ python3 <skill-root>/scripts/daily_pick.py \
 ```
 
 - `--source` 可重复：用户当天想用几个来源就传几个（至少一个）。
+- 包内提供可选来源
+  `<skill-root>/assets/sources/OMDA_ONE_ALBUM_A_DAY.md`（OMDA 发起人分享的
+  205 张《一天一专辑》清单）。可以在用户明确选择后直接作为一个
+  `--source` 使用，或复制到用户 workspace；**不得静默自动启用**。
 - `--template-dir <skill-root>/templates` 可选：让脚本校验模板齐备，
   便于为用户复制新的来源模板。
 - 运行成功后阅读 `<workspace>/var/omda-skill/output/<当天日期>.md`，

@@ -184,3 +184,21 @@ and Python 3.9.6 (was 64 before this round; +1 regression test; none
 deleted/weakened/skipped).
 Open: AC-12 (live Codex install, disclosed) and AC-30 (EXECUTOR_FILLED,
 pending Owner final confirmation — see PREFACE_CHECKLIST.md).
+
+================================================================
+[4/4] Owner content integration (2026-09-19)
+================================================================
+- Owner confirmed the complete bilingual README; AC-30 checklist: PASS.
+- Converted Owner-supplied `一天一专辑.xlsx` into the optional bundled source
+  `assets/sources/OMDA_ONE_ALBUM_A_DAY.md`.
+- Workbook audit: 205 records; no formulas; 0 missing Artist; 0 missing Album;
+  0 normalized duplicate identities; 0 pipe/newline hazards.
+- No Year, Genre or Rating values were invented.
+- Added package/source regression and extracted-package parse assertions.
+- Python 3.9.6: 66 tests, 66 passed, 0 failed, 0 skipped.
+- Python 3.12.14: 66 tests, 66 passed, 0 failed, 0 skipped.
+- ZIP whitelist exact match: 15 files; tests/ and __pycache__ excluded.
+- Independent CLI smoke with the bundled source: exit 0; one output committed.
+
+Summary after Owner content integration: 66/66 PASS on both interpreters.
+Open: AC-12 remains a disclosed friend/Codex live-use observation, not an automated blocker.

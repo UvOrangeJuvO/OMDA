@@ -710,6 +710,7 @@ class SkillTestCase(unittest.TestCase):
             "prompts/ORGANIZE_PROMPT.zh-CN.md",
             "prompts/ORGANIZE_PROMPT.en.md",
             "FEEDBACK_TEMPLATE.md",
+            "assets/sources/OMDA_ONE_ALBUM_A_DAY.md",
         ]
         for rel in required:
             self.assertTrue((_SKILL_DIR / rel).is_file(), "missing %s" % rel)
@@ -719,6 +720,21 @@ class SkillTestCase(unittest.TestCase):
         self.assertIn("companion mode", skill_text)
         self.assertIn("3 Genre × 3 Album 引擎", skill_text)
         self.assertIn("AI 只解释", skill_text)
+
+    def test_bundled_one_album_a_day_source(self):
+        path = (_SKILL_DIR / "assets" / "sources" /
+                "OMDA_ONE_ALBUM_A_DAY.md")
+        source = dp.load_source(path)
+        self.assertEqual(source.source_id, "omda-one-album-a-day")
+        self.assertEqual(len(source.records), 205)
+        self.assertTrue(all(record["artist"] and record["album"]
+                            for record in source.records))
+        self.assertTrue(all(not record["year"] and not record["genre"]
+                            and not record["rating"]
+                            for record in source.records))
+        self.assertEqual(source.records[0]["artist"], "YAYAYI")
+        self.assertEqual(source.records[-1]["artist"], "tommy february6")
+        self.assertEqual(source.records[-1]["album"], "Tommy airline")
 
     def test_ac28_license_and_version(self):
         license_text = (_SKILL_DIR / "LICENSE").read_text(encoding="utf-8")
@@ -759,6 +775,7 @@ class SkillTestCase(unittest.TestCase):
             "omda-daily-discovery/prompts/ORGANIZE_PROMPT.zh-CN.md",
             "omda-daily-discovery/prompts/ORGANIZE_PROMPT.en.md",
             "omda-daily-discovery/FEEDBACK_TEMPLATE.md",
+            "omda-daily-discovery/assets/sources/OMDA_ONE_ALBUM_A_DAY.md",
         }
         with tempfile.TemporaryDirectory(prefix="omda-zip-") as tmp:
             zip_path = Path(tmp) / "omda-daily-discovery.zip"
@@ -779,6 +796,10 @@ class SkillTestCase(unittest.TestCase):
             extracted = extract_to / "omda-daily-discovery"
             self.assertIn("Apache License",
                           (extracted / "LICENSE").read_text(encoding="utf-8"))
+            bundled = dp.load_source(
+                extracted / "assets" / "sources" /
+                "OMDA_ONE_ALBUM_A_DAY.md")
+            self.assertEqual(len(bundled.records), 205)
             # validate the extracted skill end-to-end
             profile = extracted.parent / "profile.md"
             shutil.copy(extracted / "templates" /

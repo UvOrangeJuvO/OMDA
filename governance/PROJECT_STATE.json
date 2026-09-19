@@ -10,8 +10,8 @@
   "base_commit": "c15fbbe63fb7409483bf092fe7df926868ef5dda",
   "candidate_commit": null,
   "approved_commit": "3aa76ea5bb35e219550cf65328549de47c98269b",
-  "open_review": "reviews/stage-06/REPAIR_REPORT.md",
+  "open_review": "reviews/stage-06/OWNER_CONTENT_REPORT.md",
   "blocking_adr": null,
   "adr_status": "ADR_ACCEPTED",
-  "updated_at": "2026-09-19T09:12:49+0800"
+  "updated_at": "2026-09-19T10:59:38+0800"
 }

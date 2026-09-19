@@ -76,24 +76,24 @@ We hope to help more sounds find people who are willing to hear them—and to gi
 ### Why I Wanted to Build OMDA
 
 我喜欢听音乐。音乐在我的生命中占了很重要的一部分。
-即使面对不同的语言，我也愿意去倾听来自世界各个地方的声音。我认为音乐是一种真正通用的语言，它能够跨越语言和地域，把世界各地的人连接起来。
-与此同时，我们现在也正在见证整个中国音乐场景的繁荣。越来越多不同类型、不同地区、不同语言的音乐正在出现，也有越来越多的人愿意认真地去听、去写、去分享音乐。
+即使语言不通，我也非常愿意去倾听来自世界各个地方的声音。我认为，音乐是一种真正通用的语言，它能够跨越语言和地域，把世界各地的人连接起来。
+与此同时，我现在也正在见证整个中国音乐场景的繁荣。在世界各地，也有越来越多不同类型、来自不同地区的音乐正在出现，也有越来越多的人愿意认真地去听、去写、去分享音乐。
 OMDA 是我想做的一次尝试。
-我希望它是一个非常轻量、本地化，同时又能够由社群共同参与的工具。它可以帮助你从自己欣赏的人、信任的乐评人，或者只是一个随机遇到的人，或者想要探索的任何音乐清单中，每天随机遇到一些可能会感兴趣的专辑。
-你不需要每天先决定自己应该听什么。OMDA 可以替你完成这一次选择，让你偶然遇见一些过去可能不会主动点开的音乐。
-它本质上只是希望让听音乐这件事更轻松一点，也让生活多一点意外和快乐。
-读过卡尔维诺的《为什么读经典》之后，我心里更有一种说不清但很确定的感觉：一件作品真正属于你，往往不是因为你去找了它，而是它在某个具体的时刻，偶然遇上了此刻的你。OMDA 想多做的，就是这样的偶遇。
-我也想保留使用清单的自由：它可以从我信任的朋友那里来，也可以来自陌生的人、偶然碰到的社群，甚至来自我并不完全同意的乐评人。审美本来就是由文化、经历和偏好共同塑造的，没有谁的清单有资格替我划线。
+我一直认为：审美本来就是完全主观的。每个人的成长经历和文化背景都不相同，也会造就每个人独一无二、却并无高下之分的审美。
+所以，我希望它是一个非常轻量、本地化，同时又能够由社群共同参与的工具。它应该支持多个推荐清单源：这些清单可以来自我认可的乐评人，也可以来自陌生的人、偶然碰到的社群，甚至来自我并不完全同意的乐评人。
+而在读过卡尔维诺的《为什么读经典》之后，我也确实会认为：一件真正属于你的作品，往往不是因为你去找了它，而是它在某个具体的时刻，偶然遇上了此刻的你。OMDA 想多做的，就是多制造这样的偶遇。
+OMDA 可以替你完成这一次选择，让你偶然遇见一些过去可能不会主动点开的音乐。
+它本质上只是希望让听音乐这件事更好玩一点，也让生活多一点意外和快乐。
 
 I love listening to music. Music has always been an important part of my life.
-Even when I do not understand the language, I am still willing to listen to voices from different parts of the world. I believe music is a truly universal language—one that can cross linguistic and geographic boundaries and connect people around the world.
-At the same time, we are witnessing the growing vitality of the Chinese music scene. More music is emerging from different genres, regions, and languages, and more people are willing to listen carefully, write about music, and share what they discover.
+Even when I do not understand the language, I am very willing to listen to voices from all around the world. I believe that music is a truly universal language: it can cross linguistic and geographic boundaries and connect people around the world.
+At the same time, I am witnessing the flourishing of China's music scene. Around the world, more and more kinds of music from different places are emerging, and more and more people are willing to listen carefully, write about music, and share it.
 OMDA is an experiment I wanted to make.
-I hope it can be lightweight, local-first, and shaped by a community. It should help people discover Albums from people they appreciate, critics they trust, and collections they want to explore.
-You should not have to decide what to listen to every day. OMDA can make that small decision for you and let you encounter Albums you might never have opened on your own.
-At its heart, OMDA simply hopes to make listening a little easier—and to bring a little more surprise and happiness into everyday life.
-After reading Italo Calvino's *Why Read the Classics?*, I was left with a feeling I cannot quite explain but am sure of: a work truly becomes yours not because you went looking for it, but because it happened to meet you, at that particular moment, as the person you are. That kind of chance encounter is what OMDA wants to create a little more of.
-I also want to keep the freedom to choose whose lists I use: they can come from friends I trust, from strangers, from communities I stumbled upon, or even from critics I do not fully agree with. Taste is shaped by culture, experience, and preference together, and no one's list has the standing to draw the line for me.
+I have always believed that taste is entirely subjective. Differences in upbringing and cultural background shape an aesthetic sensibility unique to each person, with none inherently higher or lower than another.
+That is why I hope OMDA can be a very lightweight, local-first tool while also enabling community participation. It should support multiple recommendation-list sources: these lists can come from critics whose judgment I value, but also from strangers, communities I happen upon, or even critics with whom I do not fully agree.
+And after reading Italo Calvino's *Why Read the Classics?*, I did come to believe that a work which truly belongs to you often does so not because you went looking for it, but because, at a particular moment, it happened to encounter who you were at that time. What OMDA hopes to do is create more of these chance encounters.
+OMDA can make this choice for you, letting you encounter music you might otherwise never have chosen to play.
+At its heart, it simply hopes to make listening to music a little more fun—and to bring a little more surprise and happiness into everyday life.
 
 ---
 
@@ -125,7 +125,7 @@ Fully local, zero network, no accounts.
 
 | 目录 | 内容 | 说明 |
 |---|---|---|
-| **已安装 Skill 根目录**（下文记作 `<skill-root>`） | `SKILL.md`、`scripts/daily_pick.py`、`templates/` 等 | Codex 安装目录或解压后的分发包目录；只读使用 |
+| **已安装 Skill 根目录**（下文记作 `<skill-root>`） | `SKILL.md`、`scripts/daily_pick.py`、`templates/`、`assets/sources/` 等 | Codex 安装目录或解压后的分发包目录；只读使用 |
 | **用户 workspace**（下文记作 `<workspace>`） | `profile/`、`sources/`、`var/` | 你的私人数据；Profile/Sources/History 必须留在这里 |
 
 脚本与模板始终相对于 `<skill-root>` 解析；输出与历史写入
@@ -146,6 +146,24 @@ Fully local, zero network, no accounts.
   放进来即可，**不需要也不会被修改**。
 - 复制 `<skill-root>/templates/OMDA_SOURCE.template.*.md` 即可创建新的
   来源文件（每份的 `source_id` 必须不同）。
+
+### 内置来源：一天一专辑 / Bundled source: One Album a Day
+
+分发包附带一份真正可用的个人来源清单：
+`<skill-root>/assets/sources/OMDA_ONE_ALBUM_A_DAY.md`。这是 OMDA 发起人从
+自己的《一天一专辑》表格整理并公开分享的 205 张专辑——算是夹在项目里的
+一点个人私货。它不是排名，也不代表 OMDA 对音乐好坏的判断。
+
+The package includes a real, ready-to-use personal source list at
+`<skill-root>/assets/sources/OMDA_ONE_ALBUM_A_DAY.md`. It contains 205 Albums
+shared from the OMDA founder's *One Album a Day* spreadsheet—a small set of
+personal picks tucked into the project. It is not a ranking or an OMDA
+judgment about which music is better.
+
+- 原表只有 Artist 与 Album；Year、Genre、Rating 均有意留空，系统不会编造。
+- 你可以单独选择它，也可以和朋友、乐评人或社群的来源一起使用。
+- 它**不会被静默启用**：Agent 必须先得到你的选择，再把它作为 `--source`
+  传入。你也可以把它复制到自己 workspace 的 `sources/` 中。
 
 ## 快速开始（三条路）/ Quick start
 
@@ -177,6 +195,9 @@ python3 <skill-root>/scripts/daily_pick.py \
   --source <workspace>/sources/critic-zhang.md \
   --history <workspace>/var/omda-skill/history.json \
   --output-dir <workspace>/var/omda-skill/output
+
+# 想使用内置《一天一专辑》时，可以额外加入：
+# --source <skill-root>/assets/sources/OMDA_ONE_ALBUM_A_DAY.md
 
 # 3. 打开 <workspace>/var/omda-skill/output/<今天日期>.md 查看当天推荐。
 #    英文输出加 --lang en（首次提交后语言随结果锁定）。
