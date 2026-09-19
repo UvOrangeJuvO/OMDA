@@ -326,3 +326,65 @@ Candidate `9ddab49a314b22fac8f686159ac45aeed44afb80` must not be merged or distr
 Repair only G6-R2-001, rerun the complete dual-version matrix, return `G6 / READY_FOR_REVIEW`,
 and stop. The code repair is narrow. AC-30 remains a separate Owner confirmation step and must
 not be self-approved by the Executor.
+
+---
+
+## Re-review 3 and Owner content checkpoint — candidate `38c0a6916f083777cb273fb82cce8eb51366cd34`
+
+### Identity and scope
+
+- Candidate direct parent: NFC repair candidate
+  `f274ee60e7159cb902cf87ed77e9a96a80fd821a`
+- NFC repair direct parent: Reviewer checkpoint
+  `61e0f4c871ccb2cba88c88842d48edb5ace44bde`
+- Original base and merge-base: `c15fbbe63fb7409483bf092fe7df926868ef5dda`
+- Owner content commit scope: 9 files; README/preface, one bundled source asset, Skill/package
+  documentation, tests and review evidence only
+- No accepted 3×3 Core implementation was changed
+
+### Finding closure
+
+| Item | Final result |
+|---|---|
+| G6-R2-001 NFC canonicalization | **RESOLVED** — source metadata and all parsed record/display fields are normalized at the canonical boundary; precomposed/decomposed permutations produce identical digest, merge payload, history and output. |
+| G6-R1-002 second-table detection | **RESOLVED** |
+| G6-R1-003 semantic history validation | **RESOLVED** |
+| All original G6-001 through G6-007 findings | **RESOLVED** |
+| AC-30 bilingual Owner preface | **PASS** — Owner supplied the final Why text, reviewed the complete README and explicitly confirmed the version; Reviewer verified the corresponding English. |
+
+### Bundled Owner source
+
+The Owner-supplied `一天一专辑.xlsx` was converted to
+`assets/sources/OMDA_ONE_ALBUM_A_DAY.md` as an optional, explicitly selected source:
+
+- 205 source rows; 0 missing Artist; 0 missing Album; 0 normalized duplicate identities
+- record-by-record comparison with the workbook passed for Artist, Album and original number
+- no Year, Genre or Rating was inferred or invented
+- only outer whitespace cleanup, line-whitespace collapse and Unicode NFC normalization were
+  applied
+- README and SKILL forbid silent activation; the user must select this source explicitly
+- package licensing/distribution context is documented in `LICENSES.md` and the source frontmatter
+
+### Independent verification
+
+- Python 3.9.6: **66/66 passed**, 0 failed, 0 skipped
+- Python 3.12.14: **66/66 passed**, 0 failed, 0 skipped
+- Package whitelist: exact **15-file** match; extracted bundled source parses to 205 records
+- Independent real CLI smoke using the bundled source: exit 0 and one committed daily output
+- Full candidate range `git diff --check`: clean
+- Worktree at verdict start: clean; exact ancestry and merge-base verified
+- No network call, merge, tag, push, retained distributable archive or publication occurred
+
+### Residual limitation
+
+AC-12 remains a disclosed real-user/Codex-install observation for the upcoming small friend Beta.
+The package structure and separate Skill/workspace behavior are automated and passing; this
+observation does not block the local G6 artifact.
+
+### Final G6 verdict
+
+**ACCEPTED**
+
+Acceptance applies only to candidate `38c0a6916f083777cb273fb82cce8eb51366cd34`.
+G6 may now be merged through the controlled workflow when the Owner requests it. This verdict
+does not itself authorize tag, push, public package creation, distribution or publication.
