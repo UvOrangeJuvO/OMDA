@@ -97,7 +97,8 @@ Examples include Kim Gordon's *The Collective* (Industrial Hip Hop), M.I.A.'s
 - Skill creator `quick_validate.py`: PASS in an isolated validation
   environment (PyYAML was validation-only and was not added to the Skill).
 - `git diff --check`: PASS.
-- Non-Genre comparison against accepted checkpoint `c8a293a`: all 205
+- Non-Genre comparison against the accepted pre-candidate checkpoint
+  `0747a83abdb35880684b2fd52c220cf4d1d1bd23`: all 205
   Artist, Album, Year, Rating and Note fields unchanged.
 - Version advanced to `0.1.0-beta.3` because the not-yet-published Beta ZIP
   content changed.

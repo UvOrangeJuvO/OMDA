@@ -431,3 +431,51 @@ Acceptance applies only to candidate
 `5a502f6cef4fc97e2cae970a214b468c7ff7cbd9`. Version
 `0.1.0-beta.2` may be packaged locally. This verdict does not authorize merge,
 tag, push or public publication; those remain separate Owner actions.
+
+---
+
+## Owner Genre completion and Beta 3 review — candidate `c9d0b8c0a680f64c784b3564246170d6967f19a6`
+
+### Scope and identity
+
+- Direct parent and review base:
+  `0747a83abdb35880684b2fd52c220cf4d1d1bd23`.
+- Scope: Owner-confirmed Genre completion for the 205-album bundled source,
+  conservative correction of the remaining catalogue, Beta 3 documentation,
+  package version and regression evidence.
+- Artist, Album, Year, Rating and Note are unchanged across all 205 rows.
+- No accepted 3×3 Core implementation changed.
+
+### Verification
+
+- Full repository suite: **777 passed**, 0 failed, 0 skipped on Python 3.12.14.
+- Skill suite: **69/69 passed** on Python 3.9.6 and Python 3.12.14.
+- Repository production lint scope (`src`, `tests`, `tools`): **PASS**.
+- `git diff --check`: **PASS**.
+- Bundled source: 205/205 rows have a non-empty Genre; all 22 difficult
+  entries reflect the Owner's supplied decisions.
+- Local Beta archive:
+  `dist/skill-beta3/omda-daily-discovery-0.1.0-beta.3.zip`.
+- Archive SHA-256:
+  `2db790e444db2e6835d4593d930ef763b9c5b4deeb5973dc2b10d3cd630366e9`.
+- The archive contains exactly the intended 15 Skill files and passed an
+  extracted clean-room CLI smoke test.
+- All reachable commit and annotated-tag identities use
+  `UvOrangeJuvO <68496891+UvOrangeJuvO@users.noreply.github.com>`.
+
+### Process limitation
+
+This was an Owner-authorized direct maintenance round. GPT-5.6 Sol performed
+both the focused update and its review, so the usual Executor/independent
+Reviewer separation did not apply. Automated checks are complete; Genre labels
+remain subjective, explicitly Owner-editable curation.
+
+### Verdict
+
+**ACCEPTED**
+
+Acceptance applies only to candidate
+`c9d0b8c0a680f64c784b3564246170d6967f19a6`. Version `0.1.0-beta.3` may be
+packaged and merged locally through the controlled workflow. This verdict does
+not authorize a remote push, public Release or distribution; those require a
+separate Owner instruction after the GitHub repository exists.
